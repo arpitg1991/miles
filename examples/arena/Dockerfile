@@ -63,6 +63,13 @@ RUN apt-get update \
 RUN rm -rf /root/miles
 COPY . /root/miles
 
+# Site-packages fixups that must run against the base image's pinned deps.
+# fla 0.4.2 x triton 3.7.1: the KDA token-parallel kernel references
+# triton.next_power_of_2 inside the jit body, which this triton rejects at
+# the first GLM-5.3-Flash train step (RuntimeError: Unsupported function
+# referenced). The script is idempotent and hard-fails if fla's code drifted.
+RUN python3 /root/miles/examples/arena/patches/fla_kda_next_power_of_2.py
+
 # Import smoke: fail the build if the arena plugin or the launcher cannot resolve.
 # The builder has no GPU driver; transformer_engine dlopens libcuda.so.1 at
 # import, so the smoke runs against the CUDA toolkit's driver stub. Runtime

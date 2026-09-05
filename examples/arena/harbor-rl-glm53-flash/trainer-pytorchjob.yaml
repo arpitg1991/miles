@@ -71,6 +71,22 @@ spec:
           # 2026-08-27). Dropped: it was a point-in-time workaround, and at 12
           # nodes an unnecessary exclusion costs real capacity. Re-add a
           # NotIn-hostname block here only against a live, reproduced incident.
+          #
+          # i-00cb6ebceda36a4ef IS such an incident (2026-09-02, reproduced
+          # twice): kueue TAS assigns it while the scheduler cannot place
+          # there (occupied outside kueue's view); the pods-ready timeout
+          # then evicts and the operator turns that into a failed job. The
+          # convert job only ran once this exclusion was added. Remove when
+          # the node heals.
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                    - i-00cb6ebceda36a4ef
           tolerations:
           - effect: NoSchedule
             key: nvidia.com/gpu

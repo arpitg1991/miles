@@ -1,0 +1,195 @@
+# glm53-memprobe-b: single-node SGLang host-memory probe for the rl-glm53f OOM
+# (raylet on the engine node killed the SGLangEngine at 95% of HOST MemTotal,
+# /tmp/glm53-run2-t0.log:42541,47827-47828). This variant is IDENTICAL to
+# memprobe-job.yaml except for resources.limits.memory: 1800Gi -- it tests
+# whether a kubelet memory limit becomes visible at the path Ray 2.58 reads
+# (/sys/fs/cgroup/memory.max; ray memory_monitor_utils.cc:199-237) inside a
+# privileged container, and what the kernel charges to the container cgroup.
+#
+# Wiring copied from trainer-pytorchjob.yaml (same image, SA, priority,
+# nodeSelector, node-exclusion affinity, tolerations, privileged, dshm,
+# /dev/infiniband + /dev/nvidia-caps hostPaths). NO platform PVC volumes are
+# declared: kyverno rejects user-declared /mnt/* PVCs and injects
+# /mnt/scratch-fast-1a-rw (mountpoint-S3 model mount) and
+# /mnt/scratch-s3files-rw (EFS, our log sink) into every arena-tasks pod
+# (the CPU fetch-job.yaml and the trainer both rely on this).
+# EFA resources and the trainer's training-config ConfigMap are dropped
+# (single node, no NCCL over the fabric; scripts come from their own ConfigMap).
+#
+# kueue: the queue label is on the Job (batch/v1 Job integration) AND on the
+# pod template (pod integration, the path the acuadron sglang ReplicaSet /
+# StatefulSet GPU pods use). Whichever integration is enabled admits it; the
+# other ignores the duplicate label. If the Job sits Suspended with no
+# Workload, fall back to a plain Pod (README "Fallback").
+#
+#   kubectl --context arena-prod-bom-v2 -n arena-tasks create configmap glm53-memprobe-scripts \
+#     --from-file=memprobe.sh --from-file=memsampler.py --from-file=loadgen.py
+#   kubectl --context arena-prod-bom-v2 -n arena-tasks create -f memprobe-job-limited.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: glm53-memprobe-b
+  namespace: arena-tasks
+  labels:
+    app: glm53-memprobe
+    owner: guparpit
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  # phases: load ~7 min + idle 3 + snapshot 3 + load-test 40 + post 20 = ~75 min;
+  # 4 h is the hard ceiling so a hung server cannot hold a p6 node overnight.
+  activeDeadlineSeconds: 14400
+  ttlSecondsAfterFinished: 43200
+  template:
+    metadata:
+      labels:
+        app: glm53-memprobe
+        owner: guparpit
+        kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: arena-tasks-runner
+      enableServiceLinks: false
+      priorityClassName: high
+      nodeSelector:
+        node-type: p6-gpu
+        node.kubernetes.io/instance-type: p6-b200.48xlarge
+      # same exclusions as trainer-pytorchjob.yaml:81-99 (kueue-TAS-pinned nodes
+      # the scheduler rejects; remove when they heal)
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - i-00cb6ebceda36a4ef
+                - i-09913cb3a1edcc270
+                - i-08c9e00e2a0af830a
+                - i-04c8462a637bbf738
+      tolerations:
+      - effect: NoSchedule
+        key: nvidia.com/gpu
+        operator: Exists
+      - effect: NoSchedule
+        key: vpc.amazonaws.com/efa
+        operator: Exists
+      containers:
+      - name: memprobe
+        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902b
+        imagePullPolicy: Always
+        command: ["bash", "-c"]
+        # memprobe.sh tees everything to EFS itself; this outer tee only covers
+        # a failure before the script can create its output dir.
+        args:
+        - mkdir -p /mnt/scratch-s3files-rw/${USER}/logs/glm53-memprobe && ulimit -n 1000000 && exec bash /opt/memprobe/memprobe.sh > >(tee -a /mnt/scratch-s3files-rw/${USER}/logs/glm53-memprobe/${MEMPROBE_NAME}-console.log) 2>&1
+        env:
+        - name: MEMPROBE_NAME
+          value: glm53-memprobe-b
+        - name: MEMPROBE_VARIANT
+          value: memory-limit-1800Gi
+        # phase knobs (seconds / minutes); see README
+        - name: MEMPROBE_IDLE_S
+          value: '180'
+        - name: MEMPROBE_SNAPSHOT
+          value: '1'
+        - name: MEMPROBE_LOAD_MIN
+          value: '40'
+        - name: MEMPROBE_POST_S
+          value: '1200'
+        - name: MEMPROBE_SAMPLE_S
+          value: '30'
+        - name: MEMPROBE_MODEL
+          value: /mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16
+        - name: USER
+          value: guparpit
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: PYTHONFAULTHANDLER
+          value: '1'
+        # ---- same process env the run's SGLang engines had (trainer-pytorchjob.yaml:128-180) ----
+        - name: PYTORCH_CUDA_ALLOC_CONF
+          value: expandable_segments:True
+        - name: LD_LIBRARY_PATH
+          value: /opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+        - name: SGLANG_SKIP_CHECKPOINT_LOAD_CHECK
+          value: '1'
+        - name: SGLANG_HEALTH_CHECK_TIMEOUT
+          value: '120'
+        - name: TORCHINDUCTOR_COMPILE_THREADS
+          value: '1'
+        - name: TRITON_CACHE_DIR
+          value: /tmp/triton_cache
+        - name: TORCHINDUCTOR_CACHE_DIR
+          value: /tmp/inductor_cache
+        # ---- env miles injects into the SGLangEngine actor (miles/ray/rollout/server_group.py:105-124)
+        # and the ray job runtime_env (command_utils.py:212-222) ----
+        - name: NVSHMEM_DISABLE_NCCL
+          value: '1'
+        - name: SGLANG_JIT_DEEPGEMM_PRECOMPILE
+          value: 'false'
+        - name: SGLANG_DG_CACHE_DIR
+          value: /tmp/sglang_deep_gemm/memprobe
+        - name: SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK
+          value: 'false'
+        - name: SGLANG_MEMORY_SAVER_CUDA_GRAPH
+          value: 'true'
+        - name: SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2
+          value: '1'
+        - name: SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT
+          value: 'true'
+        - name: SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION
+          value: 'false'
+        - name: SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE
+          value: 'false'
+        - name: CUDA_DEVICE_MAX_CONNECTIONS
+          value: '1'
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        resources:
+          limits:
+            nvidia.com/gpu: 8
+            # THE one delta vs memprobe-job.yaml: 1800Gi = 1932735283200 B, strictly
+            # below the node's MemTotal 2143217684480 B (log 47828). Precedent in
+            # this namespace: acuadron-kimi-k3-0-{0,1} run with limits.memory 1900Gi.
+            memory: 1800Gi
+          requests:
+            ephemeral-storage: 32Gi
+            memory: 1200Gi
+            nvidia.com/gpu: 8
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - mountPath: /opt/memprobe
+          name: memprobe-scripts
+        - mountPath: /dev/shm
+          name: dshm
+        - mountPath: /dev/infiniband
+          name: infiniband
+        - mountPath: /dev/nvidia-caps
+          name: nvidia-caps
+      volumes:
+      - configMap:
+          name: glm53-memprobe-scripts
+          defaultMode: 0755
+        name: memprobe-scripts
+      - emptyDir:
+          medium: Memory
+        name: dshm
+      - hostPath:
+          path: /dev/infiniband
+        name: infiniband
+      - hostPath:
+          path: /dev/nvidia-caps
+        name: nvidia-caps

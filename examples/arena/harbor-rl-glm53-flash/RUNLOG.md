@@ -406,3 +406,100 @@ integration commit 2f71601fd (2026-09-02 08:57 PT).
   `ARENA_MODEL_PATH` differs.
 - OnFailure + restarts for a 12-node job: deferred — recovery would need
   replica-0 AND all 11 ray workers to exit on GCS loss; unproven.
+
+## 2026-09-02, from 10:18 PT — run 1 (`rl-glm53f-gbash-r1`, image a): live changes and findings
+
+Continues the launch entry above; identity unchanged throughout: PyTorchJob
+`rl-glm53f-trainer` (12x p6-b200 = 8 actor TP8/PP4/EP16/DP2 + 4 engines
+TP8/EP8), trainer image `arena-slime-dev:miles-glm53-20260902a`, gym
+`rl-glm53f-gym-sgb` x128 on `arena-tasks-dev:rl-smoke-20260821b` (Harbor
+0.21.0), NATS `rl-glm53f-nats`, W&B `arena/rl-snorkel27` group
+`rl-glm53f-gbash-r1`. Tree state: trainer `fbc8ddaa8`, gym/config/README
+`abd7edf8f`.
+
+### Live change 1 — 10:18 PT: TAS exclusions 1 -> 4 nodes (`fbc8ddaa8`)
+
+- Second kueue TAS incident of the day, same signature as the convert job:
+  9 actor pods placed in ~3 min while three TAS-pinned pods sat
+  `FailedScheduling` (Insufficient gpu/efa/memory) and stalled the gang into
+  the ~10-min pods-ready eviction; the kubeflow operator recorded a FAILED
+  job and deleted the pods.
+- Fix: `kubernetes.io/hostname NotIn` extended with `i-09913cb3a1edcc270`,
+  `i-08c9e00e2a0af830a`, `i-04c8462a637bbf738` (alongside
+  `i-00cb6ebceda36a4ef`); job deleted and re-applied under the same name
+  (rdzvId, JOBNAME, the sglang Service selector and the NATS URL are bound
+  to it).
+- Theory vs RCA: the yaml comment blames the unreaped Failed `arena-backfill`
+  pod each of the three nodes hosts (41 fleet-wide, deletion-protected to
+  their submitter). The launch-day RCA refuted it: running workers coexist
+  with those pods; the nodes are consumed outside arena-tasks' view, so TAS
+  believes them free while kube-scheduler cannot place. The comment stays as
+  written (tree state) — do not wait for a "backfill reaper".
+- Rejected: re-applying without exclusions (each miss costs a ~10-min
+  eviction plus the job's pod logs); deleting the backfill pods (not ours,
+  and not the cause).
+- Consequences: Karpenter refuses to provision for hostname-affinity pods, so
+  the gang binds only to existing nodes; every exclusion costs capacity —
+  prune as nodes heal. The list reaches 16 entries by r3 (later entry).
+
+### Live change 2 — 10:41 PT: caps 2048 -> 32768 per turn, 32768 -> 131072 per episode (`abd7edf8f`, user-directed)
+
+- Observation: the first ~28 completions were 28/28 `status=truncated`, 0
+  success — GLM-5.3 at its template-default `max` reasoning effort spends the
+  whole 2048-token turn thinking. All-zero rewards also mean the zero-variance
+  filter churns through groups without ever filling a batch.
+- Change, trainer and gym together (breaks r5 parity deliberately):
+
+  | knob | before (r5 parity) | after |
+  |---|---|---|
+  | gym `ARENA_MAX_TOKENS` | 2048 | 32768 |
+  | gym `ARENA_ROLLOUT_CONTEXT_LIMIT` | 32768 | 131072 |
+  | trainer `rollout_max_response_len` | 2048 | 32768 |
+  | trainer `rollout_max_context_len` / `sglang_context_length` | 131072 | unchanged |
+
+  Rule written into both files: `ARENA_MAX_TOKENS` and
+  `rollout_max_response_len` stay in lockstep. Both sides were redeployed
+  under the same identity (the trainer reads `miles-config.yaml` only at
+  start) and rollout 0 restarted under the new caps.
+- Rejected: keeping the r5 caps (no training signal at all); cutting thinking
+  via `reasoning_effort` instead — not available, the gym's `ArenaSGLangLLM`
+  dropped that kwarg until the r5 gym image (2026-09-03).
+- Effect: rollout 0 wire statuses 272 success / 54 failed / 0 truncated,
+  `response_len` median ~20.4k tokens, episode reward 0.18.
+- Accepted consequences (README "Run-1 live change"): a ~32k-token sample
+  exceeds `max_tokens_per_gpu 8192` by up to ~16x, so each forms its own
+  micro-batch (dynamic batching effectively inert; the memory analysis had
+  ~50 GB headroom); slower rollouts per episode; a ~131k-token trajectory
+  pushes the NATS result message toward the 8 MiB `max_payload`.
+
+### Findings from run 1 (all before the 13:54 PT fla patch)
+
+1. **Train step 0 crashed on every rank** in fla 0.4.2
+   `chunk_kda_fwd_kernel_intra_token_parallel`: `BK: tl.constexpr =
+   triton.next_power_of_2(K)` is declared inside the `@triton.jit` body and
+   triton 3.7.1 rejects it ("Unsupported function referenced"). AST scan of
+   fla: the only in-kernel offender. Decision: hoist BK to a host-computed
+   constexpr launch arg, shipped as an image layer -> image b (next entry).
+2. **91% of samples removed as TRUNCATED — only 23/256 carried loss.** Read
+   at the time as `nats_rollout`'s any-step `stop_reason=length` rule removing
+   whole samples when long GLM episodes clip mid-trajectory (wire status
+   `success` notwithstanding). Recipe decision left PENDING with the options
+   loosen the any-step policy / cut thinking via reasoning_effort / larger
+   context / accept; the first became `--arena-mask-clipped-final-turn`
+   (16:44 PT). Re-diagnosed 2026-09-03: Harbor agent wall-clock timeouts
+   (`agent_stop_reason=timeout`, in the degenerate-stop set), 0/1033 generates
+   at the 32k cap; the Harbor 0.21 envelope reported timed-out groups as
+   `success`, which is why the wire looked clean while the trainer removed
+   them.
+3. **Post-mortem source.** The kubeflow operator deletes a failed PyTorchJob
+   with its pods; the tee to
+   `/mnt/scratch-s3files-rw/guparpit/logs/<EXPERIMENT_NAME>/trainer-<idx>.log`
+   is the only surviving driver log.
+4. **kueue counts REQUESTS against node allocatable.** At `requests.memory:
+   1800Gi` only 11/304 p6 nodes were TAS-assignable (287 excluded on memory)
+   and the 12-pod gang could not admit for the image-b relaunch; at 1200Gi it
+   admitted immediately (actual per-node use is far lower; the convert job
+   ran at 1200Gi). Applied by hand to the deployed manifest only — this tree
+   still says 1800Gi; codified in the r2 fix set (`3098ae1d3`).
+5. Ops: the ECR docker login expires after 12 h — "authorization token has
+   expired" means re-login, not missing permissions.

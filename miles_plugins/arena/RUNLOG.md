@@ -486,3 +486,126 @@ Files: `train_async_arena.py`, `checkpoint_extras.py`, core `miles/utils/trackin
 - **Not yet exercised on GPU:** a restart into an existing checkpoint dir with
   a sidecar present (r1/r2 died before `save_interval 20`; later runs used
   fresh `EXPERIMENT_NAME`s). Resume is CPU-verified only.
+
+## 2026-09-01 01:21 PT — Milestone: launcher `scripts/run_arena_harbor.py`, 27B smoke config, argv parity, snapshots
+
+**Scope:** `scripts/run_arena_harbor.py` (354 lines, the state archived as integration
+commit 7182346d7 on 2026-09-02 00:55 PT), `examples/arena/harbor-rl-27b/financeagent-27b-smoke.yaml`,
+`examples/arena/harbor-rl-27b/ARGV_PARITY.md`,
+`tests/snapshots/launch_scripts/py/scripts/run_arena_harbor.py/{train,worker}.txt`,
+`tests/fast/launch_scripts/py_harness.py` (`CLEARED_ENV`).
+**Source:** AGISlime `scripts/custom/entrypoint.sh` + `scripts/custom/hydra_runner/hydra_converter.py`
+(port baseline 90ce39f; both files byte-identical at the harbor-workspace b8aae83, 2026-08-27 PT) and `tmp_staging/smoke/harbor-rl-27b/financeagent-27b-smoke.yaml`;
+the run-1 pod env of `rl-smoke27-financeagent` (`REPLICA=3`, `REPLICA_TRAINER=2`,
+`GPUS_PER_NODE` 8; `WANDB_RUN_ID` / `ARENA_EVAL_TASKS` / `S3_ARTIFACT_BASE` / `USE_MLFLOW_AMZN`
+unset). Records: `arena-port-artifacts/reports/impl-launcher.md` (implementation),
+`verify-driverLauncher.md` + `verify-redundancy.md` (adversarial verification). Decision: ADR-0006.
+**Env:** `/tmp/miles-venv`, CPU-only host, 3-way PYTHONPATH (testEnv.md).
+
+### What was built
+
+- Typer launcher with `train` / `worker` commands; `ScriptArgs(U.ExecuteTrainConfig)` reads
+  the pod-env contract through `default_factory`; `_flatten` + `_load_experiment_config`
+  reproduce hydra_converter; launcher-consumed keys (`user`, `cluster`, `experiment_name`,
+  `project_name`, `agislime_dir`, `replicas`, `num_trainers`, `model_arch`) popped; entrypoint.sh
+  appends re-created; submission via `U.execute_train(train_script="miles_plugins/arena/
+  train_async_arena.py", megatron_model_type="qwen3.5-27B")`; bounded 120 x 5 s node wait.
+- `financeagent-27b-smoke.yaml`: Qwen3.5-27B, TP4/PP2/CP2 on 2 actor nodes + 1 engine node,
+  `rollout_batch_size 8 x n_samples_per_prompt 8 = global_batch_size 64`, `num_rollout 30`,
+  `lr 2e-6`, `loss_mask_type qwen3_5`, `use_wandb false`. Exactly two deltas from the AGISlime
+  original (header comment): the two dotted paths -> `miles_plugins.arena.nats_arena.*`, and
+  `rollout_global_dataset: true` removed. `partial_rollout: true` kept although inert on this
+  path (verify-redundancy), for config parity.
+- Snapshots recorded 01:21:41 PT: `MILES_UPDATE_LAUNCH_SCRIPT_SNAPSHOTS=1 pytest
+  tests/manual/launch_scripts -k arena` -> `train.txt` 963 lines (mkdir, preamble, ray head,
+  all 120 `ray status`/`sleep 5` polls, `nvidia-smi` NVLink probe, then the `ray job submit`
+  with the full runtime env and argv as command 245), `worker.txt` 13 lines (cleanup, `nc -z`,
+  `ray start --block`).
+
+### What failed on the way
+
+- First snapshot recording: direct `os.makedirs` of the ckpt/log/tb/wandb dirs raised
+  `PermissionError` on `/root` inside the harness. Fixed by routing the mkdir through one
+  `U.exec_command_cpu("mkdir -p ...")` (also what the rule wants: shell only via
+  `command_utils`; mirrors entrypoint.sh; records deterministically). Re-recorded.
+- The full `tests/manual/launch_scripts/test_py_launch_scripts.py` on this non-root host:
+  6 failed + 40 errors in *other* launchers (`run_deepseek*`, `run_kimi*`, `amd/*`, ...), all
+  `PermissionError` writing `/root/models` / `/root/shared_data` — the harness expects the
+  root-writable CI container; pre-existing, unrelated; every arena case and every
+  `TestDiscovery` case passed.
+
+### Verification (impl 01:xx PT, re-derived by the verifier the same night)
+
+- Converter exactness: token streams byte-identical to the original `hydra_converter.py` on
+  BOTH original YAMLs — run 1 (137 vs 121 tokens) and run 2 `financeagent-27b-run2.yaml`
+  (144 vs 128); after the 8 consumed keys the multiset diff is empty both ways
+  (`2e-6 -> 2e-06`, `15e-7 -> 1.5e-06`, `prompt-data-list` moved last).
+- Argv parity (executed, not transcribed): **old 106 vs new 97 flag occurrences**; only-in-old
+  = 7 consumed echo flags + `--rollout-function-path` x2 + `--data-source-path` + `--spec` +
+  `--rollout-global-dataset` + `--use-gated-attention`; only-in-new = 3 renamed dotted paths +
+  `--num-gpus-per-node 8`. The verifier recomputed the table independently: row-for-row and
+  count-for-count match with `ARGV_PARITY.md`.
+- Strict parse: the complete new argv through `miles.utils.arguments.parse_args` (argparse +
+  plugin `add_arguments` hook + miles/megatron/sglang validate) -> `PARSE_OK` with
+  `loss_mask_type=qwen3_5`, `attention_output_gate=True`, `rollout_global_dataset=True`,
+  `arena_sample_mode=full_trajectory`, actor 2x8, rollout 8 GPUs, `lr=2e-06`. Host
+  substitutions: `--hf-checkpoint` dropped, `--ref-load` -> empty temp dir,
+  `torch.cuda.get_device_properties` stubbed to sm100. Control: an added `--bogus-flag` exits
+  `SystemExit(2)`, so strictness is engaged before the checkpoint probe.
+- Quoting proven end-to-end: the assembled `execute_train` command run through `bash -c` into
+  a fake `ray` binary replicating ray 2.58's `shlex.join` + `shell=True`; the `--prompt-data`
+  JSON arrives as one byte-identical token, `--save-hf` keeps the literal `{rollout_id}`.
+- Megatron gate probes against `/tmp/miles-deps/Megatron-LM`: `--attention-output-gate` parses
+  (`attention_output_gate=True`), `--use-gated-attention` is an argparse usage error; grep of
+  AGISlime's patches: v0.5.9 registers the flag with no consumer (only v0.5.5/v0.5.6 wired it).
+- `pytest tests/fast/launch_scripts` -> **43 passed**; `pytest tests/manual/launch_scripts
+  -k arena` (without the update flag) -> **4 passed**, snapshots stable.
+
+### Verification findings -> fix-ups (02:3x PT; YAML re-saved 02:37, ARGV_PARITY.md 02:38 PT)
+
+- [note, verify-driverLauncher] `USE_MLFLOW_AMZN=true` appended `--use-mlflow-amzn
+  --mlflow-project --mlflow-group`, registered by no parser in the tree (nor in AGISlime /
+  slime 0.3.0 — silently-dropped no-ops there): the trainer would die at argparse inside the
+  ray job. Fix: the launcher raises `typer.BadParameter` up front; both 27B jobs leave it unset.
+- [verify-redundancy] with `S3_ARTIFACT_BASE` set the launcher passed an `s3://` URI as
+  `--save-hf`; miles (like vendored slime) does `Path(args.save_hf.format(...))`, collapsing it
+  to a pod-local `s3:/...` dir holding a ~55 GB HF export per save, never uploaded. Fix:
+  `hf_save_dir` is always the local `<ckpt>/hf/rollout_{rollout_id}`; the AWS region vars are
+  still exported for the eval path's `s3_artifact` upload.
+- [major] the 27B README pointed at the wrong AGISlime `sglang-svc.yaml` variant (selector
+  `rl-smoke-trainer`, not `rl-smoke27-trainer`) and [minor] the trainer Dockerfile lacked boto3
+  — both fixed in the example/image files, recorded with that commit.
+- impl-launcher concern left open: the arena pod-contract env vars were not in the harness
+  `CLEARED_ENV` ("not mine to grow") — a developer with `EXPERIMENT_NAME` exported would see a
+  local snapshot mismatch.
+- The fix-ups did not touch the recorded commands: both opt-ins are unset by default, so the
+  snapshot files kept their 01:21 PT state and are byte-identical to the copies archived in
+  integration commit 7182346d7.
+
+### Commit-time hardening (2026-09-05)
+
+- `CLEARED_ENV` gains the launcher's 15 `default_factory` knobs, alphabetically:
+  `ARENA_CHECKPOINTS_DIR`, `ARENA_DATA_DIR`, `ARENA_DEFAULT_GYM`, `ARENA_EVAL_TASKS`, `CFG_NAME`,
+  `EXPERIMENT_NAME`, `GPUS_PER_NODE`, `NATS_URL`, `PROJECT_NAME`, `REPLICA`, `REPLICA_TRAINER`,
+  `S3_ARTIFACT_BASE`, `S3_ARTIFACT_REGION`, `USE_MLFLOW_AMZN`, `WANDB_RUN_ID` (rule
+  `launch-and-model-scripts.md:48`). The snapshots were recorded with the defaults
+  (`EXPERIMENT_NAME`/`PROJECT_NAME` `arena-smoke`, `REPLICA` 3, `REPLICA_TRAINER` 2,
+  `GPUS_PER_NODE` 8, default config = the 27B smoke YAML), so they stay byte-identical;
+  re-run `tests/fast/launch_scripts` (expect 43) and `tests/manual/launch_scripts -k arena`
+  (expect 4) after the edit — the 2026-09-05 replay of this commit on the pre-edit harness
+  returned exactly those counts.
+- The launcher is committed at its 7182346d7 state; the raylet
+  `RAY_memory_monitor_refresh_ms=0` pin (+19 lines, worktree 373 lines) belongs to the GLM r2
+  relaunch fix set and is logged there.
+
+### Open at this milestone
+
+- Never executed on GPU yet; the first real launch is the 27B smoke on prod-bom (next
+  example commit). Watch argparse/validation output there because of the CPU-parse substitutions.
+- YAML keys consumed by AGISlime modules other than `nats_rollout` (eval-pod `eval_*`,
+  `wandb_disable_system_metrics`, `hallmark_benchmarks`) hard-fail on miles; none in the 27B configs.
+- Eval-enabled jobs need `MILES_ARENA_DIR` pointing at a tree with `experiments/k8s/templates/`.
+- miles' own Qwen3.5 recipes force 1 GPU per SGLang engine (TP>1 mis-generation on the pinned
+  sglang, sgl-project/sglang#21039); the smoke config keeps the original
+  `rollout_num_gpus_per_engine: 4` + dp-attention as a semantics-preserving choice — verify
+  the arena image's sglang build before trusting rollout outputs.

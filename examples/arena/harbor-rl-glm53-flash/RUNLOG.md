@@ -599,3 +599,43 @@ patch copies.
   `trainer-worker-5`; the trainer only noticed at the post-train
   `update_weights` (18:05 PT). Step-0 perf, RCA and fix set: the r2 fix-set
   entry.
+
+## 2026-09-02 22:23 PT — Image c composition: mask-clipped flag + hf_export ENOTSUPP fix (`miles-glm53-20260902c`); the r2 fix set lands alongside
+
+Not a run. Records what the third trainer image carries (README lineage
+table: c = b + 5f8925db0 + 44ddf62fb), in the order the pieces landed in the
+integration tree, and why a core Megatron fix from the 27B smoke rides in a
+GLM image. Run 2's death and the fix set itself are in the next entry.
+
+| landed (PT) | integration commit | content |
+|---|---|---|
+| 2026-09-02 13:55 | (image b, 3c40b4660 / 949434185) | base for c: glm53next stack + tree + EFA layer + fla KDA patch |
+| 2026-09-02 16:44 | 5f8925db0 | `--arena-mask-clipped-final-turn` (default off; `miles-config.yaml` turns it on from r2) |
+| 2026-09-02 22:23 | 44ddf62fb | `hf_export.py`: `copyfile` + per-file `OSError` warning instead of `copy2` (this commit) |
+| 2026-09-02 22:37 | 3098ae1d3 | r2 relaunch fix set (Ray monitor off, WeightChecker snapshot dropped, FT on, memprobe/, ...) — config, manifests and the launcher's `_pin_raylet_env()`; NOT listed as image-c content by the README lineage table. Whether the c build included the launcher's +19 lines is unrecorded; the pod env carries `RAY_memory_monitor_refresh_ms=0` regardless |
+
+- Build window: the trainer-manifest comment written at 22:20 PT says `20260902c`
+  "did not exist yet; newest is 20260902b"; ECR `describe-images` records the push
+  (us-east-1, replica ap-south-1) at 22:24 PT, one minute after the hf_export
+  commit, digest `sha256:9c963ae7...`; r2 launched on it at 22:49 PT. Pinned by
+  `trainer-pytorchjob.yaml` for r2 and r3; `20260903d`
+  (built 2026-09-03 01:40 PT) is a superset, so r4-r7 carry everything here.
+- Why the hf_export fix is in this image: the 27B smoke (`rl-milesgb1-smoke1`,
+  terminal 00:34 PT) left `hf/rollout_3` with 178 weight shards and no
+  `config.json` / tokenizer / `model.safetensors.index.json` because `copy2`'s
+  metadata step raised `[Errno 524] ENOTSUPP` (RCA in
+  `harbor-rl-27b-snorkel/RUNLOG.md`). This job is the sharper case the fix
+  comment names: `hf_checkpoint` is the BF16 tree on fast scratch
+  (mountpoint-S3, a FUSE mount), the launcher appends
+  `--save-hf <ckpt>/hf/rollout_{rollout_id}`, and `save_hf_model` runs after
+  every DCP save at `save_interval 20`. An image rebuild was due anyway for
+  the fix set, so the one-hunk core change went in at zero extra cost.
+- Strict-argparse trap recorded in the manifest: `arena_mask_clipped_final_turn`
+  in `miles-config.yaml` needs image >= c; on image b the trainer dies at
+  startup. The same rule applies to `arena_keep_timeout_trajectories` (needs d).
+- Effect of the hf_export fix on GLM: **unverified**. run 1, run 2, r2 and r3
+  never reached a save (died in step 0/1); r4 ended after 13 steps (20:29 PT),
+  below `save_interval`. r5 (reached step 40) is the first run that can hold a
+  post-fix export (r6, at step 33 by 2026-09-05 05:15 PT, is the second); check its
+  `hf/rollout_*/` for `config.json`, the index and `.complete`, and its EFS
+  `trainer-0.log` for `HF export: could not copy` warnings, before claiming it.

@@ -1,8 +1,9 @@
-# rl-glm53f: GLM-5.3-Flash miles trainer on prod-bom, 12x p6-b200.48xlarge.
+# rl-glm53f7: GLM-5.3-Flash miles trainer on prod-bom, 24x p6-b200.48xlarge (r6; r1-r5 ran 12x).
 # Derived from examples/arena/harbor-rl-27b-snorkel/trainer-pytorchjob.yaml
 # (the r5-faithful EFA wiring) with these deltas:
 #   - 6 -> 12 replicas: workers 0-7 = Megatron actor (64 GPUs, TP8/PP4/EP16,
-#     DP=2), workers 8-11 = SGLang engines (4 engines, TP8/EP8)
+#     DP=2), workers 8-23 = SGLang engines (16 engines, TP8/EP8; r6 raised
+#     4 -> 16: r5 engines ran at KV 0.97 with 10-60 requests queued each)
 #   - image: the GLM-capable arena build (glm53next base: SGLang
 #     sglang-miles-glm53next@9a26e749 + Megatron-LM PR#89, EFA layer baked
 #     by examples/arena/Dockerfile)
@@ -27,20 +28,24 @@
 # from the kubeflow replica index (0 = train: ray head + job submit;
 # 1..11 = worker: join the ray cluster and block).
 #
-#   kubectl create configmap rl-glm53f-trainer-config -n arena-tasks \
+#   kubectl create configmap rl-glm53f7-trainer-config -n arena-tasks \
 #     --from-file=miles-config.yaml=miles-config.yaml
 apiVersion: kubeflow.org/v1
 kind: PyTorchJob
 metadata:
-  name: rl-glm53f-trainer
+  name: rl-glm53f7-trainer
   namespace: arena-tasks
   labels:
-    app: rl-glm53f
+    app: rl-glm53f7
     kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+    # explicit kueue priority: inference=1000 is the highest WorkloadPriorityClass
+    # on the cluster (only other one is arena-backfill-low=-10); pods already get
+    # 1000 via priorityClassName high, this just makes it visible on the workload.
+    kueue.x-k8s.io/priority-class: inference
 spec:
   elasticPolicy:
-    minReplicas: 12
-    maxReplicas: 12
+    minReplicas: 24
+    maxReplicas: 24
     # 0 restarts / Never (below): the known-good arena configuration. Restart
     # semantics on this ray-based launcher are unvalidated (see header note);
     # a failed run is relaunched manually and resumes from --load = --save
@@ -48,15 +53,15 @@ spec:
     maxRestarts: 0
     nProcPerNode: 8
     rdzvBackend: c10d
-    rdzvId: rl-glm53f-trainer
+    rdzvId: rl-glm53f7-trainer
   pytorchReplicaSpecs:
     Worker:
-      replicas: 12
+      replicas: 24
       restartPolicy: Never
       template:
         metadata:
           labels:
-            app: rl-glm53f
+            app: rl-glm53f7
           annotations:
             karpenter.sh/do-not-disrupt: "true"
         spec:
@@ -246,28 +251,33 @@ spec:
             # TRITON_CACHE_DIR / TORCHINDUCTOR_CACHE_DIR / TILELANG_CACHE_DIR are
             # exported in the container command above (local /tmp/kernel_cache; an
             # EFS-backed cache caused Triton ESTALE crashes in r2).
-            # ---- cluster shape: 12 replicas, 8 actor nodes ----
+            # ---- cluster shape: 24 replicas, 8 actor nodes + 16 engine nodes (r6) ----
             - name: REPLICA
-              value: '12'
+              value: '24'
             - name: REPLICA_TRAINER
               value: '8'
             # run identity (ADR-0004): EXPERIMENT_NAME drives the checkpoint dir
             # and the wandb group; bump BOTH for a fresh run — an existing
             # checkpoint dir resumes silently.
-            # r4: r1-r3 saved no checkpoint (save_interval 20; r3 died in step 1 on CUDA OOM),
-            # so nothing resumes; a fresh name keeps its W&B group and ckpt dir separate.
+            # r5: r4 ran 13 steps (no checkpoint: save_interval 20) with 87-93%
+            # of trials removed as Harbor agent timeouts; r5 = r4 recipe + gym
+            # image glm53-reasoning-20260903b (ARENA_REASONING_EFFORT=low, GLM
+            # <|user|> splice fix) + arena_keep_timeout_trajectories. Fresh
+            # name -> fresh ckpt dir + W&B group.
+            # r6 (2026-09-04): r5 recipe + 16 engines + rollout_batch_size 64
+            # (GBS 512) + 160 gym workers; num_rollout 130 (~10 task-list epochs).
             - name: EXPERIMENT_NAME
-              value: rl-glm53f-gbash-r4
+              value: rl-glm53f-gbash-r7
             - name: PROJECT_NAME
-              value: rl-glm53f-gbash-r4
+              value: rl-glm53f-gbash-r7
             - name: CFG_NAME
               value: /config/training/miles-config.yaml
             - name: JOBNAME
-              value: rl-glm53f-trainer
+              value: rl-glm53f7-trainer
             - name: USER
               value: guparpit
             - name: NATS_URL
-              value: nats://rl-glm53f-nats:4222
+              value: nats://rl-glm53f7-nats:4222
             - name: WANDB_BASE_URL
               value: https://mega.wandb.agi.amazon.dev
             - name: WANDB_API_KEY
@@ -336,7 +346,7 @@ spec:
               name: nvidia-caps
           volumes:
           - configMap:
-              name: rl-glm53f-trainer-config
+              name: rl-glm53f7-trainer-config
             name: training-config
           # 256Gi keeps the ~186 GiB default Ray object store (ray status: 2.18 TiB
           # over 12 nodes) on /dev/shm and bounds tmpfs, which otherwise counts

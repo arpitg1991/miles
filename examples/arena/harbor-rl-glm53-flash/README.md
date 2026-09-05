@@ -497,3 +497,64 @@ because the kubeflow operator deletes a failed PyTorchJob with its pods.
     engine's sglang in a 5-node smoke first. A 900 s `health_generate` under
     100-deep queues could still false-kill a healthy engine and drop its
     in-flight trajectories.
+
+## r5 gym image: reasoning effort + splice fix (2026-09-03)
+
+`gym-worker.yaml` now runs `arena-tasks-dev:glm53-reasoning-20260903b`
+(AREnATasks HEAD 35f7ba7 + an uncommitted `amzn_arena_harbor` patch, copy at
+`/workplace/guparpit/miles/arena-port-artifacts/arenatasks-reasoning-effort.patch`).
+What changed versus the r1-r4 image `rl-smoke-20260821b`:
+
+- `ARENA_REASONING_EFFORT` (set to `low`) renders GLM-5.3's chat-template
+  `reasoning_effort` variable into the first-turn prompt as
+  `<|system|>Reasoning Effort: Low`. The template honors only `low`/`high`;
+  anything else renders the default `Max` (the client warns once). Motivation:
+  at the default effort GLM-5.3 thinks 8-15k tokens/turn and 87-93% of r4
+  trials hit the 900-1800 s task.toml agent timeout.
+- Splice fix: GLM ends an assistant turn by emitting `<|user|>` as its stop
+  token, and the template suffix for the next turn starts with `<|user|>` too.
+  r1-r4 token streams therefore carried `<|user|><|user|>` at every turn
+  boundary (8/8 boundaries in a sampled live rollout). The client now splices
+  the role token once, matching a full re-render.
+- HEAD gym CLI contract: `--mode rollout --agent arena-terminus-2` are
+  required for parity (HEAD defaults to the Vulcan agent and requires
+  `--mode`). Ships harbor 0.22.0 (was 0.21.0); the result envelope now reports
+  timed-out groups as status `truncated` rather than `success` (the trainer
+  salvages both, so this is telemetry only).
+- Build: `brazil-build docker-push-arena <tag>` from the AREnATasks tree (needs
+  the mise Python 3.12 on PATH on this host). Push goes to us-east-1 and
+  replicates to ap-south-1 within ~1 min.
+
+## r6 (2026-09-04): 16 engines, batch 64, 2x agent timeout
+
+- Trainer 24 replicas (8 actor + 16 engine nodes); `rollout_batch_size` 64 /
+  `global_batch_size` 512 lifts the publisher in-flight cap (2x batch) from 64
+  to 128 groups so the engines see ~64 requests each (r5: ~130 with 10-60
+  queued on KV). `num_rollout` 130 ~= 10 passes over the task list (dynamic
+  sampling publishes ~3.5x the kept groups). Gym 160 replicas (>= 128 + slack).
+- Gym image `glm53-reasoning-20260904a`: AREnATasks mainline c1a0439 (adds
+  `ARENA_AGENT_TIMEOUT_MULTIPLIER`, eval path only) + fix passing it on the
+  training path + the r5 reasoning-effort/splice patch rebased on top
+  (`arena-port-artifacts/arenatasks-reasoning-effort.patch`).
+- `ARENA_AGENT_TIMEOUT_MULTIPLIER=2`, `ARENA_NATS_ACK_WAIT=6000` (deadline math
+  in gym-worker.yaml). `sglang_disable_radix_cache` deliberately unchanged.
+- r5 reference (4 steps): rollouts 3874/3197/2592/2718 s, reward
+  0.273/0.328/0.367/0.398, ~90% of published trials timed out, ess 0.97,
+  ppo_kl 0.011, actors ~21% duty (rollout-bound).
+
+## r7 (2026-09-05): r6 shape + 1800 s SGLang call timeout + reasoning effort High
+
+Same 24-node shape, batch 64 / GBS 512, 2x agent timeout and 160 gym workers as
+r6. Two gym-side changes, prefix `rl-glm53f7`, experiment `rl-glm53f-gbash-r7`:
+
+- gym image `arena-tasks-dev:glm53-sgltimeout-20260904b` (AREnATasks branch
+  guparpit/reasoning-effort + `ARENA_SGLANG_REQUEST_TIMEOUT_SEC`): the /generate
+  httpx read timeout was hardcoded at 600 s and r6 lost 33-74 of 512 samples per
+  rollout to `httpx.ReadTimeout` ("Unknown Error in LLM interaction: ", empty
+  message) on 32k-token turns. r7 sets it to 1800 s.
+- `ARENA_REASONING_EFFORT=high` (r5/r6 ran low; template honours only low/high,
+  anything else renders Max).
+
+The gym start script keeps the r6 fresh-node fixes (ECR-mirrored alpine probe
+image, prebuilt egress sidecar, model-mount guard) -- without them every task is
+rejected on nodes that cannot pull from Docker Hub.

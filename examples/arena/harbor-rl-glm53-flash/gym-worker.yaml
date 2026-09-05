@@ -1,4 +1,4 @@
-# rl-glm53f gym workers: run5-proven smoke asset renamed (rl-milesgb1 -> rl-glm53f),
+# rl-glm53f7 gym workers: run5-proven smoke asset renamed (rl-milesgb1 -> rl-glm53f7),
 # replicas 8 -> 128 (r5 fleet size for rbs 32), ARENA_MODEL_PATH -> GLM-5.3-Flash-BF16
 # on fast scratch (workers tokenize against the policy model).
 # Deltas vs run 1: 96 replicas (up from 64) — run 2 enables the dynamic
@@ -23,22 +23,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rl-glm53f-gym-sgb
+  name: rl-glm53f7-gym-sgb
   namespace: arena-tasks
   labels:
-    app: rl-glm53f-gym-worker
+    app: rl-glm53f7-gym-worker
     arena.gym: snorkel-general-bash-harbor
 spec:
-  replicas: 128
+  replicas: 160  # r6: publisher in-flight cap is 2 x rollout_batch_size = 128 groups; +slack
   selector:
     matchLabels:
-      app: rl-glm53f-gym-worker
+      app: rl-glm53f7-gym-worker
   template:
     metadata:
       annotations:
         karpenter.sh/do-not-disrupt: "true"
       labels:
-        app: rl-glm53f-gym-worker
+        app: rl-glm53f7-gym-worker
         arena.gym: snorkel-general-bash-harbor
     spec:
       serviceAccountName: arena-tasks-runner
@@ -67,10 +67,22 @@ spec:
                 - p6-gpu
       containers:
       - name: gym-worker
-        # Run-3 proven image (digest 21fd6144…, verified identical us-east-1 /
-        # ap-south-1). Both repos are at the exact commits it was built from;
-        # this run ships no code changes, so no rebuild.
-        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-tasks-dev:rl-smoke-20260821b
+        # r5 (2026-09-03): AREnATasks HEAD 35f7ba7 + the ARENA_REASONING_EFFORT
+        # plumbing (ArenaSGLangLLM renders the chat template's reasoning_effort
+        # on the first turn; fails the trial loudly if the template ignores it).
+        # Built with `brazil-build docker-push-arena glm53-reasoning-20260903b`
+        # (pushed to us-east-1, replicated to ap-south-1). Also fixes the
+        # pre-existing splice bug that doubled GLM's <|user|> at every turn
+        # boundary in r1-r4 token streams (model stop token + template opener).
+        # Ships harbor 0.22.0
+        # (was 0.21.0 in rl-smoke-20260821b) and the HEAD gym CLI contract:
+        # --mode is required and the default agent is now Vulcan, so the
+        # command below pins --mode rollout --agent arena-terminus-2 (parity
+        # with the r1-r4 Terminus-2 rollouts).
+        # r6 (2026-09-04): rebased on AREnATasks mainline c1a0439 (ARENA_AGENT_TIMEOUT_MULTIPLIER
+        # in the eval path) + a one-line fix passing the multiplier on the training
+        # path too (mainline only wired eval). Same reasoning-effort + splice fix as r5.
+        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-tasks-dev:glm53-sgltimeout-20260904b
         command: ["bash", "-c"]
         args:
         - |
@@ -93,11 +105,45 @@ spec:
           until docker info >/dev/null 2>&1; do echo "waiting for dind"; sleep 2; done
           until ecr_login; do echo "ecr login retry"; sleep 10; done
           ( while sleep 21600; do ecr_login || true; done ) &
+          # Pre-seed harbor's egress-control kernel-probe image. Harbor 0.22
+          # DockerEnvironment runs `docker run alpine:3.23.4@sha256:5b10...`
+          # once per trial to decide whether it can enforce network_mode; on
+          # fresh nodes the anonymous Docker Hub pull is rejected, the probe
+          # returns False, egress control is disabled and EVERY no-network task
+          # fails at Trial.create ("network_mode='no-network' is not supported
+          # by EnvironmentType.DOCKER") -- r6 launch 2026-09-04 burned 270
+          # groups this way. The ECR copy was made with `buildx imagetools
+          # create` so the index digest is byte-identical; dind runs the
+          # containerd image store, which resolves digest refs by target
+          # digest, so the local copy satisfies the docker.io reference.
+          PROBE_DIGEST=sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
+          PROBE_ECR=427267593057.dkr.ecr.us-west-2.amazonaws.com/arena-tasks-dev:alpine-probe-3.23.4
+          until docker pull -q "$PROBE_ECR@$PROBE_DIGEST"; do echo "probe image pull retry"; sleep 10; done
+          docker tag "$PROBE_ECR@$PROBE_DIGEST" alpine:3.23.4
+          docker run --rm "alpine:3.23.4@$PROBE_DIGEST" true && echo "probe image resolves locally"
+          # Same failure one layer down: with the probe passing, harbor builds its
+          # egress-control sidecar FROM docker.io/gogost/gost@sha256:afc0... (also
+          # rejected on fresh nodes -> "Failed to build Docker image
+          # harbor-prebuilt:harbor-docker-egress-control-sidecar--b1e6..."). Harbor
+          # skips the build when `docker image inspect <content-addressed name>`
+          # succeeds (harbor/environments/docker/utils.py ensure_docker_image_built),
+          # so seed the image exported from an r5 pod (identical sidecar context in
+          # harbor 0.22.0 -> identical hash b1e6760734a9e6f6).
+          SIDECAR_ECR=427267593057.dkr.ecr.us-west-2.amazonaws.com/arena-tasks-dev:egress-sidecar-b1e6760734a9e6f6
+          until docker pull -q "$SIDECAR_ECR"; do echo "sidecar image pull retry"; sleep 10; done
+          docker tag "$SIDECAR_ECR" harbor-prebuilt:harbor-docker-egress-control-sidecar--b1e6760734a9e6f6
+          # One r6 pod on a fresh node failed every trial with transformers'
+          # "Repo id must be in the form 'repo_name'" -- AutoTokenizer fell
+          # through to the Hub because ARENA_MODEL_PATH (mountpoint-s3 fast
+          # scratch) was not readable yet. Gate on the tokenizer file.
+          until [ -f "$ARENA_MODEL_PATH/tokenizer_config.json" ]; do echo "waiting for model mount $ARENA_MODEL_PATH"; sleep 5; done
           exec python3.12 -m amzn_arena_harbor.gym_worker \
-            --nats-url nats://rl-glm53f-nats:4222 \
+            --nats-url nats://rl-glm53f7-nats:4222 \
             --gym snorkel-general-bash-harbor \
             --model policy \
-            --model-base-url http://rl-glm53f-sglang:30000
+            --model-base-url http://rl-glm53f7-sglang:30000 \
+            --mode rollout \
+            --agent arena-terminus-2
         env:
         # Per-task lakeFS materialization (pinned commit in the manifest row).
         - name: ARENA_LAKEFS_AUTH
@@ -106,8 +152,24 @@ spec:
           value: /trials/lakefs-cache
         - name: ARENA_MODEL_PATH
           value: /mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16
+        # r6: 6000 (was 4500). The per-message rollout deadline is ack_wait - 300 s
+        # and bounds ALL 8 trials of a group; with the 2x agent timeout below the
+        # longest task (1800 s) becomes 3600 s + env build + verifier, and a group
+        # that outlives the deadline is cancelled with ZERO trajectories. Trainer
+        # side NATS_TASK_DEADLINE_SECS default 12600 s still covers this.
         - name: ARENA_NATS_ACK_WAIT
-          value: "4500"
+          value: "6000"
+        # r6: scale each task's [agent] timeout_sec (900-1800 s) by 2x. r5 timed
+        # out ~90% of trials at ~13 turns / 60-120 s per turn; with 16 engines
+        # and 2x wall clock most episodes should reach a natural stop. Raise
+        # ARENA_NATS_ACK_WAIT in lockstep if this goes above 2.
+        - name: ARENA_AGENT_TIMEOUT_MULTIPLIER
+          value: "2"
+        # r7 (2026-09-05): per-call read timeout for /generate (image
+        # glm53-sgltimeout-20260904b reads it; default 600 was hardcoded). r6 lost
+        # 7-14% of samples per rollout to httpx.ReadTimeout on 32k-token turns.
+        - name: ARENA_SGLANG_REQUEST_TIMEOUT_SEC
+          value: "1800"
         - name: ARENA_ROLLOUT_MAX_CONCURRENCY
           value: "8"
         # 2026-09-02 user-directed (breaks r5 parity deliberately): GLM-5.3's
@@ -118,6 +180,13 @@ spec:
         # trainer's rollout_max_response_len.
         - name: ARENA_MAX_TOKENS
           value: "32768"
+        # r5: GLM-5.3 thinks 8-15k tokens/turn at its default "max" effort
+        # (~500 s/turn at 4 saturated engines), so 87-93% of r4 trials hit the
+        # 900-1800 s task.toml agent timeout. The template honors only
+        # low|high (anything else silently renders "Max"; the gym client
+        # raises instead). Per-episode prefix, rendered once on turn 1.
+        - name: ARENA_REASONING_EFFORT
+          value: "high"  # r7: was low in r5/r6
         - name: ARENA_TEMPERATURE
           value: "1.0"
         - name: ARENA_ROLLOUT_CONTEXT_LIMIT

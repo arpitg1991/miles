@@ -434,3 +434,55 @@ coexist as in AGISlime and must stay mutually exclusive as configured: `eval_rol
   ships only the serial one, and the `parents[3]/tools` fallback exists only in a source tree.
 - boto3 is imported at call time by the S3-checkpoint / hosted-eval paths; the example
   Dockerfile bakes it (verify-driverLauncher finding, fixed there).
+
+## 2026-09-01 (PT) — Milestone: asyncio training driver + checkpoint-sidecar W&B resume
+
+Files: `train_async_arena.py`, `checkpoint_extras.py`, core `miles/utils/tracking_utils/wandb_utils.py`. Decision record: ADR-0005.
+
+- **~01:10 PT, driver written.** The AGISlime `train_async_arena.py` (183-line
+  sync `ray.get` loop) could not be ported mechanically: `async_train`,
+  `update_tracking_open_metrics`, `get_metrics_router_addr` and
+  `finish_tracking(args)` do not exist in miles (`milesApi.md` hard blocker
+  no. 2). Rebuilt as a copy of miles `train_async.py` (136 lines) plus
+  insertions only: `diff | grep -c '^<'` = 0, 160 lines added, 296 total; hook
+  bodies are the AGISlime ones after the import-path swap. Import OK in
+  `/tmp/miles-venv`; `--help` engages the full miles+Megatron argparse (exit 0)
+  as a script and via `python -m`; never-raise smoke on every hook passed.
+  The open-metrics/router-addr block is gone (native in `RolloutManager` under
+  `--sglang-enable-metrics`); `finish_tracking()` moves to the `finally`.
+- **New vs AGISlime:** `_maybe_drain_eval_metrics` per iteration + `final=True`
+  in the `__main__` `finally` closes the `overlay.md` CRITICAL GAP (drain was
+  defined but never called trainer-side, so eval `step_*.json` piled up until
+  the trainer died). No-op when wandb is off (27B smoke).
+- **02:36-02:44 PT fix-ups** (from the adversarial verification wave; the full
+  findings list is in the verification entry below):
+  - 02:36 `wandb_utils.py` +6 lines: `init_wandb_primary` passes
+    `id=args.wandb_run_id, resume='allow'` when the id is pre-set. Before this
+    the sidecar restore and `--wandb-run-id` were both dead for the primary
+    writer (it overwrote `args.wandb_run_id` after `wandb.init`).
+  - 02:36 `checkpoint_extras.py` docstring corrected (resume is real now;
+    `rollout_id` is log-only; filename keeps the `slime` prefix — AGISlime
+    <-> miles sidecar interop verified both directions, byte-identical file).
+  - 02:44 `train_async_arena.py`: `_register_wandb_metrics` hook and
+    `wandb_extensions.py` (113 lines) deleted — 100 % redundant with miles
+    `_init_wandb_common`; `_remove_trainer_alive` wired before
+    `finish_tracking()` (never called in AGISlime either).
+- **Deferred:** the package README (02:37 PT) lands with the first example
+  directory because its usage section points readers at `examples/arena/`.
+- **GPU evidence.** Every arena job since the smoke relaunch (2026-09-01
+  16:39 PT) runs `python3 /root/miles/miles_plugins/arena/train_async_arena.py`
+  as its ray entrypoint: `rl-milesgb1-smoke1` (3x p6-b200, image
+  `arena-slime-dev:miles-arena-20260901b`, W&B `arena/rl-snorkel27` group
+  `rl-milesgb1-smoke1` run `j6gr37za`) ran 4/4 rollouts and 4 train steps,
+  saved `iter_0000003`, ray job SUCC 2026-09-02 00:34 PT (details in the
+  snorkel example RUNLOG); GLM r1-r7 followed.
+- **Observed on every fresh start** (smoke bring-up 2026-09-01 16:39-16:40 PT;
+  run 2 under identity `rl-glm53f-gbash-r1`, 2026-09-02 14:15-14:16 PT): `Failed to load slime extra
+  state: invalid literal for int() with base 10: 'release'`. Cause: miles
+  rewrites `args.load` to `--ref-load` when the experiment dir has no
+  `latest_checkpointed_iteration.txt`, and the converted reference DCP's marker
+  reads `release`. Warn-only, training unaffected; follow-up: skip non-integer
+  markers.
+- **Not yet exercised on GPU:** a restart into an existing checkpoint dir with
+  a sidecar present (r1/r2 died before `save_interval 20`; later runs used
+  fresh `EXPERIMENT_NAME`s). Resume is CPU-verified only.

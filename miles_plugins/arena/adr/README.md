@@ -30,3 +30,4 @@ in `../RUNLOG.md` and `examples/arena/<job>/RUNLOG.md`, not here.
 | [0002](0002-nats-wire-contract-bit-identical.md) | NATS wire contract stays bit-identical to `amzn_arena_contract` |
 | [0003](0003-group-identity-group-index-not-rollout-id.md) | Group identity is a shared `group_index` plus a unique `index`, never `rollout_id` |
 | [0004](0004-per-trajectory-loss-weighting-and-rollout-logprobs.md) | Accept per-trajectory loss weighting; zero-fill slow-path rollout log-probs |
+| [0005](0005-driver-pure-insertion-and-sidecar-resume.md) | Driver as pure insertion over `train_async.py`; checkpoint-sidecar W&B resume via `init_wandb_primary` |

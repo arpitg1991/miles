@@ -78,6 +78,12 @@ def init_wandb_primary(args):
         init_kwargs["dir"] = args.wandb_dir
         logger.info(f"W&B logs will be stored in: {args.wandb_dir}")
 
+    # Resume an existing run when a run id is pre-set (--wandb-run-id or a
+    # restore hook that sets args.wandb_run_id before init_tracking).
+    if getattr(args, "wandb_run_id", None):
+        init_kwargs["id"] = args.wandb_run_id
+        init_kwargs["resume"] = "allow"
+
     wandb.init(**init_kwargs)
 
     _init_wandb_common()

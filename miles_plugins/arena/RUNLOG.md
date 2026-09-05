@@ -139,3 +139,46 @@ wandb shared-mode secondary writer (`init_wandb_secondary` pattern) that logs
 `eval/*` directly. Also noted: `remove_trainer_alive()` has no caller — it had
 none in AGISlime either; the coordinator's flush keys off 600 s heartbeat
 staleness, so the missing call only delays a flush.
+
+## 2026-09-01 00:56 PT — Milestone: `qwen3_5` loss mask ported into miles core
+
+**Scope:** `miles/utils/mask_utils.py`, `miles/utils/arguments.py`, `tests/fast/utils/test_loss_mask_qwen3_5.py`
+**Source of truth:** AGISlime `vendor/slime/0.3.0` (vendored 2026-06-23 PT, commit 5cc7905 "Vendor THUDM/slime v0.3.0"); the tree already carried `gen_multi_turn_loss_mask_qwen3_5` at vendoring time, so "0.3.0" is post-0.3.0 here (milesApi.md "baseline confusion" note: diff against this tree, never the sibling upstream slime clone)
+**Env:** `/tmp/miles-venv`, CPU-only host, the 3-way PYTHONPATH recipe from testEnv.md (miles repo root + sglang `sglang-miles` python/ + Megatron-LM `miles-main`)
+
+### Why (the blocker)
+
+- The analysis pass (milesApi.md, 2026-08-31/09-01 PT) listed one **HARD BLOCKER** for the harbor-rl-27b smoke job: `financeagent-27b-smoke.yaml` sets `loss_mask_type: qwen3_5`, but at the fork point (upstream 2799fe38, 2026-08-31 20:17 PT) miles' `--loss-mask-type` choices were `['qwen', 'qwen3', 'distill_qwen']` (arguments.py:2404-2410) and `MultiTurnLossMaskGenerator.get_loss_mask` had no `qwen3_5` branch (mask_utils.py:133-144). Strict argparse rejects the value before any plugin hook runs.
+- Upstream miles had not touched `mask_utils.py` since 2026-04-09 (ef228e64, transformers>=5.0 chat-template fix); no ref in the fork carries a `qwen3_5` generator.
+- Consumers that need the generator: the NATS rollout slow path (`nats_rollout.py` `MultiTurnLossMaskGenerator(tokenizer, tokenizer_type=getattr(args, "loss_mask_type", None))`, reached when a trajectory's last step lacks `has_generate_tokens`), miles' own `miles/rollout/sft_rollout.py:42`, and both 27B configs (`harbor-rl-27b/financeagent-27b-smoke.yaml:39`, `harbor-rl-27b-snorkel/snorkel-27b.yaml:69`).
+
+### What was done (files written 00:56-00:57 PT)
+
+| Change | Detail |
+|---|---|
+| `mask_utils.py` (+77/-1) | `gen_multi_turn_loss_mask_qwen3_5` ported verbatim: render with `tokenize=False`, tokenize with `return_offsets_mapping`, char-mask every `<|im_start|>assistant\n` ... `<|im_end|>`(+`\n`) span, skip the `<think>\n` prefix, honour `step_loss_mask`, cross-check against `apply_chat_template(tokenize=True)`; `qwen3_5` branch in `get_loss_mask` |
+| `mask_utils.py` `__init__` | vendored guard adopted: `system_message_length`/`gen_token_length` default 0, `get_system_message_length()` only for `tokenizer_type in ("qwen", "qwen3")` |
+| `arguments.py` (1 line) | `choices=["qwen", "qwen3", "qwen3_5", "distill_qwen"]` — vendored order |
+| new test (3 tests) | port of vendored `tests/utils/test_loss_mask_type_qwen35.py`; self-contained char-level `FakeQwen35Tokenizer` (no HF download, runs for real); `register_cpu_ci(est_time=5, suite="stage-a-cpu", labels=[])` prepended, import switched to `miles.utils.mask_utils`; bodies otherwise identical |
+
+### Decisions and alternatives
+
+- **Patch core, not the plugin.** milesApi.md offered two routes: patch miles (choice + generator) or route masking through the plugin. The choice list is enforced by core argparse at parse time and `sft_rollout.py` also constructs the generator, so a plugin-only route could not make `loss_mask_type: qwen3_5` parse; this is the "core edit only where miles has no seam" case of ADR-0001.
+- **Byte-faithful port.** The only textual deviation inside the new method is joining the black-wrapped two-literal `ValueError` message into one literal (identical runtime string). Miles' pre-existing kwarg ordering in `gen_multi_turn_loss_mask_qwen/qwen3` (`return_dict=False, tools=tools` vs vendored `tools=tools, return_dict=False`) was deliberately left alone: keyword args, no semantic difference, out of scope.
+- **Why the `__init__` guard.** `get_system_message_length()` does a two-match unpack (`idx_1, idx_2 = find_all_sublist_indices(...)`) that is not guaranteed under the Qwen3.5 template (it injects `<think>` into the generation prompt), so computing it unconditionally could raise at construction for a `qwen3_5` tokenizer. Named behaviour change vs current miles: `distill_qwen` (and any non-qwen/qwen3 type) no longer computes it; nothing outside `mask_utils.py` reads those attributes (grep over `miles/`, `miles_plugins/`, `scripts/`), and the `distill_qwen` path never did, so mask outputs are unchanged.
+- **Explicit CI registration** with `est_time=5` follows the `test_processing_utils.py` convention; the neighbouring `test_mask_utils.py` relies on implicit directory registration.
+
+### Verification (2026-09-01 PT, `/tmp/miles-venv`)
+
+- `pytest tests/fast/utils/test_loss_mask_qwen3_5.py tests/fast/utils/test_mask_utils.py` -> 5 passed in 1.6 s (3 new + 2 existing).
+- `pytest tests/fast/utils` (whole tree) -> **3213 passed, 16 skipped** in 105 s; baseline from testEnv.md was 3210 passed / 16 skipped, so exactly +3 and no regressions. Re-confirmed unchanged by the later regression sweep (verify-regression.md).
+- `pytest tests/fast/utils/test_arguments.py` -> **148 passed** (the choices edit breaks no argument test).
+- `pytest tests/ci/test` -> 678 passed, 1 skipped (CI registration policy accepts the new `register_cpu_ci` call); `run_suite.py --hw cpu --suite stage-a-cpu --list-only` discovers the new file at est 5.0 s.
+- Parse probe: `parse_args([... '--train-backend', 'megatron', ..., '--loss-mask-type', 'qwen3_5'])` -> `loss_mask_type == 'qwen3_5'`; `import miles.utils.mask_utils` exposes `gen_multi_turn_loss_mask_qwen3_5`.
+- `ruff check` clean on all three files; `black --check --line-length 119` reports `mask_utils.py` and the test unchanged.
+
+### Open / follow-on
+
+- Not exercised against a real Qwen3.5 HF tokenizer on this host (only the fake tokenizer plus the existing Qwen/Qwen3-8B `qwen3` tests). The path requires a fast tokenizer (`return_offsets_mapping`) and raises a clear `ValueError` otherwise, same as vendored. The 2026-09-02 GPU smoke (`rl-milesgb1-smoke1`, snorkel-27b config with `loss_mask_type: qwen3_5`) parsed the flag on a real run; whether the slow re-tokenize path fired there is not recorded (the fast path takes gym-provided masks).
+- The multi-turn test documents why `qwen3` is wrong for Qwen3.5 full-text renderings: it rebuilds each assistant turn in isolation and fabricates a `<think>` block for earlier assistant answers; `qwen3_5` supervises every assistant turn as rendered.
+- No GLM mask type exists. The later GLM-5.3-Flash config omits `loss_mask_type` and relies on `use_rollout_logprobs: true` to remove tokenizer-fallback samples; that dependency is recorded where the config lands.

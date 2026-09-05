@@ -175,3 +175,156 @@ pin moves.
 
 **Verification (2026-09-05, on the equivalent tree fork + PR + port):** 177
 arena CPU tests, launcher snapshots 4/4.
+
+## 2026-09-02 01:00-04:00 PT — Staging for the first GLM launch: image a, fetch, convert, verifier pass ("ALL DELIVERED")
+
+Integration-tree commits behind this entry (all 2026-09-02 PT): aebcc7ac3 01:17 (EFA image
+layer + `harbor-rl-glm53-flash/` config set, 8 files, +963) -> eda0f8454 01:27 (Dockerfile
+apt-get fix) -> [664b2ab98 01:40, previous entry] -> 5ea810d7f 02:26 (verifier fixes) ->
+1499bcef4 03:05 (fast-scratch paths, convert 1200Gi + TAS exclusion) -> 34d17a57e 03:35 (ref
+DCP on EFS) -> 8660c520a 03:50 ("ALL DELIVERED" state). This commit stages the 8660c520a
+versions (Dockerfile at eda0f8454; fetch assets unchanged since 01:04 PT).
+
+### Trainer image a — `arena-slime-dev:miles-glm53-20260902a`
+
+Composition (`examples/arena/Dockerfile`, top to bottom):
+
+| layer | content | why |
+|---|---|---|
+| base | ECR mirror `arena-slime-dev:glm53next-upstream-20260902` of `docker.io/radixark/miles:glm53next` (SGLang `sglang-miles-glm53next@9a26e749` + radixark/Megatron-LM PR#89 `e8f57451`; its baked miles is pinned at 1cd14c00) | the mainline base has no KDA/DSA engine support |
+| arena deps | `pip install nats-py>=2.6.0 kubernetes==35.0.0 lakefs boto3 omegaconf typer` | baked instead of per-pod-start installs; kubernetes 36.x returns 401 on EKS |
+| EFA | aws-efa-installer 1.47.0 `--skip-kmod --no-verify`; build gate `test -f /opt/amazon/ofi-nccl/lib/libnccl-net.so` | recipe from AGISlime 47900d5; without the plugin NCCL silently falls back to raw IB/TCP and the first multi-node all_gather hangs (the 3-node smoke ran `FI_PROVIDER=tcp` at ~2% MFU) |
+| tree | `rm -rf /root/miles && COPY . /root/miles` = fork + PR #2786 merge + session-import guards + arena port | the base's editable install points at /root/miles, so the copy is the install |
+| smoke | arena-plugin imports + `run_arena_harbor.py --help` against the CUDA driver stub | fail the build, not the job |
+
+- First build attempt died inside the EFA installer: its apt deps (pciutils /
+  environment-modules / tcl) could not be installed without a prior `apt-get update`. Fix
+  eda0f8454 (01:27 PT): `apt-get update` before the installer, `apt-get clean` after.
+- Pushed through us-east-1 (the only region `arena-ecr-dev` can push to); the repo
+  replicates to ap-south-1, where the cluster pulls. The README push command at this commit
+  still names ap-south-1 directly; corrected in a later revision.
+- Image lineage (each tag is a superset of the previous; rows b-d are built in the entries
+  that introduce them and are listed here only so the lineage lives in one place):
+
+| tag | adds | integration commit |
+|---|---|---|
+| a `miles-glm53-20260902a` | glm53next base + this tree + EFA layer (run 1) | eda0f8454 / 8660c520a |
+| b `miles-glm53-20260902b` | fla 0.4.2 KDA kernel patch for triton 3.7.1 | 3c40b4660 |
+| c `miles-glm53-20260902c` | `--arena-mask-clipped-final-turn`; hf_export ENOTSUPP fix | 5f8925db0, 44ddf62fb |
+| d `miles-glm53-20260903d` | `--arena-keep-timeout-trajectories`; "Removal reasons:" summary | 32da04357 |
+
+### Fetch — Job `glm53-fetch-20260902` (applied ~00:45-01:00 PT, SUCCESS ~35 min later)
+
+- `fetch_glm53.py` via ConfigMap `glm53-fetch-script`; `general-cpu` node; image
+  `arena-slime-dev:miles-arena-20260901b` (the smoke trainer image, has huggingface_hub);
+  8 CPU / 24-32Gi / 100Gi ephemeral; 6 download threads; in-cluster pods have direct HF egress.
+- Design: each file lands on node-local disk, then stream-copies (64 MiB chunks) to
+  `/mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16`,
+  because mountpoint-S3 has no rename (no download-in-place). Idempotent under Job retries
+  (size-verified files skipped, short objects removed); `_FETCH_MANIFEST.json` written last.
+  Fast scratch is the platform-injected mount; kyverno rejects manifests that declare
+  platform PVCs, so none are declared.
+- Result: 130 files / 642.7 GB (120 safetensors shards), rev `61f77a1e` (BF16 repo; the FP8
+  main repo was rejected, see the opening entry). Destination `durable/` (no expiry) rather
+  than `sandboxes/<alias>/` (60-day expiry). The README estimated "hours"; it took ~35 min.
+
+### Verifier pass — 5ea810d7f (02:26 PT)
+
+Three adversarial probes against the real code, CPU only (archived:
+arena-port-artifacts/glm53/adv-glm53/probe_{argv,parse,mask}.py + argv.json):
+
+1. `probe_argv.py`: yaml -> argv through the real `run_arena_harbor.py` converter under the
+   exact pod env contract (REPLICA 12 / REPLICA_TRAINER 8 / EXPERIMENT_NAME
+   `rl-glm53f-gbash-r1` / NATS_URL ...): 244 argv tokens.
+2. `probe_parse.py`: strict `miles.utils.arguments.parse_args()` over that argv with the full
+   validation chain (miles + megatron + sglang + hf), B200 device stubs (8 x 180 GB), the real
+   GLM-5.3-Flash config.json. Passed; actor memory estimate ~130 GB peak of 180 GB per GPU.
+3. `probe_mask.py`: what the parser-default `loss_mask_type=qwen` fallback does on the GLM
+   tokenizer.
+
+Findings -> fixes in 5ea810d7f:
+
+- convert-job: `CONVERT_KEEP_PP1=1` (the doc-pattern command) would make each of 8 ranks build
+  the full 321B model (~642 GB) and OOM; dropped, so the converter's PP -> world_size
+  auto-reshape (PP8, worst rank ~87 GB bf16) is what fits. `du -sb` aggregate verify replaced
+  by a per-file size-manifest diff (directory inode sizes differ tmpfs vs mountpoint-S3).
+  Request 1900Gi -> 1800Gi (platform-proven value).
+- trainer: `OnFailure`/`maxRestarts 3` reverted to `Never`/`0`. Restart recovery is unproven
+  on the ray-based launcher: if any of the 11 workers does not exit on head-GCS loss the
+  restarted head waits forever in `_wait_for_ray_nodes`. Revisit after a clean observation.
+- miles-config: the "loss_mask_type omitted = pass-through" comment was wrong. The parser
+  default is `qwen` and it is reached on the tokenizer-fallback path; what makes the omission
+  safe is `use_rollout_logprobs: true` (fallback samples zero-filled + ABORTED + removed), now
+  documented as load-bearing. `enable_trajectory_tracing` removed (no such miles flag; `true`
+  would kill argparse). `kl_loss_coef 0.0` pinned and the ref-forward cost of `use_kl_loss`
+  documented (kept for r5 parity). `check_weight_update_equal` + skip list `visual.` added for
+  run 1 (first disaggregated glm5_next update path). `sglang_tp_size` marked derived;
+  bf16 KV / tilelang constraints documented; PP4 split typo fixed (11/11/11/12).
+- README: build the image BEFORE convert (convert-job pins it with `imagePullPolicy: Always`);
+  deviations and risks tables updated.
+
+### Convert saga — `rl-glm53f-convert` (02:30-03:45 PT)
+
+Goal: HF BF16 -> torch_dist ref checkpoint on one p6-b200 (8 GPUs); `--save` to /dev/shm then
+cp, because mountpoint-S3 cannot perform DCP's final `.metadata` rename.
+
+| # | attempt | outcome | lesson / change |
+|---|---|---|---|
+| 1-2 | PyTorchJob, 1800Gi request, twice | kueue TAS pinned the pod to `i-00cb6ebceda36a4ef`, which the scheduler could not place on; the pods-ready timeout evicted it and `restartPolicy: Never` turned that into a Failed job that the operator deleted with its pods and logs | TAS assigns nodes that are occupied outside kueue's view; a deleted job leaves nothing to debug from |
+| 3 | plain kueue-labelled Pod `rl-glm53f-convert-dbg` (02:58 PT; archived arena-port-artifacts/glm53/glm53-deploy/convert-debug-pod.yaml): `nodeAffinity NotIn i-00cb6ebceda36a4ef`, 1200Gi, `tee` to `/mnt/scratch-s3files-rw/guparpit/logs/glm53-convert-dbg.log`, `sleep 7200` after exit | the convert failed: `--hf-checkpoint /mnt/models-ro/external/zai-org/GLM-5.3-Flash-BF16` does not exist there | `/mnt/models-ro` is a SEPARATE curated read-only EFS volume, not a view of fast scratch (a recon pass equated the two because both carry `external/<org>/` trees). 1499bcef4 (03:05 PT) repoints `hf_checkpoint`, `--hf-checkpoint`, `ref_load` and the gym `ARENA_MODEL_PATH` at `/mnt/scratch-fast-1a-rw/...`; convert-job gets 1200Gi + the NotIn |
+| 4 | rerun with the fast-scratch path | conversion OK in ~10 min (PP8 auto-reshape, 54-96 GB GPU per rank); the `cp` to `/mnt/scratch-fast-1a-rw/durable/model-artifacts/dcp/` failed EFBIG | mountpoint-S3 caps a single object at ~78 GiB (8 MiB part x 10k parts); the PP8 layout emits 83 GB `.distcp` shards |
+| 5 | destination -> EFS `/mnt/scratch-s3files-rw/guparpit/checkpoints/dcp/glm5.3-flash_torch_dist` (34d17a57e, 03:35 PT), parallel per-file cp + manifest diff | 584 GiB: 8 x PP8 `.distcp` + `.metadata` + `latest_checkpointed_iteration.txt`, per-file sizes verified | EFS has rename and no object cap and is the proven ref_load home (smoke DCP, bowenxie qwen DCP) |
+
+Decisions: keep the convert as a 1-replica PyTorchJob (not a batch/v1 Job) because it reuses
+the admission wiring proven on these nodes; `CONVERT_KEEP_PP1` stays unset; the ref DCP lives
+on EFS; 1200Gi request (~599 GiB checkpoint on tmpfs + 200-300 GiB for the ranks, ~1.5x
+headroom, and it schedules where 1800Gi sat Pending). Rejected or deferred: hosting the DCP on
+fast scratch (needs a >=16-rank, 2-node conversion so every shard lands under the cap; not
+worth it for a one-time artifact); `--save` straight to fast scratch (no rename) or to node
+ephemeral disk (allocatable uncertain at ~600 GB) instead of /dev/shm.
+
+### State at "ALL DELIVERED" (8660c520a 03:50 PT; declared ~04:00 PT)
+
+1. HF BF16 weights on fast scratch (130 files, 642.7 GB, manifest).
+2. torch_dist ref checkpoint on EFS (584 GiB, verified).
+3. Image a in us-east-1 and ap-south-1.
+4. Config set as staged here: `miles-config.yaml` (`rl-glm53f-gbash-r1`; 12 nodes = 8 actor
+   TP8+SP / PP4 [11/11/11/12] / CP1 / EP16 / ETP1, DP2 + 4 engines TP8/EP8 at 8 GPUs each,
+   mem-fraction 0.7, tilelang DSA, bf16 KV, ctx 131072; rbs 32 x n 8 = GBS 256, num_rollout
+   90, response len 2048, temp 1; GRPO eps 0.4/0.4/c 2.0, kl coefs 0.0, `use_rollout_logprobs`;
+   recompute full/uniform/1, dynamic batch at max_tokens_per_gpu 8192; adam lr 1e-6 constant,
+   wd 0.1, betas 0.9/0.98; router health 1/15 s/40; `check_weight_update_equal` on),
+   `trainer-pytorchjob.yaml` (12 replicas min=max, `Never`/0, image a, kueue queue
+   `gpu.p6-b200-48xlarge`, the full run5 EFA env + `vpc.amazonaws.com/efa: 8` +
+   `/dev/infiniband`, `NCCL_DEBUG=INFO` / `NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH` for bring-up,
+   upstream recipe env, W&B via the `wandb-env-arena` Secret, 1800Gi request, trainer log tee to
+   `/mnt/scratch-s3files-rw/guparpit/logs/${EXPERIMENT_NAME}/trainer-${REPLICA_IDX}.log`, the
+   stale run5 exclusion `i-09907cd660684a460` dropped, no NotIn list yet), `sglang-svc.yaml`
+   (`rl-glm53f-sglang` -> replica-index 0), `convert-job.yaml`, `fetch-job.yaml` +
+   `fetch_glm53.py`, README (runbook fetch -> image -> convert -> deploy -> first-run checks;
+   deviations vs the snorkel-27b parent and vs `run_glm5_3_flash.py`; risks).
+
+Not yet present: the gym-side `nats.yaml` / `gym-worker.yaml` (README step 4 still says
+"rename the smoke's `rl-milesgb1-` assets"); they land with the launch entry.
+
+### Risks accepted going into run 1 (README "Risks" at this commit)
+
+1. GLM chat / tool-call format vs the snorkel textual bash agent parser: unverified (no sglang
+   tool-call or reasoning parser configured).
+2. EFA pairing untested: aws-ofi-nccl 1.18.x (installer 1.47.0) with the base's NCCL
+   2.29/cu13. Gate: the NCCL log must show the libfabric/efa provider; `Using network IB` or
+   `Socket` means the broken fallback.
+3. Engine memory: ~80 GB bf16 weights per GPU under mem-fraction 0.7 leaves ~46 GB for KV +
+   activations; `sglang_max_running_requests: 256` identified as the first KV lever,
+   deliberately not set for run 1.
+4. Mask fallback semantics (above): verify first-step masked/unmasked token counts.
+5. Capacity: a 12-node all-or-nothing gang (+1 node while the convert runs). Shape notes:
+   DP=3 is impossible with EP16 at 96 GPUs (EP24 needed); EP8 is strictly worse at 64 GPUs;
+   EP16/PP4/DP2 is the right 64-GPU shape.
+6. First disaggregated glm5_next update-weights path (the recipe validated colocated only);
+   `check_weight_update_equal` on; failure signature `The full weights of the ModelRunner are
+   partially updated` in engine logs.
+7. `max_tokens_per_gpu 8192` vs full-trajectory samples up to the gym's 32k context: an
+   over-budget sample forms its own oversized micro-batch.
+
+Next: launch (r1 entry).

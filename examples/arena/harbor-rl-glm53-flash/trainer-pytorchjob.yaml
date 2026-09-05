@@ -1,0 +1,235 @@
+# rl-glm53f: GLM-5.3-Flash miles trainer on prod-bom, 12x p6-b200.48xlarge.
+# Derived from examples/arena/harbor-rl-27b-snorkel/trainer-pytorchjob.yaml
+# (the r5-faithful EFA wiring) with these deltas:
+#   - 6 -> 12 replicas: workers 0-7 = Megatron actor (64 GPUs, TP8/PP4/EP16,
+#     DP=2), workers 8-11 = SGLang engines (4 engines, TP8/EP8)
+#   - image: the GLM-capable arena build (glm53next base: SGLang
+#     sglang-miles-glm53next@9a26e749 + Megatron-LM PR#89, EFA layer baked
+#     by examples/arena/Dockerfile)
+#   - WANDB_API_KEY from the wandb-env-arena Secret + WANDB_BASE_URL (the
+#     smoke-proven pattern)
+#   - NCCL_DEBUG / NCCL_DEBUG_SUBSYS for first-run bring-up (drop later)
+#   - restartPolicy Never + maxRestarts 0, matching every admitted arena run
+#     (smoke, snorkel run1-5). OnFailure+restarts was considered for a 12-node
+#     job but is UNPROVEN on this stack: recovery would need replica-0 to exit
+#     AND all 11 ray workers to exit when the old head's GCS dies; if any
+#     worker blocks, the restarted head waits forever in _wait_for_ray_nodes.
+#     Revisit after observing a clean worker-exit-on-GCS-loss on run 1.
+#   - the run5 stale node-exclusion affinity (i-09907cd660684a460) DROPPED —
+#     it was a point-in-time S3-CSI incident workaround (2026-08-27), not a
+#     durable constraint
+#   - upstream GLM recipe env (SGLANG_*, PYTHONFAULTHANDLER, inductor/triton
+#     knobs) added — see comments inline
+# NO platform PVC volumes/mounts are declared (kyverno forbids them);
+# /mnt/models-ro, /mnt/scratch-s3files-rw etc. are platform-injected.
+#
+# Every replica runs scripts/run_arena_harbor.py; the command picks the role
+# from the kubeflow replica index (0 = train: ray head + job submit;
+# 1..11 = worker: join the ray cluster and block).
+#
+#   kubectl create configmap rl-glm53f-trainer-config -n arena-tasks \
+#     --from-file=miles-config.yaml=miles-config.yaml
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: rl-glm53f-trainer
+  namespace: arena-tasks
+  labels:
+    app: rl-glm53f
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+spec:
+  elasticPolicy:
+    minReplicas: 12
+    maxReplicas: 12
+    # 0 restarts / Never (below): the known-good arena configuration. Restart
+    # semantics on this ray-based launcher are unvalidated (see header note);
+    # a failed run is relaunched manually and resumes from --load = --save
+    # (ADR-0004).
+    maxRestarts: 0
+    nProcPerNode: 8
+    rdzvBackend: c10d
+    rdzvId: rl-glm53f-trainer
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: 12
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            app: rl-glm53f
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
+        spec:
+          serviceAccountName: arena-tasks-runner
+          enableServiceLinks: false
+          priorityClassName: high
+          nodeSelector:
+            node-type: p6-gpu
+            node.kubernetes.io/instance-type: p6-b200.48xlarge
+          # The snorkel manifest carried a NotIn-hostname affinity excluding
+          # i-09907cd660684a460 (an S3-CSI mount-attach incident on
+          # 2026-08-27). Dropped: it was a point-in-time workaround, and at 12
+          # nodes an unnecessary exclusion costs real capacity. Re-add a
+          # NotIn-hostname block here only against a live, reproduced incident.
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+          - effect: NoSchedule
+            key: vpc.amazonaws.com/efa
+            operator: Exists
+          containers:
+          - name: pytorch
+            # Arena GLM build: FROM the glm53next upstream mirror with this
+            # integration tree replacing /root/miles (examples/arena/Dockerfile,
+            # which also bakes the EFA userspace + aws-ofi-nccl layer).
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902a
+            imagePullPolicy: Always
+            command: ["bash", "-c"]
+            args:
+            - mkdir -p /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME} && ulimit -n 1000000 && if [ "${REPLICA_IDX}" = "0" ]; then ROLE=train; else ROLE=worker; fi && exec python3 /root/miles/scripts/run_arena_harbor.py "$ROLE" > >(tee /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME}/trainer-${REPLICA_IDX}.log) 2>&1
+            env:
+            # legacy consumers in the ported eval path resolve tools/ (the
+            # DCP->HF converter) relative to this dir. This job configures no
+            # eval and needs nothing more (see the snorkel manifest for the
+            # MILES_ARENA_DIR caveat on eval-enabled jobs).
+            - name: AGISLIME_DIR
+              value: /root/miles
+            - name: CLUSTER
+              value: bom
+            - name: PYTHONUNBUFFERED
+              value: '1'
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+            # ---- EFA wiring (proven run5 recipe; requires the Dockerfile's
+            # aws-efa-installer layer for /opt/amazon/{ofi-nccl,efa}) ----
+            - name: LD_LIBRARY_PATH
+              value: /opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+            - name: FI_EFA_USE_DEVICE_RDMA
+              value: '1'
+            - name: FI_PROVIDER
+              value: efa
+            - name: FI_EFA_FORK_SAFE
+              value: '1'
+            - name: NCCL_TIMEOUT
+              value: '7200'
+            - name: NCCL_SOCKET_IFNAME
+              value: eth0
+            - name: GLOO_SOCKET_IFNAME
+              value: eth0
+            - name: NCCL_PROTO
+              value: simple
+            - name: NCCL_IB_DISABLE
+              value: '0'
+            - name: NCCL_NET_GDR_LEVEL
+              value: '2'
+            - name: NCCL_P2P_DISABLE
+              value: '0'
+            # Bring-up diagnostics ONLY: verify the first-run NCCL log shows
+            # the libfabric/efa provider (NOT 'Using network IB' / Socket —
+            # that means the ofi-nccl plugin did not load and multi-node
+            # collectives will hang or crawl). Drop both once verified; INFO
+            # logging at 96 ranks is voluminous.
+            - name: NCCL_DEBUG
+              value: INFO
+            - name: NCCL_DEBUG_SUBSYS
+              value: INIT,NET,GRAPH
+            # ---- upstream GLM-5.3-Flash recipe env (PR #2786
+            # run_glm5_3_flash.py extra_env_vars; pod env is inherited by the
+            # ray workers each replica starts) ----
+            # engines start against the raw BF16 hf_checkpoint while training
+            # weights get pushed over update-weights; skip the strict load check
+            - name: SGLANG_SKIP_CHECKPOINT_LOAD_CHECK
+              value: '1'
+            # DSA/tilelang engine startup is slow; default health timeout trips
+            - name: SGLANG_HEALTH_CHECK_TIMEOUT
+              value: '120'
+            - name: PYTHONFAULTHANDLER
+              value: '1'
+            - name: TORCHINDUCTOR_COMPILE_THREADS
+              value: '1'
+            - name: TRITON_CACHE_DIR
+              value: /tmp/triton_cache
+            - name: TORCHINDUCTOR_CACHE_DIR
+              value: /tmp/inductor_cache
+            # ---- cluster shape: 12 replicas, 8 actor nodes ----
+            - name: REPLICA
+              value: '12'
+            - name: REPLICA_TRAINER
+              value: '8'
+            # run identity (ADR-0004): EXPERIMENT_NAME drives the checkpoint dir
+            # and the wandb group; bump BOTH for a fresh run — an existing
+            # checkpoint dir resumes silently.
+            - name: EXPERIMENT_NAME
+              value: rl-glm53f-gbash-r1
+            - name: PROJECT_NAME
+              value: rl-glm53f-gbash-r1
+            - name: CFG_NAME
+              value: /config/training/miles-config.yaml
+            - name: JOBNAME
+              value: rl-glm53f-trainer
+            - name: USER
+              value: guparpit
+            - name: NATS_URL
+              value: nats://rl-glm53f-nats:4222
+            - name: WANDB_BASE_URL
+              value: https://mega.wandb.agi.amazon.dev
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wandb-env-arena
+                  key: WANDB_API_KEY
+            - name: ARENA_DEFAULT_GYM
+              value: snorkel-general-bash-harbor
+            - name: ARENA_CHECKPOINTS_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/checkpoints
+            - name: ARENA_DATA_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/data
+            # consumed by the trainer-side lakefs SDK: the data source pulls
+            # manifest.jsonl from the KNOWN_GYMS lakeFS pin at startup (IAM via
+            # the arena-tasks-runner SA)
+            - name: LAKECTL_SERVER_ENDPOINT_URL
+              value: https://prod.artifact-vault.agi.amazon.dev
+            - name: LAKECTL_CREDENTIALS_PROVIDER_TYPE
+              value: aws_iam
+            - name: REPLICA_IDX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['training.kubeflow.org/replica-index']
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            resources:
+              limits:
+                nvidia.com/gpu: 8
+                vpc.amazonaws.com/efa: '8'
+              requests:
+                ephemeral-storage: 32Gi
+                memory: 1800Gi
+                nvidia.com/gpu: 8
+                vpc.amazonaws.com/efa: '8'
+            securityContext:
+              privileged: true
+            volumeMounts:
+            - mountPath: /config/training
+              name: training-config
+            - mountPath: /dev/shm
+              name: dshm
+            - mountPath: /dev/infiniband
+              name: infiniband
+            - mountPath: /dev/nvidia-caps
+              name: nvidia-caps
+          volumes:
+          - configMap:
+              name: rl-glm53f-trainer-config
+            name: training-config
+          - emptyDir:
+              medium: Memory
+            name: dshm
+          - hostPath:
+              path: /dev/infiniband
+            name: infiniband
+          - hostPath:
+              path: /dev/nvidia-caps
+            name: nvidia-caps

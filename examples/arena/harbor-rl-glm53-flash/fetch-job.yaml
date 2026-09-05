@@ -1,0 +1,46 @@
+# One-shot fetch of zai-org/GLM-5.3-Flash-BF16 (643 GB, 129 files) onto arena
+# fast scratch at durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16.
+# CPU-only. Fast scratch arrives via the platform-injected /mnt/scratch-fast-1a-rw
+# mount (kyverno forbids declaring platform PVCs). Downloads land on node-local
+# disk first, then stream-copy to mountpoint-S3
+# (no rename support there). Idempotent: re-runs skip size-verified files.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: glm53-fetch-20260902
+  namespace: arena-tasks
+  labels:
+    app: glm53-fetch
+    owner: guparpit
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: glm53-fetch
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: arena-tasks-runner
+      nodeSelector:
+        node-type: general-cpu
+      containers:
+      - name: fetch
+        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-arena-20260901b
+        command: ["python3", "/opt/fetch/fetch_glm53.py"]
+        env:
+        - name: HF_HOME
+          value: /tmp/hf-home
+        resources:
+          requests:
+            cpu: "8"
+            memory: 24Gi
+            ephemeral-storage: 100Gi
+          limits:
+            memory: 32Gi
+        volumeMounts:
+        - mountPath: /opt/fetch
+          name: fetch-script
+      volumes:
+      - name: fetch-script
+        configMap:
+          name: glm53-fetch-script

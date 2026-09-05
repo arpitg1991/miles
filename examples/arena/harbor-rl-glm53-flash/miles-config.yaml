@@ -240,6 +240,21 @@ weight_decay: 0.1
 adam_beta1: 0.9
 adam_beta2: 0.98
 use_distributed_optimizer: true
+# ---- optimizer CPU offload (added after r3, 2026-09-03) ----
+# r3 train step 0 fit (peak ~109 GB allocated/rank after the step) but step 1
+# CUDA-OOMed in the fla KDA backward on a ~37k-token sample ("177 GiB in use,
+# 144 GiB allocated, 1 GiB free"): step 1 carries the Adam states (fp32 master +
+# m + v, ~33 GB/rank even sharded over DP=2) that did not exist during step 0,
+# and the KDA layers run all 64 heads on every TP rank, so long-sequence
+# backward transients are large. Offloading the optimizer to CPU frees that
+# headroom; this is the trio every upstream large-MoE recipe in miles uses
+# (scripts/run_deepseek_v32.py, amd/run_glm5_2_744b_a40b.py). Megatron requires
+# precision-aware with cpu-offload; miles asserts the reverse implication too.
+# Host cost: ~66 GB fp32 state per rank -> ~530 GB per actor node (fits the
+# 1800Gi limit; engines nodes unaffected).
+optimizer_cpu_offload: true
+overlap_cpu_optimizer_d2h_h2d: true
+use_precision_aware_optimizer: true
 # ---- tracking ----
 use_tensorboard: false
 use_wandb: true

@@ -134,7 +134,10 @@ spec:
             # committed 2026-09-02 23:44 UTC, AFTER image b was built at 20:55),
             # which miles-config.yaml now sets: on image b the strict argparse
             # kills the trainer at startup.
-            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902c
+            # 20260903d = c + --arena-keep-timeout-trajectories (default OFF, not set
+            # here) + the per-rollout 'Removal reasons:' summary line (integration
+            # commit 32da04357). Built+pushed 2026-09-03 08:40 UTC, replicated to ap-south-1.
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260903d
             imagePullPolicy: Always
             command: ["bash", "-c"]
             args:
@@ -251,12 +254,12 @@ spec:
             # run identity (ADR-0004): EXPERIMENT_NAME drives the checkpoint dir
             # and the wandb group; bump BOTH for a fresh run — an existing
             # checkpoint dir resumes silently.
-            # r3: r1 and r2 saved no checkpoint (save_interval 20, both died in step 0),
+            # r4: r1-r3 saved no checkpoint (save_interval 20; r3 died in step 1 on CUDA OOM),
             # so nothing resumes; a fresh name keeps its W&B group and ckpt dir separate.
             - name: EXPERIMENT_NAME
-              value: rl-glm53f-gbash-r3
+              value: rl-glm53f-gbash-r4
             - name: PROJECT_NAME
-              value: rl-glm53f-gbash-r3
+              value: rl-glm53f-gbash-r4
             - name: CFG_NAME
               value: /config/training/miles-config.yaml
             - name: JOBNAME

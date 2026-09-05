@@ -1,0 +1,173 @@
+# Harbor RL smoke: Qwen3.5-27B miles trainer on prod-bom p6-b200.48xlarge,
+# ported from the AGISlime ADR-0039 trainer. 3 replicas: workers 0-1 =
+# Megatron actor (TP4/PP2/CP2, 16 GPUs), worker 2 = SGLang engines (8 GPUs).
+# Every replica runs scripts/run_arena_harbor.py; the command below picks the
+# role from the kubeflow replica index (0 = train: ray head + job submit;
+# 1..N-1 = worker: join the ray cluster and block).
+#
+# Trainer image: build examples/arena/Dockerfile from the miles repo root and
+# push it to a registry the cluster can pull; replace the image below.
+# Pre-converted TP4 DCP ref checkpoint; /mnt/* S3-Files mounts are
+# platform-injected in arena-tasks. The NATS service, gym workers and dataset
+# staging are unchanged from AREnATasks/tmp_staging/harbor-rl-smoke/.
+#
+#   kubectl create configmap rl-smoke27-trainer-config -n arena-tasks \
+#     --from-file=slime-config.yaml=financeagent-27b-smoke.yaml
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: rl-smoke27-trainer
+  namespace: arena-tasks
+  labels:
+    app: rl-smoke27
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+spec:
+  elasticPolicy:
+    minReplicas: 3
+    maxReplicas: 3
+    maxRestarts: 0
+    nProcPerNode: 8
+    rdzvBackend: c10d
+    rdzvId: rl-smoke27-trainer
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: 3
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            app: rl-smoke27
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
+        spec:
+          serviceAccountName: arena-tasks-runner
+          enableServiceLinks: false
+          priorityClassName: high
+          nodeSelector:
+            node-type: p6-gpu
+            node.kubernetes.io/instance-type: p6-b200.48xlarge
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+          - effect: NoSchedule
+            key: vpc.amazonaws.com/efa
+            operator: Exists
+          containers:
+          - name: pytorch
+            # PLACEHOLDER: a miles arena trainer image built from examples/arena/Dockerfile,
+            # e.g. <account>.dkr.ecr.<region>.amazonaws.com/miles-arena-dev:rl-smoke-<date>
+            image: <account>.dkr.ecr.ap-south-1.amazonaws.com/miles-arena-dev:rl-smoke-latest
+            imagePullPolicy: Always
+            command: ["bash", "-c"]
+            args:
+            - mkdir -p /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME} && ulimit -n 1000000 && if [ "${REPLICA_IDX}" = "0" ]; then ROLE=train; else ROLE=worker; fi && exec python3 /root/miles/scripts/run_arena_harbor.py "$ROLE" > >(tee /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME}/trainer-${REPLICA_IDX}.log) 2>&1
+            env:
+            # legacy consumers in the ported eval path resolve tools/ (the
+            # DCP->HF converter) relative to this dir. It does NOT provide the
+            # eval K8s templates: the miles repo ships no experiments/k8s/
+            # templates, so eval-enabled jobs (eval_datasets or
+            # hallmark_benchmarks set) MUST also set MILES_ARENA_DIR to an
+            # external tree carrying experiments/k8s/templates, or every eval
+            # trigger logs-and-skips. The smoke job configures no eval and
+            # needs nothing.
+            - name: AGISLIME_DIR
+              value: /root/miles
+            - name: CLUSTER
+              value: bom
+            - name: PYTHONUNBUFFERED
+              value: '1'
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+            - name: LD_LIBRARY_PATH
+              value: /opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+            - name: FI_EFA_USE_DEVICE_RDMA
+              value: '1'
+            - name: FI_PROVIDER
+              value: efa
+            - name: FI_EFA_FORK_SAFE
+              value: '1'
+            - name: NCCL_TIMEOUT
+              value: '7200'
+            - name: NCCL_SOCKET_IFNAME
+              value: eth0
+            - name: GLOO_SOCKET_IFNAME
+              value: eth0
+            - name: NCCL_PROTO
+              value: simple
+            # exported by entrypoint.sh in the AGISlime original; kept as pod env
+            - name: NCCL_IB_DISABLE
+              value: '0'
+            - name: NCCL_NET_GDR_LEVEL
+              value: '2'
+            - name: NCCL_P2P_DISABLE
+              value: '0'
+            - name: REPLICA
+              value: '3'
+            - name: REPLICA_TRAINER
+              value: '2'
+            # run identity (ADR-0004): keys the checkpoint dir and the wandb group;
+            # bump BOTH for a fresh run — an existing checkpoint dir resumes silently
+            - name: EXPERIMENT_NAME
+              value: rl-smoke27-financeagent
+            - name: PROJECT_NAME
+              value: rl-smoke27-financeagent
+            - name: CFG_NAME
+              value: /config/training/slime-config.yaml
+            - name: JOBNAME
+              value: rl-smoke27-trainer
+            - name: USER
+              value: guparpit
+            - name: NATS_URL
+              value: nats://rl-smoke27-nats:4222
+            - name: ARENA_DEFAULT_GYM
+              value: financeagent
+            - name: ARENA_CHECKPOINTS_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/checkpoints
+            - name: ARENA_DATA_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/data
+            - name: LAKECTL_SERVER_ENDPOINT_URL
+              value: https://prod.artifact-vault.agi.amazon.dev
+            - name: LAKECTL_CREDENTIALS_PROVIDER_TYPE
+              value: aws_iam
+            - name: REPLICA_IDX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['training.kubeflow.org/replica-index']
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            resources:
+              limits:
+                nvidia.com/gpu: 8
+                vpc.amazonaws.com/efa: '8'
+              requests:
+                ephemeral-storage: 32Gi
+                memory: 1800Gi
+                nvidia.com/gpu: 8
+                vpc.amazonaws.com/efa: '8'
+            securityContext:
+              privileged: true
+            volumeMounts:
+            - mountPath: /config/training
+              name: training-config
+            - mountPath: /dev/shm
+              name: dshm
+            - mountPath: /dev/infiniband
+              name: infiniband
+            - mountPath: /dev/nvidia-caps
+              name: nvidia-caps
+          volumes:
+          - configMap:
+              name: rl-smoke27-trainer-config
+            name: training-config
+          - emptyDir:
+              medium: Memory
+            name: dshm
+          - hostPath:
+              path: /dev/infiniband
+            name: infiniband
+          - hostPath:
+              path: /dev/nvidia-caps
+            name: nvidia-caps

@@ -328,3 +328,81 @@ Not yet present: the gym-side `nats.yaml` / `gym-worker.yaml` (README step 4 sti
    over-budget sample forms its own oversized micro-batch.
 
 Next: launch (r1 entry).
+
+## 2026-09-02 ~09:15 PT — r1 launch: NATS + 128 gym workers + trainer TAS exclusion (`rl-glm53f-gbash-r1`, image a)
+
+First GLM-5.3-Flash training launch, on the user's go ("priority high like
+r5"), ~5 h after the pre-launch "ALL DELIVERED" state. Manifests are the
+integration commit 2f71601fd (2026-09-02 08:57 PT).
+
+**Run identity**
+
+| item | value |
+|---|---|
+| `EXPERIMENT_NAME` / `PROJECT_NAME` (checkpoint dir + W&B group) | `rl-glm53f-gbash-r1` |
+| PyTorchJob / kueue queue / priority | `rl-glm53f-trainer` / `gpu.p6-b200-48xlarge` / `priorityClassName: high` |
+| shape | 12x p6-b200.48xlarge: workers 0-7 Megatron actor (64 GPUs, TP8+SP / PP4 [11/11/11/12] / EP16, DP2), workers 8-11 SGLang engines (4 engines, TP8/EP8) |
+| trainer image | `arena-slime-dev:miles-glm53-20260902a` (glm53next base + integration tree + EFA layer) |
+| gym | Deployment `rl-glm53f-gym-sgb`, 128 replicas, image `arena-tasks-dev:rl-smoke-20260821b` (Harbor 0.21.0; no code change since the smoke, so no rebuild) |
+| broker / engine service | `rl-glm53f-nats` (nats 2.11.3, JetStream on a 10Gi emptyDir, `max_payload` 8 MiB) / `rl-glm53f-sglang:30000` |
+| batch + caps (r5-parity, unchanged from the snorkel parent) | rbs 32 x n 8 = GBS 256, `num_rollout` 90; `rollout_max_response_len` 2048, `ARENA_MAX_TOKENS` 2048, `ARENA_ROLLOUT_CONTEXT_LIMIT` 32768, `ARENA_NATS_ACK_WAIT` 4500, concurrency 8, temperature 1.0 |
+| W&B | mega.wandb.agi.amazon.dev `arena/rl-snorkel27`, group `rl-glm53f-gbash-r1`, run `v57ymk1l` |
+
+**What the three files are**
+
+- `nats.yaml` + `gym-worker.yaml`: the smoke-proven `rl-milesgb1-` assets
+  (themselves the AGISlime run5 gym-side manifests, see
+  `harbor-rl-27b-snorkel/smoke-3node/`) with every name prefix replaced by
+  `rl-glm53f-`, replicas 8 -> 128 (r5 fleet size for rbs 32 with dynamic
+  sampling) and `ARENA_MODEL_PATH` -> the GLM BF16 fast-scratch path (workers
+  tokenize against the policy model). A separate broker per run is
+  mandatory: JetStream stream names (`ARENA_TASKS`/`ARENA_RESULTS`) are
+  per-server. The file headers still carry the parents' comments verbatim
+  ("27B RL run 2", "Deltas vs run 1: 96 replicas") — lineage, not GLM state.
+- `trainer-pytorchjob.yaml`: first `kubernetes.io/hostname NotIn` entry,
+  `i-00cb6ebceda36a4ef` — the node the convert job was pinned to twice (see
+  the staging entry). Rule written into the yaml: add exclusions only against
+  a live, reproduced incident, and drop them as nodes heal (each one costs
+  capacity at 12 nodes). Still at the platform-customary `memory: 1800Gi`
+  request with no limit; `NCCL_DEBUG=INFO` / `NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH`
+  left ON for bring-up. `restartPolicy: Never` / `maxRestarts: 0` kept
+  (OnFailure restarts are unproven on the ray-based launcher).
+
+**Scheduling: what happened**
+
+- Attempt 1 evicted. Priority high preempted backfill, but kueue TAS pinned
+  pods to nodes the scheduler rejected (`Insufficient memory/gpu/efa`); the
+  gang partially bound, the ~10-min pods-ready timeout evicted it, and the
+  kubeflow operator deleted the job together with its pods (and their logs).
+- Attempt 2 bound 12/12 in ~15 min after four nodes were excluded (the three
+  added on top of `i-00cb6ebceda36a4ef` are codified in the next entry).
+- Karpenter refuses to PROVISION for hostname-affinity pods; binding to
+  existing nodes still works, so the gang only ever lands on live capacity.
+- The 41 unreaped Failed `arena-backfill` pods fleet-wide (deletion-protected,
+  owner-only) are NOT the blocker: running workers coexist with them; the
+  blocked nodes are consumed outside arena-tasks' view.
+
+**Bring-up verification (all green)**
+
+- EFA LIVE: aws-ofi-nccl 1.18.0 + Libfabric 2.4 loaded from `/opt/amazon` on
+  all ranks alongside the base image's NCCL 2.29/cu13 — the pre-launch
+  "ofi-nccl 1.18 vs NCCL 2.29 untested" risk is retired.
+- 4 engines TP8/EP8 loaded the 120 BF16 shards from fast scratch at
+  ~3 s/shard; rollout 0 collecting, results flowing over NATS.
+
+**Early signal (~10:40 PT)**
+
+- The first ~28 completions were ALL `status=truncated`, 0 success: GLM-5.3
+  at its template-default `max` reasoning effort spends the whole 2048-token
+  turn thinking. Concern noted at the time: if rewards degenerate the
+  zero-variance filter will churn groups. Decision and its effect are in the
+  next entry (32k/131k caps, user-directed 10:41 PT).
+
+**Alternatives considered**
+
+- Reuse the smoke's NATS/gym fleet: rejected — stream names collide, and the
+  smoke fleet was sized for 8 workers.
+- Rebuild the gym image for GLM: not needed — no gym code change; only
+  `ARENA_MODEL_PATH` differs.
+- OnFailure + restarts for a 12-node job: deferred — recovery would need
+  replica-0 AND all 11 ray workers to exit on GCS loss; unproven.

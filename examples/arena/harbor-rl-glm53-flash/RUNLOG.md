@@ -765,3 +765,86 @@ the hf_export commit (ECR `describe-images`; digest `sha256:9c963ae7...`) — th
 `EXPERIMENT_NAME` / W&B group `rl-glm53f-gbash-r2`, gym `rl-glm53f-gym-sgb`
 x128 (image `rl-smoke-20260821b`, unchanged) now kept off the p6 nodes.
 Outcome in the next entry.
+
+## 2026-09-02 22:49 PT -> 2026-09-03 01:32 PT — r2 outcome (`rl-glm53f-gbash-r2`) and r3 launch (`rl-glm53f-gbash-r3`), both image c
+
+Continues the r2 relaunch entry above. Tree state after this entry: trainer
+`86d2d0ec5` (= `0ee733986` caches + `86d2d0ec5` exclusions);
+`miles-config.yaml`, `gym-worker.yaml`, `nats.yaml` unchanged from `3098ae1d3`.
+Trainer image `arena-slime-dev:miles-glm53-20260902c` for both runs.
+
+### r2 outcome — 22:49 PT (Sep 2) to 00:36 PT (Sep 3): the OOM fix set held, then Triton ESTALE
+
+- **What held** (every run-2 fix validated up to the train step):
+  - engine `sglang::scheduler` host RSS ~3.4 GiB per rank (run 2: ~79 GiB
+    with the WeightChecker snapshot); no `killed due to memory pressure`
+    events with `RAY_memory_monitor_refresh_ms=0`;
+  - fault-tolerance monitor healthy, no engine restart needed;
+  - initial weight sync 38 s;
+  - rollout 0 completed in 4938 s, wire statuses 135 success / 20 failed.
+- **What failed:** train step 0 died 7 min in with `OSError [Errno 116] Stale
+  file handle` in Triton's autotuner (`compiler.py` `read_text`).
+- **Root cause:** the r2 fix set had moved `TRITON_CACHE_DIR` /
+  `TILELANG_CACHE_DIR` / `TORCHINDUCTOR_CACHE_DIR` to EFS
+  (`/mnt/scratch-s3files-rw/<user>/kernel_cache/<EXPERIMENT_NAME>/worker-<idx>`)
+  so the ~3300 TileLang re-JITs per step would survive pod restarts. The
+  per-replica dirs kept nodes apart, but the 8 ranks of one node share the
+  dir and race on the same NFS cache files -> ESTALE on read.
+- **Decision (`0ee733986`, 01:20 PT):** `export KCACHE=/tmp/kernel_cache` in
+  the container command (the three `*_CACHE_DIR`s still derive from it); the
+  env-block comment rewritten to say why. **RULE: kernel JIT caches live on
+  local disk only — never EFS/NFS.** Accepted cost: a cold JIT per pod start
+  (`data_pad_size_multiplier 512` bounds the TileLang backward recompiles).
+- **Alternatives:** per-rank EFS subdirs would keep NFS in the JIT hot path
+  for a persistence gain that was never measured, while r2 showed the cost is
+  a dead run — not tried. The parent manifest's default in-pod locations
+  (what `/tmp/kernel_cache` amounts to) are the proven configuration.
+- **Also observed:** `arena_mask_clipped_final_turn: true` salvaged nothing —
+  removed 229/256 samples (`truncated_ratio` 0.8945), zero "masked clipped
+  final turn" log lines. The removals are therefore not trailing-final-turn
+  clips as the flag assumes; this opened the trajectory-structure
+  investigation on the gym pods (truncation RCA, next entry).
+- Post-mortem source: EFS tee
+  `/mnt/scratch-s3files-rw/guparpit/logs/rl-glm53f-gbash-r2/trainer-<idx>.log`
+  (+ `memsample-<idx>.log`).
+
+### r3 launch — 01:32 PT, image c, local caches, identity r3
+
+| item | value |
+|---|---|
+| `EXPERIMENT_NAME` / `PROJECT_NAME` (ckpt dir + W&B group) | `rl-glm53f-gbash-r3` — r1 and r2 saved no checkpoint (`save_interval` 20, both died in step 0), so nothing resumes; the fresh name keeps its W&B group and ckpt dir separate (ADR-0004) |
+| PyTorchJob | `rl-glm53f-trainer` (same name — `rdzvId`, `JOBNAME`, the `rl-glm53f-sglang` Service selector and the NATS URL are bound to it) |
+| shape | 12x p6-b200: workers 0-7 actor (TP8/PP4/EP16, DP2) + workers 8-11 SGLang engines (TP8/EP8) — unchanged |
+| trainer image / config | `miles-glm53-20260902c` / `miles-config.yaml` as r2 (`3098ae1d3`): FT on, WeightChecker off, `use_kl_loss` removed, mask-clipped on, pad multiplier 512 |
+| gym / broker | `rl-glm53f-gym-sgb` x128 on `arena-tasks-dev:rl-smoke-20260821b` (Harbor 0.21.0, p6 anti-affinity) / `rl-glm53f-nats` — unchanged |
+| W&B | `arena/rl-snorkel27`, group `rl-glm53f-gbash-r3` |
+
+**Scheduling — third kueue TAS mis-pin, 12 nodes at once**
+
+- The first r3 apply (after `0ee733986`) had TAS pin pods to 12 more p6 nodes
+  the scheduler rejected (`Insufficient nvidia.com/gpu` / `vpc.amazonaws.com/efa`
+  / memory); same signature as the convert job and the run-1 launch.
+- Fix (`86d2d0ec5`, 01:28 PT): the 12 hostnames appended to the
+  `kubernetes.io/hostname NotIn` list (4 -> 16 entries, dated comment in the
+  yaml), job deleted and re-applied under the same name; r3 running from
+  ~01:32 PT.
+- Consequence: 16 exclusions on a ~304-node p6 pool, each costing capacity
+  (Karpenter will not provision for hostname-affinity pods) — prune as nodes
+  heal. The README runbook gains a "TAS mis-pin check within ~2 min of every
+  apply" procedure plus the two negative health checks for r3 (no `killed due
+  to memory pressure`, no `Stale file handle`; caches must resolve under
+  `/tmp/kernel_cache`) in `37164f537` (next entry).
+
+**Ops trap during r3 rollout 0 — NATS restart without a gym restart (~50 min lost)**
+
+- A `kubectl rollout restart deploy/rl-glm53f-nats` replaced the broker pod.
+  Effects: (1) every gym worker's NATS client died with `ConnectionRefusedError`
+  against the NATS ClusterIP while the pods stayed `Running 2/2` (no restart,
+  no readiness signal); (2) JetStream state is an `emptyDir` (`nats.yaml`), so
+  the durable consumers vanished with the old pod; (3) the trainer kept
+  dispatching into a stream nobody consumed — `Waiting for results: 0/32
+  groups` with idle engines — for ~50 min of rollout 0.
+- **RULE:** always restart the gym Deployment right after (or together with)
+  any NATS restart; the trainer's `Waiting for results: 0/N groups` with idle
+  engines is the detection signal, pod status is not.
+- r3 outcome (step 0, post-train sync, rollout 1, step-1 CUDA OOM): r4 entry.

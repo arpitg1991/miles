@@ -1,0 +1,197 @@
+# snorkel-general-bash-harbor 27B RL: Qwen3.5-27B miles trainer on prod-bom
+# p6-b200.48xlarge, derived from the AGISlime run5 trainer. 6 replicas:
+# workers 0-1 = Megatron actor (TP4/PP2/CP2, 16 GPUs, DP=1), workers 2-5 =
+# SGLang engines (32 GPUs, 8 engines).
+# Engine sizing has ample headroom at rollout_batch_size 32 (run5 sized the
+# same 8 engines for rbs 128); replica counts left as-is.
+# Every replica runs scripts/run_arena_harbor.py; the command below picks the
+# role from the kubeflow replica index (0 = train: ray head + job submit;
+# 1..N-1 = worker: join the ray cluster and block).
+#
+# Trainer image: build examples/arena/Dockerfile from the miles repo root and
+# push it to a registry the cluster can pull; replace the image below.
+# Pre-converted TP4 DCP ref checkpoint; /mnt/* S3-Files mounts are
+# platform-injected in arena-tasks. The NATS service and gym workers are
+# unchanged from AREnATasks/tmp_staging/harbor-rl-snorkel/run5/ (see README).
+#
+#   kubectl create configmap rl-snork27b5-trainer-config -n arena-tasks \
+#     --from-file=slime-config.yaml=snorkel-27b.yaml
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: rl-snork27b5-trainer
+  namespace: arena-tasks
+  labels:
+    # run5 shipped a stale `app: rl-snork27b2` copied from run2; nothing
+    # selects on the trainer app label, normalized to the run5 job naming
+    app: rl-snork27b5
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+spec:
+  elasticPolicy:
+    minReplicas: 6
+    maxReplicas: 6
+    maxRestarts: 0
+    nProcPerNode: 8
+    rdzvBackend: c10d
+    rdzvId: rl-snork27b5-trainer
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: 6
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            app: rl-snork27b5
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
+        spec:
+          serviceAccountName: arena-tasks-runner
+          enableServiceLinks: false
+          priorityClassName: high
+          nodeSelector:
+            node-type: p6-gpu
+            node.kubernetes.io/instance-type: p6-b200.48xlarge
+          # i-09907cd660684a460: S3-CSI MountpointS3PodAttachment creation
+          # times out on this node (2x, 2026-08-27); mounts never attach and
+          # the stuck pod fails the whole job (maxRestarts 0). Excluded until
+          # the CSI controller recovers.
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                    - i-09907cd660684a460
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+          - effect: NoSchedule
+            key: vpc.amazonaws.com/efa
+            operator: Exists
+          containers:
+          - name: pytorch
+            # PLACEHOLDER: a miles arena trainer image built from examples/arena/Dockerfile,
+            # e.g. <account>.dkr.ecr.<region>.amazonaws.com/miles-arena-dev:rl-snorkel-<date>
+            image: <account>.dkr.ecr.ap-south-1.amazonaws.com/miles-arena-dev:rl-snorkel-latest
+            imagePullPolicy: Always
+            command: ["bash", "-c"]
+            args:
+            - mkdir -p /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME} && ulimit -n 1000000 && if [ "${REPLICA_IDX}" = "0" ]; then ROLE=train; else ROLE=worker; fi && exec python3 /root/miles/scripts/run_arena_harbor.py "$ROLE" > >(tee /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME}/trainer-${REPLICA_IDX}.log) 2>&1
+            env:
+            # legacy consumers in the ported eval path resolve tools/ (the
+            # DCP->HF converter) relative to this dir. It does NOT provide the
+            # eval K8s templates: the miles repo ships no experiments/k8s/
+            # templates, so eval-enabled jobs (eval_datasets or
+            # hallmark_benchmarks set) MUST also set MILES_ARENA_DIR to an
+            # external tree carrying experiments/k8s/templates, or every eval
+            # trigger logs-and-skips. This job configures no eval and
+            # needs nothing.
+            - name: AGISLIME_DIR
+              value: /root/miles
+            - name: CLUSTER
+              value: bom
+            - name: PYTHONUNBUFFERED
+              value: '1'
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+            - name: LD_LIBRARY_PATH
+              value: /opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+            - name: FI_EFA_USE_DEVICE_RDMA
+              value: '1'
+            - name: FI_PROVIDER
+              value: efa
+            - name: FI_EFA_FORK_SAFE
+              value: '1'
+            - name: NCCL_TIMEOUT
+              value: '7200'
+            - name: NCCL_SOCKET_IFNAME
+              value: eth0
+            - name: GLOO_SOCKET_IFNAME
+              value: eth0
+            - name: NCCL_PROTO
+              value: simple
+            # exported by entrypoint.sh in the AGISlime original; kept as pod env
+            - name: NCCL_IB_DISABLE
+              value: '0'
+            - name: NCCL_NET_GDR_LEVEL
+              value: '2'
+            - name: NCCL_P2P_DISABLE
+              value: '0'
+            - name: REPLICA
+              value: '6'
+            - name: REPLICA_TRAINER
+              value: '2'
+            # run identity (ADR-0004): EXPERIMENT_NAME drives the checkpoint dir
+            # and the wandb group; bump BOTH for a fresh run — an existing
+            # checkpoint dir resumes silently.
+            - name: EXPERIMENT_NAME
+              value: rl-snork27b-gbash-r5
+            - name: PROJECT_NAME
+              value: rl-snork27b-gbash-r5
+            - name: CFG_NAME
+              value: /config/training/slime-config.yaml
+            - name: JOBNAME
+              value: rl-snork27b5-trainer
+            - name: USER
+              value: guparpit
+            - name: NATS_URL
+              value: nats://rl-snork27b5-nats:4222
+            - name: WANDB_BASE_URL
+              value: https://mega.wandb.agi.amazon.dev
+            - name: ARENA_DEFAULT_GYM
+              value: snorkel-general-bash-harbor
+            - name: ARENA_CHECKPOINTS_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/checkpoints
+            - name: ARENA_DATA_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/data
+            # consumed by the trainer-side lakefs SDK: the data source pulls
+            # manifest.jsonl from the KNOWN_GYMS lakeFS pin at startup (IAM via
+            # the arena-tasks-runner SA)
+            - name: LAKECTL_SERVER_ENDPOINT_URL
+              value: https://prod.artifact-vault.agi.amazon.dev
+            - name: LAKECTL_CREDENTIALS_PROVIDER_TYPE
+              value: aws_iam
+            - name: REPLICA_IDX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['training.kubeflow.org/replica-index']
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            resources:
+              limits:
+                nvidia.com/gpu: 8
+                vpc.amazonaws.com/efa: '8'
+              requests:
+                ephemeral-storage: 32Gi
+                memory: 1800Gi
+                nvidia.com/gpu: 8
+                vpc.amazonaws.com/efa: '8'
+            securityContext:
+              privileged: true
+            volumeMounts:
+            - mountPath: /config/training
+              name: training-config
+            - mountPath: /dev/shm
+              name: dshm
+            - mountPath: /dev/infiniband
+              name: infiniband
+            - mountPath: /dev/nvidia-caps
+              name: nvidia-caps
+          volumes:
+          - configMap:
+              name: rl-snork27b5-trainer-config
+            name: training-config
+          - emptyDir:
+              medium: Memory
+            name: dshm
+          - hostPath:
+              path: /dev/infiniband
+            name: infiniband
+          - hostPath:
+              path: /dev/nvidia-caps
+            name: nvidia-caps

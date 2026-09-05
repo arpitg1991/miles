@@ -815,3 +815,57 @@ help text, the ADRs and the GLM example run log.
   Defect found: HF export aux files missing on ENOTSUPP (fixed later).
 - Details, timeline and the as-applied manifests:
   `examples/arena/harbor-rl-27b-snorkel/RUNLOG.md` and `smoke-3node/`.
+
+## 2026-09-02 16:44 PT - Feature: `--arena-mask-clipped-final-turn` (integration 5f8925db0; ships in image `miles-glm53-20260902c`)
+
+First plugin feature after the port, written in answer to the GLM run-1/run-2
+loss-masking finding while run 2 (`rl-glm53f-gbash-r1`, image b) was still
+alive. Decision and outcome: ADR-0009. Run-side chronology:
+`examples/arena/harbor-rl-glm53-flash/RUNLOG.md`.
+
+**Trigger.** Run 1 (image a): rollout 0 on the wire 272 success / 54 failed /
+0 truncated, but only 23/256 training samples carried loss (91% removed by the
+inherited any-step `stop_reason=length` rule). Run 2 (image b, ~14:15 PT):
+rollout 0 summary 15:56 PT `removed_total=230/256 (0.898)`, reward 0.152,
+rollout 4894 s; rollout 1 summary 16:53 PT `227/256 (0.887)`, reward 0.258,
+rollout 3393 s; train step 0 `ess_ratio` 0.099. Read at the time as
+mid-episode clipping of long GLM turns (8-15k thinking tokens per turn).
+
+**Change (5f8925db0, 16:44 PT; +150/-2).**
+- `nats_arena/nats_rollout.py` (+47/-2): `hard_overflow` tracked next to the
+  `max_ctx` truncation; salvage block after `s.status = status` (flag on,
+  TRUNCATED from a `length` step, no degenerate agent stop, no hard overflow,
+  no zero-filled logprobs -> zero the trailing 1-run of the response
+  `loss_mask`, keep the sample, `logger.info("Task %s: masked clipped final
+  turn (%d of %d response tokens) ...")`); `remove_sample` fires on
+  `TRUNCATED and not final_clip_masked` or `bad_logprobs`; flag registered in
+  `_add_arena_arguments` (`store_true`, default off).
+- `tests/fast/plugins/arena/test_mask_clipped_final_turn.py` (103 lines, 5
+  tests) on a synthetic cumulative step `[0,1,1,0,1,1,1]` (prompt, turn A,
+  tool output, clipped turn B): flag off keeps removal; on -> `loss_mask
+  [1,1,0,0,0,0]`, status TRUNCATED, logprobs 1:1 with response_length; single
+  fully clipped turn still removed; `agent_stop_reason=context_error` still
+  removed, mask untouched; clean `stop` untouched / COMPLETED.
+
+**Verification.** 5 passed in `/tmp/miles-venv` (3-way PYTHONPATH); re-run
+2026-09-05 with the 5f8925db0 test and the final test against the final
+module: 5/5 each. Port-added CPU tests 153 -> 158 (177 after the keep-timeout
+commit).
+
+**Shipping.** Image b (13:55 PT) predates the flag, so the YAML key would kill
+the trainer at argparse there; image c is built from the integration tree for
+the r2 relaunch (after the hf_export fix, 22:23 PT); the r2 fix set 3098ae1d3
+(22:37 PT) sets `arena_mask_clipped_final_turn: true` with a comment citing
+run 2's 0.898 / 0.099; r2 (`rl-glm53f-gbash-r2`) launches 22:49 PT. The key
+stays `true` in every GLM config since (r2-r7); the 27B configs never carry it.
+
+**Outcome.** Inert: r2 rollout 0 removed 229/256 (`truncated_ratio` 0.8945),
+zero `masked clipped final turn` lines. The 2026-09-03 truncation RCA found
+0/1033 generates at the 32k cap (max 15k): the removals were Harbor agent
+timeouts, which this flag correctly does not salvage - see the
+`--arena-keep-timeout-trajectories` entry (01:38 PT) and ADR-0010; that commit
+also makes this test's `_args` pass `arena_keep_timeout_trajectories=False`.
+
+**Naming trap.** "r5-lineage default" in the help text and the test docstring
+means the AGISlime snorkel run-5 removal policy (ADR-0007 lineage), not GLM
+r5 - the GLM runs reuse the r1..r7 labels.

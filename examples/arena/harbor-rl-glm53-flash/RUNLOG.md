@@ -1492,21 +1492,29 @@ step 1240-1560 s, rollout 2100-2950 s, train/ess_ratio 0.74-0.81. r7 rollouts:
    42 at 01:20 PT, 34 at 02:20, 22 at 05:02, 58 at 06:21). Mechanism: the
    conversation may grow to `ARENA_ROLLOUT_CONTEXT_LIMIT` = 131072 while every
    call still asks for `ARENA_MAX_TOKENS` = 32768 new tokens, so any prompt past
-   98304 tokens overshoots `sglang_context_length`. The gym ends such an
-   episode as `truncated`, not `failed`, so it never appears in the trainer's
-   `Removal reasons:` line (no `context_error` key was ever logged in r7); it
-   is folded into `truncated_ratio` and into the kept-timeout share. Fix for
-   the next run, gym-side: set `ARENA_ROLLOUT_CONTEXT_LIMIT` to
-   131072 - 32768 = 98304, or make the worker cap `max_tokens` to the remaining
-   context (AREnATasks change).
+   98304 tokens overshoots `sglang_context_length`. CORRECTED 2026-09-05 08:50 PT
+   after reading the code paths (see the "Why samples are TRUNCATED" entry
+   below): on the Terminus-2 path `ArenaSGLangLLM` raises
+   `ContextLengthExceededError`, Harbor records the exception and SKIPS THE
+   VERIFIER, and the worker ships the slot as a synthetic trajectory; the
+   trainer pads it and counts it under `failed=` in `Removal reasons:` (the
+   `context_error` agent-stop mapping in gym_worker.py is unreachable on this
+   path). So these episodes are the bulk of r7's `failed` 12-28 per step and
+   are NOT in `truncated_ratio`. `ARENA_ROLLOUT_CONTEXT_LIMIT` is a no-op on
+   the training path (only Harbor's summarisation reads it, and
+   `ArenaTerminus2` disables summarisation), so lowering it cannot fix this.
+   The fix is gym-side code: cap `max_new_tokens` to
+   `engine_context - len(input_ids)` in `ArenaSGLangLLM._generate_turn`, and/or
+   catch `ContextLengthExceededError` in `ArenaTerminus2` so the episode ends
+   cleanly with the verifier run (then it trains as a `truncated` sample).
 4. Cadence at 24 nodes with effort `high`: rollouts of 32-68 min overlap the
    28-34 min train steps, so r7 lands a step every ~35-40 min — about r6's
    wall clock per step, for ~1.4x the tokens.
 
 **Decision -> r8 (proposal, not launched).** Keep `ARENA_SGLANG_REQUEST_TIMEOUT_SEC=1800`
 and the r6 shape; return `ARENA_REASONING_EFFORT` to `low`; close the
-context-ceiling gap (`ARENA_ROLLOUT_CONTEXT_LIMIT` 98304 or a gym-side
-`max_tokens` cap). Rejected: staying at `high` with a larger agent-timeout
+context-ceiling gap with a gym-side `max_new_tokens` cap (a new gym image;
+`ARENA_ROLLOUT_CONTEXT_LIMIT` does nothing here, see finding 3). Rejected: staying at `high` with a larger agent-timeout
 multiplier (needs `ARENA_NATS_ACK_WAIT` raised in lockstep and makes each step
 slower still, for no reward signal so far); dropping `ARENA_MAX_TOKENS` below
 32768 (r1 showed GLM's reasoning truncating at 2048-token turns). Whether r7
@@ -1527,6 +1535,74 @@ improves past step 4 is left to its continued run; this read-out is the
 | GLM tool-call format vs the snorkel textual bash agent | never formally verified; non-zero rewards (0.15-0.40 across r1-r6) show commands are being extracted, not that every turn parses |
 | `use_dynamic_batch_size` + PP>1 `send_forward` deadlock (ForgeModelEnablement measurement) | not hit so far because every sample exceeds `max_tokens_per_gpu` 8192 (one sample per micro-batch); becomes live once short samples appear |
 | stale text kept as history | README "Current run identity is r3"; `nats.yaml` header "27B RL run 2"; `miles-config.yaml` comment "wandb group = EXPERIMENT_NAME (rl-glm53f-gbash-r1)"; `gym-worker.yaml` header "replicas 8 -> 128". Fix in a separate docs commit if wanted |
+
+## 2026-09-05 08:50 PT — Why samples are TRUNCATED: wall clock, not `length` and not the context ceiling
+
+Question from the user: are the r6/r7 `truncated` samples per-turn `length`
+clips, context overflows, or something else? Answer from the trainer log, the
+gym pods and both code paths (`miles_plugins/arena/nats_arena/nats_rollout.py`
+`_result_to_samples_full_trajectory`; AREnATasks `amzn_arena_harbor/gym_worker.py`,
+`sglang_rollout.py`, `amzn_arena_contract/rl/results.py`):
+
+**What sets `Sample.Status.TRUNCATED`** (nats_rollout.py:356-385, 419-440,
+585-602): (T1) any step `stop_reason` containing `length` — the FINAL generate
+of the trajectory hit `ARENA_MAX_TOKENS` (the gym ships one step per
+trajectory and stamps `length` only for the last call); (T2) a degenerate
+`agent_stop_reason` (`timeout`, `context_error`, `context_churn`,
+`empty_response`, `max_budget`, `no_choices`); (T3) `len(token_ids)` >
+`rollout_max_context_len`. A kept-timeout sample keeps status TRUNCATED, so
+`kept_timeout` is a strict subset of the truncated count, and every removed
+cause has its own `Removal reasons:` key (`length=`, `context_overflow=`,
+`context_error=`, `timeout=`, `bad_logprobs=`); only masked-clipped final
+turns (flag on) are TRUNCATED with no removal key.
+
+**Measured**
+
+| | r6 (effort low, 600 s) | r7 (effort high, 1800 s) |
+|---|---|---|
+| `rollout/truncated` vs `kept_timeout/512`, every step | equal to within 1 sample (39 steps) | equal to within 1 sample (7 steps) |
+| `Removal reasons:` keys ever logged | only `failed=N (kept_timeout=M)` | only `failed=N (kept_timeout=M)` |
+| `length=` / `context_overflow=` / `context_error=` removals | 0 | 0 |
+| "masked clipped final turn" (final generate hit 32768) | 0 of 14597 kept timeouts | 38 (~1%) |
+| kept-timeout trajectories: "every turn ended cleanly" | 14597 / 14597 | 6515 / 6515 |
+| kept-timeout response tokens: <20k / 20-32k / 32-64k / >=64k | 8% / 7% / 39% / 47% | 0% / 1% / 29% / 69% |
+| kept-timeout mean turns | 32.9 | 27.2 |
+| in-flight `rollout.json` on 40 gym pods: `truncated_generates` > 0 | 0 of 81 | 0 of 10 |
+| SGLang "exceeds the model's maximum context length" errors (whole run) | 2945 | 711 |
+| prompt tokens at those errors p10/p50/p90 | 98.4k / 99.4k / 102.6k | ~99-102k |
+| completed trials on 40 pods: `ContextLengthExceededError`, verifier skipped | 9 of 98 | 4 of 33 |
+| completed trials on 40 pods: `ReadTimeout` (600 s), verifier skipped | 16 of 98 | 0 |
+
+**Conclusion.** Essentially 100% of the `truncated` samples in both runs are
+Harbor agent wall-clock timeouts (`task.toml timeout_sec` x
+`ARENA_AGENT_TIMEOUT_MULTIPLIER` 2 = 1800-3600 s), kept for training by
+`--arena-keep-timeout-trajectories`, with every turn ended on a clean `stop`.
+Per-turn `length` truncation is ~1% (r7) or absent (r6); no mid-episode turn
+hit 32768 in any in-flight trajectory sampled, and mid-episode clips would not
+end the episode anyway (Terminus-2 feeds the parser error back and continues;
+only the final call's finish reason is stamped). The trajectories that time
+out are long: 47-69% carry >=64k response tokens over ~27-33 turns, i.e. the
+binding constraint is decode throughput on saturated engines (KV 0.97-0.98)
+times the number of turns, not any token cap. Context overflow is real but
+lives elsewhere: the ~99-102k-token prompts that overshoot the 131072 engine
+context (once `ARENA_MAX_TOKENS` 32768 is added) raise
+`ContextLengthExceededError`; Harbor skips the verifier and the worker sends a
+synthetic slot, which the trainer pads and counts as `failed=` (r6 too: ~9% of
+completed trials in the sample). Those trajectories are lost to training
+entirely. `ARENA_ROLLOUT_CONTEXT_LIMIT` is a no-op on this path.
+
+**Follow-ups (not done):** gym-side `max_new_tokens = min(ARENA_MAX_TOKENS,
+engine_context - len(input_ids) - margin)` in `ArenaSGLangLLM._generate_turn`;
+catch `ContextLengthExceededError` in `ArenaTerminus2` so the episode ends
+with the verifier run (`agent_stop_reason="context_error"` would then reach the
+trainer and the partial trajectory could train as truncated); log
+`truncated_generates` and `agent_stop_reason` as W&B metrics so this needs no
+log archaeology next time. Two code gaps found on the AREnATasks side: the
+`ContextLengthExceededError -> context_error` mapping in `gym_worker.py` is
+unreachable on the single-step path (the synthetic early return runs first),
+and Vulcan's `model_length` / `max_budget` stop reasons are written only to
+`trajectory.json` and never reach the wire (a context-overflowed Vulcan
+episode is reported as a clean `success`).
 
 ### Where the story continues
 

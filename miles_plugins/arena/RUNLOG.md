@@ -734,3 +734,59 @@ rather than changed.
   `/workplace/guparpit/miles/arena-port-artifacts/` at 02:59 PT.
 - Port declared CPU-verified for the harbor-rl-27b shape; GPU validation
   follows with the example directories.
+
+## 2026-09-01 02:37 PT — Package README lands with the harbor-rl-27b example
+
+`miles_plugins/arena/README.md` was written at 02:37 PT, in the fix-up pass
+that followed the adversarial verification wave, and has not changed since
+(byte-identical to the 2026-09-02 00:55 PT integration snapshot). It lands in
+the same commit as `examples/arena/harbor-rl-27b/` because its
+"harbor-rl-27b usage" section points readers at `examples/arena/` for the
+launch script, training config and manifests; committing it earlier would
+have left a dangling pointer.
+
+What it records (state of the port as verified on 2026-09-01):
+
+- The fixed mapping rule `amzn_agi_slime.X -> miles_plugins.arena.X`
+  (including `nats_arena/`) and the module inventory: `nats_arena/`
+  (rollout worker, data source, `message_format`, gym autoscaler, mixture
+  controller, eval coordinator/rollout, Argo eval trigger, binary reward
+  post-processors), `train_async_arena.py`, `rewards.py`, `parsers.py`,
+  `checkpoint_extras.py` (sidecar filename `iter_%07d/slime_extra_state.json`
+  kept byte-identical for interop with AGISlime-written checkpoints),
+  `eval_metrics_drain.py`, `s3_artifact.py`, `logging_extensions.py`,
+  `rollout_metrics.py`.
+- Wiring knobs: `--rollout-function-path
+  miles_plugins.arena.nats_arena.nats_rollout.generate_rollout`,
+  `--data-source-path
+  miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWithBuffer`,
+  optional `--custom-reward-post-process-path
+  miles_plugins.arena.nats_arena.reward_binary.binarize_reward`.
+- NATS connectivity from the environment (`NATS_URL`; overrides
+  `NATS_TASKS_STREAM`, `NATS_TASKS_SUBJECT_PREFIX`, `NATS_RESULTS_STREAM`,
+  `NATS_RESULTS_SUBJECT`, `NATS_RESULTS_CONSUMER`, `ARENA_DEFAULT_GYM`) with
+  the AGISlime defaults `ARENA_TASKS` / `ARENA_RESULTS`, `arena.tasks.<gym>` /
+  `arena.results`, durable `slime-trainer`; wire format bit-identical, so
+  existing gym workers need no change.
+- Installation `pip install -e ".[arena]"` (`nats-py`, `kubernetes==35.0.0`,
+  `lakefs`, `boto3`), all imported lazily so non-arena runs never need them.
+- "Known limitations and follow-ups", each traced to a verify report:
+  per-trajectory (not per-group) GRPO loss weighting needs job-owner
+  sign-off - mitigating fact: the vendored baseline's `build_dp_schedule`
+  assert (8 groups < GBS 64) means per-group weighting was never
+  demonstrated on this smoke config (verify-natsGrpo); data-source buffer not
+  persisted across restarts (parity); resume dedup guard mostly vacuous
+  because `save()` persists the publisher's offsets/epochs, observed epochs=6
+  after 2 trained rollouts on the 4-prompt e2e dataset (verify-e2e);
+  `--gym-autoscale-auto-tune` cannot be switched off from YAML - `store_true`
+  with default True (verify-natsGrpo). Follow-ups: eval coordinator as a
+  wandb shared-mode secondary writer replacing the `eval_metrics_drain`
+  file queue; ride miles' `CheckpointEvalFn`/`EvalDispatcher` seam instead
+  of the fire-and-forget Argo trigger; class-based `RolloutFn` so
+  `generate_rollout` receives the authoritative `weight_version` instead of
+  inferring staleness from `rollout_id`.
+
+Gap to remember: the README predates every post-port flag
+(`--arena-mask-clipped-final-turn`, `--arena-keep-timeout-trajectories`) and
+was not updated when they shipped; their documentation lives in the argparse
+help text, the ADRs and the GLM example run log.

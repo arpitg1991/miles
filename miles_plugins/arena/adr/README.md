@@ -32,3 +32,4 @@ in `../RUNLOG.md` and `examples/arena/<job>/RUNLOG.md`, not here.
 | [0004](0004-per-trajectory-loss-weighting-and-rollout-logprobs.md) | Accept per-trajectory loss weighting; zero-fill slow-path rollout log-probs |
 | [0005](0005-driver-pure-insertion-and-sidecar-resume.md) | Driver as pure insertion over `train_async.py`; checkpoint-sidecar W&B resume via `init_wandb_primary` |
 | [0006](0006-launcher-argv-parity.md) | Launcher argv parity: `scripts/run_arena_harbor.py` replaces entrypoint.sh + hydra_converter |
+| [0007](0007-plain-stack-descoping-for-snorkel.md) | Plain-stack descoping for the snorkel job |

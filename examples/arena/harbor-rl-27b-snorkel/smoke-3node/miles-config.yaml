@@ -1,0 +1,102 @@
+# rl-milesgb1-smoke1: FIRST GPU smoke of the miles arena port.
+# Qwen3.5-27B GRPO on the snorkel-general-bash-harbor Harbor NATS gym,
+# prod-bom, 3x p6-b200.48xlarge: workers 0-1 = Megatron actor
+# (TP4/PP2/CP2, 16 GPUs, DP=1), worker 2 = 8x single-GPU SGLang engines.
+# Derived from examples/arena/harbor-rl-27b-snorkel/snorkel-27b.yaml
+# (plain stack) with smoke deltas:
+#   - replicas 6->3 (1 rollout node), num_rollout 90->4, save_interval 4
+#   - rollout_batch_size 32->8 (GBS 64 = 8*8, rbs*n == GBS)
+#   - rollout_num_gpus_per_engine 4->1 + dp-attention off: miles's own
+#     qwen3.5 recipes force 1 GPU/engine (sglang TP>1 mis-generates qwen3.5,
+#     sgl-project/sglang#21039); 27B bf16 fits one B200
+#   - pin_rollout_manager_to_head: sglang router binds on replica-index 0,
+#     where the rl-milesgb1-sglang Service points
+#   - first run: --load has no checkpoint -> miles falls back to ref_load
+#     (arguments.py fallback), finetune-style, exactly the slime semantics
+user: guparpit
+cluster: bom
+experiment_name: rl-milesgb1-smoke1
+project_name: rl-milesgb1-smoke1
+agislime_dir: /root/miles
+replicas: 3
+num_trainers: 2
+model_arch: qwen3.5-27B
+hf_checkpoint: /mnt/models-ro/external/Qwen/Qwen3.5-27B
+ref_load: /mnt/scratch-s3files-rw/bowenxie/checkpoints/dcp/tp4/Qwen/Qwen3.5-27B
+save_interval: 4
+no_load_optim: true
+no_save_optim: true
+rollout_function_path: miles_plugins.arena.nats_arena.nats_rollout.generate_rollout
+data_source_path: miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWithBuffer
+prompt-data-list: '[{"path":"lakefs://arena-inspect/dev/internal/snorkel-general-bash-harbor/ecr-20260823/manifest.jsonl","gym_name":"snorkel-general-bash-harbor","weight":1.0}]'
+sglang_disable_overlap_schedule: true
+pin_rollout_manager_to_head: true
+input_key: messages
+metadata_key: metadata
+apply_chat_template: false
+loss_mask_type: qwen3_5
+rollout_shuffle: true
+rollout_skip_special_tokens: true
+num_rollout: 4
+rollout_batch_size: 8
+n_samples_per_prompt: 8
+rollout_max_response_len: 2048
+rollout_temperature: 1
+global_batch_size: 64
+balance_data: true
+rollout_num_gpus_per_engine: 1
+rollout_max_context_len: 131072
+sglang_context_length: 131072
+sglang_chunked_prefill_size: 12288
+sglang_router_port: 30000
+sglang_tool_call_parser: qwen3_coder
+sglang_reasoning_parser: qwen3
+sglang_mem_fraction_static: 0.85
+update_weights_interval: 1
+skip_eval_before_train: true
+distributed_timeout_minutes: 60
+tensor_model_parallel_size: 4
+sequence_parallel: true
+pipeline_model_parallel_size: 2
+context_parallel_size: 2
+expert_model_parallel_size: 1
+expert_tensor_parallel_size: 1
+recompute_granularity: full
+recompute_method: uniform
+recompute_num_layers: 1
+use_dynamic_batch_size: true
+max_tokens_per_gpu: 65536
+attention_dropout: 0.0
+hidden_dropout: 0.0
+accumulate_allreduce_grads_in_fp32: true
+attention_softmax_in_fp32: true
+attention_backend: flash
+advantage_estimator: grpo
+use_rollout_logprobs: true
+keep_old_actor: false
+use_kl_loss: true
+kl_coef: 0.0
+kl_loss_type: low_var_kl
+entropy_coef: 0.0
+eps_clip: 0.4
+eps_clip_high: 0.4
+eps_clip_c: 2.0
+optimizer: adam
+lr: 15e-7
+lr_decay_style: constant
+weight_decay: 0.1
+adam_beta1: 0.9
+adam_beta2: 0.98
+use_distributed_optimizer: true
+use_tensorboard: false
+use_wandb: true
+use_distributed_post: true
+enable_trajectory_tracing: false
+arena_sample_mode: full_trajectory
+log_passrate: false
+wandb_host: https://mega.wandb.agi.amazon.dev
+wandb_project: rl-snorkel27
+wandb_team: arena
+# Zero-variance groups carry no GRPO gradient; drop them and fetch extras
+# (examine cap 4x target via --dynamic-sampling-max-examine-mult default).
+dynamic_sampling_filter_path: miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std

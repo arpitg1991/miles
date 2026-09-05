@@ -1,0 +1,146 @@
+# snorkel-general-bash-harbor RL: Qwen3.5-27B GRPO on the Harbor NATS gym
+# worker (ADR-0039), prod-bom, 6x p6-b200.48xlarge — derived from the AGISlime
+# snorkel-27b-r5.yaml, descoped to the plain miles stack (deltas below).
+# Workers 0-1 = Megatron actor (16 GPUs = TP4xPP2xCP2, DP=1); workers 2-5 =
+# SGLang engines (32 GPUs, 8 engines). Binary in-container pytest verifier
+# rewards (reward.txt), no judge.
+#
+# Converted to a flat train argv by scripts/run_arena_harbor.py with
+# hydra_converter semantics (true -> bare flag, false/None -> dropped,
+# prompt-data-list -> --prompt-data moved last). The launcher consumes
+# user/cluster/experiment_name/project_name/agislime_dir/replicas/num_trainers/
+# model_arch — they never reach the trainer (miles argparse is strict). Run
+# identity (checkpoint dir, wandb group) comes from the EXPERIMENT_NAME pod env
+# (ADR-0004), and cluster shape from REPLICA/REPLICA_TRAINER — the values here
+# are kept for schema compatibility with the AGISlime configs.
+#
+# Deltas from the AGISlime run5 original (see ARGV_PARITY.md):
+#   - rollout_function_path / data_source_path:
+#     amzn_agi_slime.nats_arena.* -> miles_plugins.arena.nats_arena.*
+#   - dynamic_sampling_filter_path: slime.rollout.filter_hub.* ->
+#     miles.rollout.filter_hub.* (miles ships check_reward_nonzero_std natively)
+#   - run5's custom reward post-process hook (the group-keyed survivor
+#     normalization) REMOVED — deliberately descoped: miles' native
+#     _normalize_rewards_by_rollout already keys reward groups on
+#     Sample.group_index, so filter survivors normalize per-group without a
+#     custom hook. See README.md, "Lineage and descoping".
+#   - batch shape reverted to the r1 baseline: rollout_batch_size 128 -> 32
+#     (r3b's "8x pushed to NATS" budget is descoped; rbs*n == GBS again) and
+#     num_rollout 100000 -> 90 (a ~1-epoch cap instead of run-until-stopped).
+#   - the examine-mult pod-env override dropped (descoped); the filter's
+#     examine cap is the registered --dynamic-sampling-max-examine-mult
+#     default (4x, flag unset here).
+#   - prompt-data-list: run5's scratch-staged train.jsonl (2600-task training
+#     subset) -> the KNOWN_GYMS lakeFS pin for snorkel-general-bash-harbor.
+#     This trains on ALL 2922 validated tasks (manifest commit b4aeedec…),
+#     INCLUDING run5's 322-task held-out dev.jsonl — see README.md, "Dataset".
+#   - rollout_global_dataset: true removed — miles has no --rollout-global-dataset
+#     flag (it is the default; only --disable-rollout-global-dataset exists).
+user: guparpit
+cluster: bom
+# EXPERIMENT_NAME in the PyTorchJob pod env drives CKPT_DIR; these names are
+# the config-side record. NEVER reuse a finished run's name (silent resume).
+experiment_name: rl-snork27b-gbash-r5
+project_name: rl-snork27b-gbash-r5
+agislime_dir: /opt/AGISlime
+replicas: 6
+num_trainers: 2
+model_arch: qwen3.5-27B
+hf_checkpoint: /mnt/models-ro/external/Qwen/Qwen3.5-27B
+ref_load: /mnt/scratch-s3files-rw/bowenxie/checkpoints/dcp/tp4/Qwen/Qwen3.5-27B
+save_interval: 20
+no_load_optim: true
+no_save_optim: true
+rollout_function_path: miles_plugins.arena.nats_arena.nats_rollout.generate_rollout
+data_source_path: miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWithBuffer
+# Dataset: the KNOWN_GYMS registry pin (AREnATasks amzn_arena_harbor/gyms.py)
+# lakefs://arena-inspect/dev/internal/snorkel-general-bash-harbor/ecr-20260823/
+# with manifest.jsonl appended: ArenaDataSourceWithBuffer pulls exactly the
+# lakeFS object the URI names (a bare variant-dir URI 404s at startup; only
+# LOCAL directory paths get manifest.jsonl appended). Rows are per-task
+# {lakefs_uri, lakefs_commit_id} pointers; the gym workers materialize each
+# task at the pinned payload commit — no scratch dataset staging.
+prompt-data-list: '[{"path":"lakefs://arena-inspect/dev/internal/snorkel-general-bash-harbor/ecr-20260823/manifest.jsonl","gym_name":"snorkel-general-bash-harbor","weight":1.0}]'
+sglang_enable_dp_attention: true
+sglang_disable_overlap_schedule: true
+input_key: messages
+metadata_key: metadata
+apply_chat_template: false
+loss_mask_type: qwen3_5
+rollout_shuffle: true
+rollout_skip_special_tokens: true
+# ~1 epoch: 2922 tasks / rollout_batch_size 32
+num_rollout: 90
+rollout_batch_size: 32
+n_samples_per_prompt: 8
+rollout_max_response_len: 2048
+rollout_temperature: 1
+global_batch_size: 256
+balance_data: true
+rollout_num_gpus_per_engine: 4
+rollout_max_context_len: 131072
+sglang_context_length: 131072
+sglang_chunked_prefill_size: 12288
+sglang_router_port: 30000
+sglang_tool_call_parser: qwen3_coder
+sglang_reasoning_parser: qwen3
+sglang_mem_fraction_static: 0.85
+update_weights_interval: 1
+# intentionally inert on the arena NATS path (no consumer reads it for a custom
+# rollout function); kept for config parity with the AGISlime original
+partial_rollout: true
+gym_autoscale: false
+skip_eval_before_train: true
+distributed_timeout_minutes: 60
+tensor_model_parallel_size: 4
+sequence_parallel: true
+pipeline_model_parallel_size: 2
+context_parallel_size: 2
+expert_model_parallel_size: 1
+expert_tensor_parallel_size: 1
+recompute_granularity: full
+recompute_method: uniform
+recompute_num_layers: 1
+use_dynamic_batch_size: true
+max_tokens_per_gpu: 65536
+attention_dropout: 0.0
+hidden_dropout: 0.0
+accumulate_allreduce_grads_in_fp32: true
+attention_softmax_in_fp32: true
+attention_backend: flash
+advantage_estimator: grpo
+use_rollout_logprobs: true
+keep_old_actor: false
+use_kl_loss: true
+kl_coef: 0.0
+kl_loss_type: low_var_kl
+entropy_coef: 0.0
+eps_clip: 0.4
+eps_clip_high: 0.4
+eps_clip_c: 2.0
+optimizer: adam
+lr: 15e-7
+lr_decay_style: constant
+weight_decay: 0.1
+adam_beta1: 0.9
+adam_beta2: 0.98
+use_distributed_optimizer: true
+use_tensorboard: false
+use_wandb: true
+use_distributed_post: true
+enable_trajectory_tracing: false
+arena_sample_mode: full_trajectory
+# Off to match the run5 record. The original rationale was ragged replacement
+# batches breaking pass@k's fixed-size group reshape; with rollout_batch_size *
+# n_samples_per_prompt == global_batch_size here, the reshape is valid again
+# and this could be re-enabled.
+log_passrate: false
+wandb_host: https://mega.wandb.agi.amazon.dev
+wandb_project: rl-snorkel27
+wandb_team: arena
+wandb_always_use_train_step: false
+# DAPO-style dynamic sampling: zero-variance (all-pass/all-fail) groups carry
+# no GRPO gradient; the filter drops them at collection time and fetches extra
+# groups until GBS/n survivors, bounded at 4x examined (the
+# --dynamic-sampling-max-examine-mult default; the flag stays unset here).
+dynamic_sampling_filter_path: miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std

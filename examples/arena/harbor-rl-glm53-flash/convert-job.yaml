@@ -1,0 +1,190 @@
+# One-shot HF -> torch_dist (DCP) conversion of GLM-5.3-Flash-BF16 on a single
+# p6-b200.48xlarge (8 GPUs). Run AFTER fetch-job.yaml completes and BEFORE the
+# trainer (the trainer's ref_load points at the read-only view of what this
+# writes: /mnt/scratch-s3files-rw/guparpit/checkpoints/dcp/glm5.3-flash_torch_dist).
+# (/mnt/models-ro is a separate read-only curated EFS volume — NOT a view of
+# fast scratch; nothing we write appears there.)
+#
+# Expressed as a 1-replica PyTorchJob — NOT a batch/v1 Job — because this
+# copies the workload-type wiring the snorkel/GLM trainers use for GPU
+# admission (kueue queue label gpu.p6-b200-48xlarge on a kubeflow workload,
+# p6 nodeSelector/tolerations, privileged, dshm), which is the wiring that is
+# proven to admit and schedule on these nodes.
+#
+# Why --save lands on /dev/shm first, then cp:
+#   - Mountpoint-S3 (/mnt/scratch-fast-1a-rw) supports sequential
+#     create-writes but NOT rename; torch DCP save fails at the final
+#     .metadata rename when pointed there directly.
+#   - Node ephemeral-disk allocatable is uncertain for a ~643 GB checkpoint;
+#     /dev/shm IS the dshm emptyDir below (medium: Memory) and the node has
+#     ~2 TB RAM. The snorkel template declared no sizeLimit on dshm (tmpfs
+#     then defaults to node allocatable) — kept that way here on purpose, and
+#     the pod memory request (1800Gi, the platform-proven value on these
+#     nodes) covers checkpoint-on-shm plus the conversion processes with
+#     ~1.2 TB headroom.
+#
+# Sharding: MODEL_ARGS carries NO parallelism flags, and that is correct —
+# tools/convert_hf_to_torch_dist.py auto-reshapes PP -> world_size when PP==1
+# and CONVERT_KEEP_PP1 is unset, so the 8 ranks run PP8 (6/6/6/6/6/6/6/3
+# layers; worst rank ~43.5B params = ~87 GB bf16, fits a 180 GB B200). Do NOT
+# set CONVERT_KEEP_PP1=1 here: with 8 unsharded ranks each rank would build
+# the FULL 321B model (~642 GB) and OOM at model build. torch_dist
+# checkpoints are TP/PP/EP-reshardable, so the PP8 conversion layout loads
+# cleanly under the trainer's TP8/PP4/EP16. (Doc-pattern alternative:
+# CONVERT_KEEP_PP1=1 + explicit --tensor-model-parallel-size 8
+# --pipeline-model-parallel-size 1; the env-unset auto-reshape is the
+# converter's default path and is used here.)
+#
+# IMAGE NOTE: the image below is the arena build pushed in README step 2
+# ("Build and push the trainer image") — build/push it BEFORE applying this
+# job, or it ImagePullBackOffs (imagePullPolicy: Always). Conversion itself
+# only needs the upstream tree (tools/ + scripts/models/), which the arena
+# image is a superset of.
+#
+# Deltas vs the trainer wiring: single replica, restartPolicy Never (a partial
+# convert must be inspected, not blindly retried), EFA resources and
+# /dev/infiniband DROPPED (single-node NCCL never leaves NVLink; the EFA
+# device plugin resource would only constrain scheduling).
+#
+#   kubectl apply -f convert-job.yaml
+#   kubectl logs -n arena-tasks -f rl-glm53f-convert-worker-0
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: rl-glm53f-convert
+  namespace: arena-tasks
+  labels:
+    app: rl-glm53f-convert
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+spec:
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            app: rl-glm53f-convert
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
+        spec:
+          serviceAccountName: arena-tasks-runner
+          enableServiceLinks: false
+          priorityClassName: high
+          nodeSelector:
+            node-type: p6-gpu
+            node.kubernetes.io/instance-type: p6-b200.48xlarge
+          # i-00cb6ebceda36a4ef: kueue TAS keeps assigning this node but the
+          # scheduler cannot place there (occupied outside kueue's view) —
+          # submissions 1 and 2 both died on the pods-ready eviction because
+          # of it (2026-09-02). Excluding it forces TAS onto real capacity.
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                    - i-00cb6ebceda36a4ef
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+          - effect: NoSchedule
+            key: vpc.amazonaws.com/efa
+            operator: Exists
+          containers:
+          - name: pytorch
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902a
+            imagePullPolicy: Always
+            command: ["bash", "-c"]
+            args:
+            - |
+              set -euo pipefail
+              # $MODEL_ARGS carries --moe-layer-freq [0,0,0,1,…]: word-split it,
+              # but keep the brackets un-globbed
+              set -f
+              cd /root/miles
+              MODEL_ARGS=$(python3 miles/utils/external_utils/model_args_utils.py glm5.3-flash)
+              SRC=/dev/shm/glm53-convert/glm5.3-flash_torch_dist
+              # DST is EFS, NOT fast scratch: mountpoint-S3 rejects objects over
+              # ~78 GiB (8 MiB part x 10k parts) and the PP8 conversion emits
+              # 83 GB .distcp shards (EFBIG on cp). To host the DCP on fast
+              # scratch instead, re-convert with >=16 ranks (2 nodes) so every
+              # shard lands under the cap.
+              DST_DIR=/mnt/scratch-s3files-rw/guparpit/checkpoints/dcp
+              DST="${DST_DIR}/glm5.3-flash_torch_dist"
+              if [ -e "$DST" ]; then
+                echo "REFUSING to overwrite existing ${DST} — delete it (or rename the target) first"
+                exit 1
+              fi
+              mkdir -p "$(dirname "$SRC")"
+              # CONVERT_KEEP_PP1 deliberately UNSET: the converter auto-reshapes
+              # PP -> world_size (PP8 here), which is what makes 321B fit 8x
+              # 180 GB (~87 GB bf16 worst rank). Setting it would build the
+              # FULL model per rank and OOM. torch_dist re-shards at load.
+              CUDA_DEVICE_MAX_CONNECTIONS=1 PYTHONPATH=/root/Megatron-LM \
+                torchrun --nproc-per-node 8 tools/convert_hf_to_torch_dist.py \
+                $MODEL_ARGS \
+                --hf-checkpoint /mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16 \
+                --save "$SRC"
+              echo "convert done; copying to EFS (parallel per-file)"
+              mkdir -p "$DST/release"
+              cp "$SRC/latest_checkpointed_iteration.txt" "$DST/"
+              for f in "$SRC"/release/*; do
+                cp "$f" "$DST/release/$(basename "$f")" &
+              done
+              wait
+              # Verify with a per-file size manifest, NOT du -sb: du apparent
+              # sizes include DIRECTORY inodes, whose size differs by
+              # filesystem (tmpfs ~40 B vs mountpoint-S3 10240 B), so an
+              # aggregate byte compare fails after a fully successful copy.
+              # The manifest diff also catches per-file truncation that an
+              # aggregate sum could mask.
+              (cd "$SRC" && find . -type f -printf '%s %P\n' | sort -k2) > /tmp/src.mf
+              (cd "$DST" && find . -type f -printf '%s %P\n' | sort -k2) > /tmp/dst.mf
+              src_files=$(wc -l < /tmp/src.mf)
+              dst_files=$(wc -l < /tmp/dst.mf)
+              echo "verify: files src=${src_files} dst=${dst_files}"
+              diff /tmp/src.mf /tmp/dst.mf
+              du -sh "$DST"
+              echo "SUCCESS: glm5.3-flash_torch_dist at ${DST} (${dst_files} files, per-file sizes verified); the trainer ref_load points at this same path"
+            env:
+            - name: PYTHONUNBUFFERED
+              value: '1'
+            - name: PYTHONFAULTHANDLER
+              value: '1'
+            resources:
+              limits:
+                nvidia.com/gpu: 8
+              requests:
+                ephemeral-storage: 32Gi
+                # 1200Gi, deliberately below the trainers' 1800Gi: actual use
+                # is ~599 GiB checkpoint on /dev/shm (tmpfs = the dshm
+                # emptyDir, charged against the request) + the 8 conversion
+                # ranks' host memory (~200-300 GiB), so ~1.5x headroom remains
+                # — and the smaller request schedules onto nodes where a
+                # 1800Gi ask sat Pending (first submission was unschedulable:
+                # kueue TAS pinned a node that could not fit 1800Gi, the
+                # pods-ready timeout evicted the pod, and restartPolicy Never
+                # turned that into a failed job).
+                memory: 1200Gi
+                nvidia.com/gpu: 8
+            securityContext:
+              privileged: true
+            volumeMounts:
+            - mountPath: /dev/shm
+              name: dshm
+            - mountPath: /dev/nvidia-caps
+              name: nvidia-caps
+          volumes:
+          # medium: Memory, NO sizeLimit — matches the snorkel template (which
+          # declared none); tmpfs then sizes to node allocatable, which is what
+          # lets the ~643 GB checkpoint stage here.
+          - emptyDir:
+              medium: Memory
+            name: dshm
+          - hostPath:
+              path: /dev/nvidia-caps
+            name: nvidia-caps

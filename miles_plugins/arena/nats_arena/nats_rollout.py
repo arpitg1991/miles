@@ -53,7 +53,9 @@ __all__ = ["generate_rollout"]
 # finish_reason ("stop"/"length"/"abort"): e.g. a trajectory whose context
 # overflowed 131k and failed drop-oldest recovery terminates with
 # ``context_error`` while its last turn's finish_reason is "stop". Flagged
-# TRUNCATED -> remove_sample=True so their tokens are masked out of the loss.
+# TRUNCATED -> remove_sample=True so their tokens are masked out of the loss
+# (a final turn clipped by the per-turn cap can instead be partially salvaged
+# via --arena-mask-clipped-final-turn; degenerate stops never are).
 # ``completed`` and ``max_iterations`` are intentionally NOT here (legitimate
 # finishes).
 _DEGENERATE_AGENT_STOP = frozenset({
@@ -390,7 +392,9 @@ def _result_to_samples_full_trajectory(
             response_length = len(resp_loss_mask)
             resp_log_probs = log_probs[prompt_len:] if has_response and log_probs else []
 
+            hard_overflow = False
             if max_ctx and len(token_ids) > max_ctx:
+                hard_overflow = True
                 orig_len = len(token_ids)
                 token_ids = token_ids[:max_ctx]
                 loss_mask = loss_mask[:max_ctx]
@@ -440,7 +444,38 @@ def _result_to_samples_full_trajectory(
             # empty list, which aligns with response_length==0.
             s.rollout_log_probs = resp_log_probs
             s.status = status
-            if status == Sample.Status.TRUNCATED or bad_logprobs:
+            # --arena-mask-clipped-final-turn: the gym ships ONE step whose
+            # stop_reason is "length" exactly when the FINAL generate hit the
+            # per-turn cap, and that final turn's output tokens are the
+            # trailing run of 1s in the cumulative loss_mask (no prompt/tool
+            # tokens follow the last generate). Zero only that run and keep
+            # the earlier, cleanly-stopped turns trainable — instead of the
+            # r5-lineage default of removing the whole sample. Degenerate
+            # agent stops, hard context overflows, and zero-filled logprobs
+            # are NOT salvageable and keep the old removal behavior. Status
+            # stays TRUNCATED so truncated_ratio remains an honest metric.
+            final_clip_masked = False
+            if (
+                getattr(args, "arena_mask_clipped_final_turn", False)
+                and status == Sample.Status.TRUNCATED
+                and any_step_truncated
+                and not agent_degenerate
+                and not hard_overflow
+                and not bad_logprobs
+            ):
+                tail = len(resp_loss_mask)
+                while tail > 0 and resp_loss_mask[tail - 1] == 1:
+                    tail -= 1
+                clipped_len = len(resp_loss_mask) - tail
+                if clipped_len and any(m == 1 for m in resp_loss_mask[:tail]):
+                    s.loss_mask = resp_loss_mask[:tail] + [0] * clipped_len
+                    final_clip_masked = True
+                    logger.info(
+                        "Task %s: masked clipped final turn (%d of %d response "
+                        "tokens); earlier turns stay trainable.",
+                        task_id, clipped_len, len(resp_loss_mask),
+                    )
+            if (status == Sample.Status.TRUNCATED and not final_clip_masked) or bad_logprobs:
                 s.remove_sample = True
         else:
             if not messages:
@@ -1787,6 +1822,16 @@ def _add_arena_arguments(parser):
         default=None,
         help="K8s namespace for autoscaler Deployment patches; falls back "
         "to the NAMESPACE env var, then 'default'.",
+    )
+    group.add_argument(
+        "--arena-mask-clipped-final-turn",
+        action="store_true",
+        default=False,
+        help="When a trajectory's final generate hit the per-turn token cap "
+        "(the gym stamps stop_reason=length only for the final turn), zero "
+        "only that clipped final turn's loss-mask tokens and keep the "
+        "earlier turns trainable, instead of removing the whole sample "
+        "(the r5-lineage default).",
     )
     group.add_argument("--gym-autoscale", action="store_true", default=False)
     group.add_argument(

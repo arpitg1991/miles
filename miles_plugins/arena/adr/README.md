@@ -27,3 +27,4 @@ in `../RUNLOG.md` and `examples/arena/<job>/RUNLOG.md`, not here.
 | ADR | Title |
 | --- | --- |
 | [0001](0001-port-scope-and-module-mapping.md) | Port scope and module mapping: `amzn_agi_slime` → `miles_plugins.arena` |
+| [0002](0002-nats-wire-contract-bit-identical.md) | NATS wire contract stays bit-identical to `amzn_arena_contract` |

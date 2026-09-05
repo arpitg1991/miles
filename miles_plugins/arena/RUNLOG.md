@@ -182,3 +182,81 @@ staleness, so the missing call only delays a flush.
 - Not exercised against a real Qwen3.5 HF tokenizer on this host (only the fake tokenizer plus the existing Qwen/Qwen3-8B `qwen3` tests). The path requires a fast tokenizer (`return_offsets_mapping`) and raises a clear `ValueError` otherwise, same as vendored. The 2026-09-02 GPU smoke (`rl-milesgb1-smoke1`, snorkel-27b config with `loss_mask_type: qwen3_5`) parsed the flag on a real run; whether the slow re-tokenize path fired there is not recorded (the fast path takes gym-provided masks).
 - The multi-turn test documents why `qwen3` is wrong for Qwen3.5 full-text renderings: it rebuilds each assistant turn in isolation and fabricates a `<think>` block for earlier assistant answers; `qwen3_5` supervises every assistant turn as rendered.
 - No GLM mask type exists. The later GLM-5.3-Flash config omits `loss_mask_type` and relies on `use_rollout_logprobs: true` to remove tokenizer-fallback samples; that dependency is recorded where the config lands.
+
+## 2026-09-01 00:59-01:08 PT — Milestone: nats_arena wire format, controllers, rewards, data source
+
+Commit `feat(arena): port NATS wire format, controllers, data source, rewards`.
+Baseline: AGISlime clone `/workplace/guparpit/miles/src/AGISlime`, branch
+`mainline-0.3.0` @ 90ce39f (2026-08-28 13:36 PT), cloned 00:13 PT. Reports:
+`arena-port-artifacts/reports/{impl-dataSource,impl-natsRollout,verify-dataEval,verify-natsGrpo}.md`.
+
+| File (lines) | Written PT | Delta vs original |
+| --- | --- | --- |
+| `nats_arena/mixture_controller.py` (209) | 00:59 | byte-identical (stdlib only) |
+| `nats_arena/rollout_timing_tracker.py` (226) | 00:59 | byte-identical (stdlib only) |
+| `nats_arena/gym_autoscaler.py` (667) | 01:00 | import path; `kubernetes==35.0.0` rationale (36.x returns 401 on EKS) moved from AGISlime `entrypoint.sh` into the `_get_k8s_apps_client` docstring |
+| `nats_arena/reward_binary.py` (219) | 01:00 | `slime.utils.types` -> `miles.utils.types`; two docstring words |
+| `nats_arena/message_format.py` (182) | 01:06 | 16 diff lines, all docstring; every wire value unchanged (ADR-0002) |
+| `nats_arena/data_source.py` (557) | this window; fix-up 02:37 | import swaps (`read_file` monkeypatch retargeted to `miles.utils.data.read_file`); `_MultiGymDatasetView` + `self.dataset`; `chat_template_path` pass-through |
+
+Decisions
+
+- lakeFS pin URI must end in `manifest.jsonl`: `_resolve_manifest_path` pulls
+  exactly the object a `lakefs://` URI names and appends `manifest.jsonl` only
+  for LOCAL directories, so the bare `KNOWN_GYMS` variant dir 404s at trainer
+  startup. Established on the real-lakeFS snorkel e2e (09:31 PT; 2,922
+  prompts from `lakefs://arena-inspect/dev/internal/snorkel-general-bash-harbor/ecr-20260823/manifest.jsonl`,
+  `AWS_PROFILE=lakefs-arena-gym`); baked into the snorkel/glm53 configs and
+  README. Resolver kept as-is (parity) rather than auto-appending.
+- `_MultiGymDatasetView` exposed as `.dataset`: miles
+  `RolloutManager.get_num_rollout_per_epoch` reads `len(data_source.dataset)`
+  when `--num-rollout` is unset (slime 0.3.0 used `len(data_source)`). Sums
+  prompts across gyms, buffer excluded; verified through the real unbound
+  method (2-gym / 6-prompt manifest -> 3). Rejected: mandatory
+  `--num-rollout`. No `close()` added, `__len__` kept.
+- Buffer NOT persisted (parity): state keys are exactly `{per_gym, weights,
+  sample_group_index, sample_index, metadata, timing_tracker}`, zero hunks in
+  save/load vs original; groups buffered at checkpoint time are lost on
+  restart. Recorded as a known limitation, not fixed.
+- `chat_template_path` pass-through (only behavioural fix-up here, 02:37 PT,
+  from the verify-dataEval note): stock `RolloutDataSource` passes it to
+  `load_tokenizer`, the original did not. No harbor-rl config sets it.
+- `graded_reward` / `graded_renormalize_after_mask` carried: added to
+  `mainline-0.3.0` by 90ce39f; absent from the harbor-workspace line
+  (637d714/b8aae83, 2026-08-27 PT) that carried `removed_sample_replacement`.
+  No harbor-rl config (27B smoke, snorkel, glm53) sets
+  `custom_reward_post_process_path`, so miles-native group normalisation runs
+  in every run; kept as the tested menu.
+- Autoscaler / mixture / timing tracker inert in every run (`gym_autoscale:
+  false` in all three example configs, `gym_mixture_targets` never set).
+  Kept: miles has no weighted multi-dataset source or backlog autoscaler
+  (verify-redundancy KEEP). Parity warts preserved: `--gym-autoscale-auto-tune`
+  is `store_true` default True (YAML `false` is a no-op); `GymAutoscaler`
+  headroom default 1.25 vs `nats_rollout` getattr 2.0 (getattr wins).
+- Wire values byte-identical -> ADR-0002. impl-natsRollout claimed the
+  `slime-trainer` durable is pinned by the AREnATasks parity test;
+  verify-natsGrpo showed only worker-side values are. The durable stays for
+  JetStream consumer-state continuity, not because of a test.
+
+Verification (CPU, `/tmp/miles-venv`, 2026-09-01)
+
+- Imports + `compileall` clean; `reward_binary` numeric parity vs the original
+  on vendored slime 0.3.0 (`binarize_reward`, `renormalize_after_mask`,
+  `graded_reward`, `metadata['binary_reward']`): bit-identical.
+- Data source: 3-row manifest + Qwen3-0.6B tokenizer — 3:1 weights ->
+  `{financeagent: 3, othergym: 1}`; dedup_key `<iid>-e<epoch>`; epoch wrap +
+  reshuffle; `save(7)`/`load(7)` restores offsets/epochs/indices/consumed
+  ids/timing state/weights exactly. Controllers: gating/EMA/clamp,
+  percentile/winsorize edges, dry-run scale-up 2 -> 20 clamped, RBAC and
+  active-work guards, state round-trips.
+- e2e against real NATS 2.14.6 + fake gym worker: financeagent harness 49/50
+  (the 1 fail is a teardown ack artifact identical in AGISlime); snorkel
+  plain-stack harness 145/0 (resume restored offset 110 + 12 dedup keys;
+  durable `slime-trainer` explicit/max_deliver 3/ack_wait 3600 asserted).
+
+Left as-is (inherited): resume dedup guard mostly vacuous (publisher runs
+ahead — epochs `{financeagent: 6}` after 2 trained e2e rollouts); ruff UP028
+at `data_source.py:160` exists identically upstream (miles ruff excludes
+`miles_plugins/**`); `prompt_data_list` list-vs-JSON concern is moot — the
+launcher remaps `prompt-data-list` to `--prompt-data` (str), `json.loads`'d
+by `_resolve_gym_configs`.

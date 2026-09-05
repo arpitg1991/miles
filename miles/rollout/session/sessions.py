@@ -9,8 +9,16 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
-from sglang.srt.entrypoints.anthropic.serving import convert_response, convert_to_chat_completion_request
+# The anthropic-messages helpers landed in sglang after the glm53next-pinned
+# branch (sglang-miles-glm53next@9a26e749). Guarded so the session server can
+# import on that branch; the anthropic endpoint itself is unused there.
+try:
+    from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
+    from sglang.srt.entrypoints.anthropic.serving import convert_response, convert_to_chat_completion_request
+except ImportError:
+    anthropic_utils = None
+    convert_response = None
+    convert_to_chat_completion_request = None
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionResponse
 from sglang.srt.parser.template_detection import detect_inline_system_support
 from starlette.responses import Response

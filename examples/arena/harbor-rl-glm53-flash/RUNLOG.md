@@ -109,3 +109,69 @@ integration tree.
   159 passed / 1 skipped; `miles_plugins.models.glm5_next` imports.
 - Next: overlay this tree onto `radixark/miles:glm53next`, add the EFA layer, fetch and
   convert the BF16 weights, write the 12-node config (following entries).
+
+## 2026-09-02 01:40 PT — Image-a prerequisite: guard the anthropic SGLang imports (integration 664b2ab98)
+
+Not a run: a two-file fix the first trainer image needed before anything could
+launch. Cherry-picked into the fork so the branch equals the image tree file for
+file (the PR #2786 merge above was the first image-tree-only change; this is the
+second and last).
+
+**Symptom.** With the fork tree overlaid on `/root/miles` of the
+`radixark/miles:glm53next` base (ECR mirror
+`arena-slime-dev:glm53next-upstream-20260902`), the trainer fails at import:
+`miles/rollout/session/sessions.py` and `anthropic_adapter.py` import
+`sglang.srt.entrypoints.anthropic.utils` / `.serving` at module load, and the
+base's SGLang (`sglang-miles-glm53next@9a26e749`) predates those helpers.
+
+**Why the base and the tree disagree (git ancestry, verified).**
+
+| what | commit | date (PT) |
+|---|---|---|
+| miles baked into the glm53next base | `1cd14c00` (PR #2786 branch, "ci: set CUDA_DEVICE_MAX_CONNECTIONS=1 ...") | 2026-08-27 12:16 |
+| anthropic-messages imports added to sessions.py / anthropic_adapter.py | upstream `11563829a` feat(session): serve Anthropic Messages through SessionCore (#2358) | 2026-08-29 18:34 |
+| PR #2786 head merged in the previous commit | `dbbd610e` — does NOT contain 11563829a | 2026-08-29 |
+| fork base | `2799fe38` — contains 11563829a | 2026-08-31 |
+
+The base's own miles never imported these helpers, so its pinned SGLang never
+needed them; overlaying fork main (which carries 11563829a) brought the
+module-load imports in.
+
+**Import chain that trips** (all module-level, nothing lazy):
+`miles_plugins.arena.train_async_arena` -> `miles.ray.placement_group` ->
+`miles.ray.rollout.rollout_manager` -> `miles.ray.rollout.router_manager`
+(`start_session_server`) -> `miles.rollout.session.server` ->
+`miles.rollout.session.sessions` -> `sglang.srt.entrypoints.anthropic.{utils,serving}`.
+The Dockerfile import smoke (`import miles_plugins.arena.train_async_arena`)
+exercises exactly this chain, so the build fails before a pod does.
+
+**Fix (664b2ab98, 2 files, +15/-3).** `try/except ImportError` around the three
+names in `sessions.py` (`anthropic_utils`, `convert_response`,
+`convert_to_chat_completion_request`) and the one in `anthropic_adapter.py`
+(`anthropic_utils`), each falling back to `None`, with an inline comment naming
+the pinned branch. `sglang.srt.entrypoints.anthropic.protocol`
+(`AnthropicMessagesRequest`, `is_server_tool`) stays unguarded: it resolves on
+the pinned branch, only `utils` and `serving` were missing. On a current SGLang
+the guards are no-ops.
+
+**Alternatives rejected.**
+- Newer SGLang in the image: the glm53next stack exists because mainline SGLang
+  lacks the KDA/DSA engine support (Dockerfile header); swapping SGLang is not a
+  config change.
+- Pin the fork to the image's miles (1cd14c00): loses the 2799fe38 base the
+  arena port was built and CPU-tested on.
+- Drop the anthropic route from the tree: diverges from upstream and makes the
+  re-sync harder once #2786 lands.
+
+**Consequences.** The session server imports and serves as before; on the pinned
+branch the anthropic-messages handler would fail at call time (`None` helpers).
+The arena NATS path never calls it. No tests added (behaviour is unchanged where
+the helpers exist). Chronology: landed between the EFA-layer Dockerfile fixes
+(aebcc7ac3 01:17 PT, eda0f8454 01:27 PT) and the verifier pass (5ea810d7f
+02:26 PT), i.e. during the image-a build iteration; baked into
+`arena-slime-dev:miles-glm53-20260902a` and every later tag (b, c, 20260903d,
+each a superset of the previous). Re-check the guards when #2786 or the SGLang
+pin moves.
+
+**Verification (2026-09-05, on the equivalent tree fork + PR + port):** 177
+arena CPU tests, launcher snapshots 4/4.

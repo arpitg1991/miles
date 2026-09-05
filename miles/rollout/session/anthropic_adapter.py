@@ -3,7 +3,11 @@
 import json
 
 from pydantic import ValidationError
-from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
+# Guarded: absent on the glm53next-pinned sglang branch (see sessions.py).
+try:
+    from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
+except ImportError:
+    anthropic_utils = None
 from sglang.srt.entrypoints.anthropic.protocol import AnthropicMessagesRequest, is_server_tool
 from starlette.responses import Response
 

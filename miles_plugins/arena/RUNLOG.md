@@ -352,3 +352,85 @@ verification-hardening commit). No GPU run had exercised this file yet: the
 first exercise was the CPU e2e harness (real NATS 2.14.6 JetStream + fake
 financeagent gym worker, 49/50 checks), then `rl-milesgb1-smoke1` on
 2026-09-01 (see the snorkel example run log).
+
+## 2026-09-01 01:04-01:08 PT - Milestone: hosted eval path ported (eval_rollout, eval_coordinator, argo_eval_trigger)
+
+`argo_eval_trigger.py` written 01:04:53 PT, `eval_coordinator.py` 01:08:40 PT, `eval_rollout.py`
+in the same window and re-saved 02:37:16 PT with the fix-up below. Source: AGISlime
+`src/amzn_agi_slime/amzn_agi_slime/nats_arena/` at the port baseline 90ce39f
+(`mainline-0.3.0`; the three files are byte-identical at the harbor-workspace
+b8aae83, 2026-08-27 PT), mapping rule `amzn_agi_slime.X -> miles_plugins.arena.X` (ADR-0001). Records: `arena-port-artifacts/reports/
+impl-evalPath.md`, `verify-dataEval.md`, `verify-redundancy.md`, `verify-driverLauncher.md`.
+
+| Module | Role | Lines (orig) | Changed vs AGISlime |
+|---|---|---|---|
+| `nats_arena/eval_rollout.py` | `--eval-function-path` target: resolve the step's HF ckpt (S3-aware, DCP->HF fallback), render `eval-coordinator-job.yaml`, apply via kubernetes SDK, return `RolloutFnEvalOutput(data={})` at once | 643 (613) | `_arena_source_dir()` = MILES_ARENA_DIR > AGISLIME_DIR (set-but-empty falls through); `_find_convert_script()` prefers miles `tools/convert_torch_dist_to_hf.py` (same `--input-dir/--output-dir/--origin-hf-dir/--force` CLI), AGISlime `convert_torch_dist_to_hf_parallel.py` kept as fallback; ruff F401; template lookup moved inside the guard (fix-up) |
+| `nats_arena/eval_coordinator.py` | `python -m` entrypoint of the K8s Job pod: owner-ref discovery, eval streams, eval-sglang + eval-gym Deployments, bounded-inflight publish, dedup/DLQ collect, pass@k, `step_*.json` file queue | 2133 (2134) | import swaps; `_find_templates_dir` prefers MILES_ARENA_PATH over AGISLIME_PATH; ruff F401 `subprocess`, F841 `sglang_url`, B904 `from exc` |
+| `nats_arena/argo_eval_trigger.py` | opt-in (`ARENA_EVAL_TASKS`) per-checkpoint `arena-hosted-eval` Argo Workflow submitter, called from the driver save block, never raises | 194 (194) | docstring wording only |
+
+Kept byte-identical (externally visible state, not module paths): streams `ARENA_EVAL_TASKS` /
+`ARENA_EVAL_RESULTS`, subjects `arena.eval.tasks.<step>.<gym>` / `arena.eval.results.<step>`,
+`max_age` 14400, `max_msg_size` 134217728, `ack_wait` 3600 + `max_deliver` 3, durable
+`slime-eval-coord-step-<N>`, OTel tracer `slime.eval_coordinator`, the `.trainer_alive` /
+`.flush_lock` protocol (600 s heartbeat staleness, 1800 s lock break), wandb `resume="must"` ->
+`"allow"` fallback, the rendered template key `AGISLIME_PATH` (runtime templates reference
+`${AGISLIME_PATH}`), Argo constants (template `arena-hosted-eval`, profile `qwen3-5-b200-tp2`,
+engine `sglang`, `--limit 32`, priority `preemptible`, label `arena.agif.amazon.dev/submitter`).
+The 2133-line coordinator was not split: semantics-preserving port, and the style rule's path
+scope does not cover `miles_plugins/**`.
+
+**Status: ported, CPU-verified, never exercised by any run.** `financeagent-27b-smoke.yaml`,
+`snorkel-27b.yaml` and the GLM `miles-config.yaml` carry only `skip_eval_before_train: true` (no
+`eval_datasets` / `hallmark_benchmarks` / `eval_interval` / `--eval-function-path`) and no trainer
+manifest sets `ARENA_EVAL_TASKS`, so `submit_eval` returns at its opt-in check and
+`eval_rollout.generate_rollout` is never called - in rl-milesgb1-smoke1 (2026-09-01/02) and in
+GLM r1-r7 alike. CPU evidence (2026-09-01): all three modules import in `/tmp/miles-venv`; the
+throwaway `/tmp/evalport/verify.py` passed on the pass@k estimator (8 samples / 3 correct:
+pass@1 0.375, pass@2 1-10/28, pass@8 1.0), metrics payload, HF/DCP checkpoint resolution on a
+fake tree, env-alias precedence, template resolution against a fake tree, the 40-key coordinator
+env, the flush-lock protocol (O_EXCL acquire, 600/1800 s staleness) and the Argo workflow build;
+ruff clean with the repo config. The ported tests (`test_argo_eval_trigger.py` 6,
+`test_eval_coordinator_batched.py` 3, and the `TestRowToTask` / `TestEnvVarParsingGuards` /
+`TestHandleResultMsgDedup` / `TestTaskIdFromLakefsUri` / `TestEstimatePassAtK` classes of
+`test_nats_arena.py`) land with the test-suite commit.
+
+**Templates live outside this tree; fix-up 02:37 PT (verify-dataEval minor).**
+`eval-coordinator-job.yaml`, `eval-sglang-server.yaml`, `eval-gym-workers.yaml` are looked up
+under `$MILES_ARENA_DIR|$AGISLIME_DIR/experiments/k8s/templates` and exist in neither the miles
+tree nor the AGISlime git tree (they sit on the runtime-mounted deployment volume). The manifests
+bake `AGISLIME_DIR=/root/miles`, which satisfies converter resolution only (`/root/miles/tools/`
+is in the image). `_find_template_path()` was called outside `generate_rollout`'s try/except, so
+the first eval trigger of any eval-enabled job would have raised `RuntimeError` into the trainer
+instead of log-and-skip; the lookup now sits inside the guard, and the 27B README / trainer
+manifest comments state the rule: an eval-enabled job MUST set `MILES_ARENA_DIR` to an external
+tree carrying the templates, whose coordinator command must be re-pointed from
+`python -m amzn_agi_slime.nats_arena.eval_coordinator` to `python -m
+miles_plugins.arena.nats_arena.eval_coordinator` at deploy time (no code here renders it).
+Alternative (porting the templates into `examples/arena/`) deferred: no job needed eval and the
+templates were in no git tree the port was taken from.
+
+**Why keep a path nothing runs.** The driver (next commit) hooks into it twice
+(`_maybe_trigger_eval` after `save_model` -> `submit_eval`; `_maybe_drain_eval_metrics` per
+iteration -> `eval_metrics_drain`, already in the skeleton commit), the launcher appends
+`--disable-wandb-random-suffix` whenever `ARENA_EVAL_TASKS` is set because the Argo hook resolves
+the W&B run by display name (entrypoint.sh parity), and the `.trainer_alive` / `.flush_lock` /
+`step_*.json` queue has its trainer-side consumer in the tree. Dropping the modules would orphan
+those seams and the `arena-hosted-eval` WorkflowTemplate contract. Two trigger mechanisms
+coexist as in AGISlime and must stay mutually exclusive as configured: `eval_rollout` rides
+`--eval-function-path` + `--eval-interval` (miles `arguments.py:3097` asserts `eval_datasets`),
+`argo_eval_trigger` fires from the save block and deliberately bypasses that assert.
+
+**Follow-ups recorded (verify-redundancy; not fixed here).**
+- [major] The file-queue premise is obsolete on miles: `init_wandb_secondary` already provides
+  cross-process writers (`id=wandb_run_id, mode="shared", x_primary=False,
+  x_update_finish_state=False`). Make the coordinator a shared-mode secondary writer logging
+  `eval/*` directly and retire `.trainer_alive` / `.flush_lock` / `resume="must"`. Interim: the
+  drain commits every file (skeleton commit).
+- [note] The Argo trigger bypasses miles' `CheckpointEvalFn` / `EvalDispatcher` seam
+  (`eval_uses_snapshots`, `eval_max_in_flight`, `EvalSkip` attribution). Wrap submit+poll in a
+  `CheckpointEvalFn` behind `--eval-function-path` + `--eval-interval` with a stub
+  `eval_datasets` adapter; that also removes the display-name run resolution.
+- The 1800 s conversion subprocess timeout was tuned for AGISlime's parallel converter; miles
+  ships only the serial one, and the `parents[3]/tools` fallback exists only in a source tree.
+- boto3 is imported at call time by the S3-checkpoint / hosted-eval paths; the example
+  Dockerfile bakes it (verify-driverLauncher finding, fixed there).

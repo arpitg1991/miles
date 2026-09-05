@@ -1116,3 +1116,274 @@ Recorded here because it shaped r5-r7; verified unless marked.
   metric. `log_probs_chunk_size 16384` is hygiene only.
 - **FP8 engines are NOT config-only for `glm5_next`** (`quantizer_fp8` lacks
   `modules_to_not_convert` handling; `kv_b_proj`). Not pursued.
+
+## 2026-09-03 20:32 PT — r5: keep-timeout ON + reasoning-effort gym image (`rl-glm53f-gbash-r5`; image d; gym `glm53-reasoning-20260903b`, effort low)
+
+First run that applies both answers to the timeout RCA at once: the trainer
+keeps clean Harbor-timeout trajectories (`arena_keep_timeout_trajectories: true`,
+image d, previous entries) and the gym asks GLM-5.3 for less thinking
+(`ARENA_REASONING_EFFORT=low` via a new gym image). Shape, trainer image and
+optimizer recipe are r4's (12 nodes = 8 actor + 4 engines, rbs 32 / GBS 256 /
+`num_rollout` 90, `miles-glm53-20260903d`). The r5 manifests were edited in place
+and never saved; this entry reconstructs them from the memory notes, the yaml
+comments and the archived gym-pod evidence.
+
+**Identity**
+
+- `EXPERIMENT_NAME` / W&B group `rl-glm53f-gbash-r5`, W&B run `43f0vjwx` —
+  confirmed from the EFS log dir `/mnt/scratch-s3files-rw/guparpit/logs/rl-glm53f-gbash-r5/`
+  (`trainer-0.log` opens 2026-09-03 20:32 PT, ends 2026-09-05 00:12 PT).
+- Kubernetes names unchanged from r1-r4 (`rl-glm53f-trainer`, `rl-glm53f-nats`,
+  `rl-glm53f-sglang`, gym `rl-glm53f-gym-sgb` x128 — ReplicaSet hash `64d99dc846`
+  in the archived pod lists), so r4 had been torn down before r5 came up; r4's
+  `trainer-0.log` ends 20:29 PT, 3 min before r5's opens (previous entry).
+- Trainer image `miles-glm53-20260903d` — the lineage table ends at d, the r4 and
+  r7 manifests both pin it, and d (pushed 2026-09-03 01:40 PT) is the newest
+  trainer tag in ECR.
+- Gym image `arena-tasks-dev:glm53-reasoning-20260903b` (harbor 0.22.0,
+  amzn-arena-harbor 1.0.1061.0): AREnATasks HEAD `35f7ba7` + the then-uncommitted
+  patch (archived as `arena-port-artifacts/glm53/glm53-reasoning/arenatasks-reasoning-effort.patch`,
+  later commit `0fb3e54`): `ArenaSGLangLLM(reasoning_effort=)` renders the chat
+  template's `reasoning_effort` on turn 1 only (template honours `low`/`high`,
+  anything else renders `Reasoning Effort: Max` — the client warns once, and
+  raises if the template never reads the variable); `ARENA_REASONING_EFFORT` ->
+  `llm_kwargs` for both agents; and the pre-existing `<|user|><|user|>` splice
+  fixed (GLM stops on `<|user|>`, the template suffix opens with it — 8/8 turn
+  boundaries doubled in a live r4 `rollout.json`). First cut `20260903a` raised
+  on `max` and kept the splice bug; b is the one deployed. Built 19:30-20:10 PT,
+  verified with the tokenizer copied out of the image
+  (`arena-port-artifacts/glm53/glm53-tok/e2e.py`).
+- Gym CLI contract of HEAD: `--mode rollout --agent arena-terminus-2` (HEAD
+  requires `--mode` and defaults to Vulcan). HEAD-vs-0.21 drift checked: result
+  envelope reports timed-out groups as `truncated` instead of `success` (the
+  trainer salvages both — telemetry only); harbor 0.22 task-root
+  `trajectory.json` seeding inert for snorkel; lakeFS materializer 8 threads.
+
+**Timeline (PT)**
+
+| when | what |
+|---|---|
+| 20:22 | offline strict + full argv parse of the r5 `miles-config.yaml` (glm53-e3 harness; `parse_strict.log`, `strict.exit`/`full.exit` = 0) |
+| ~20:31 | 128 gym pods up on image b, polling for the NATS stream ("NATS not ready", attempt 1/30) — trainer not yet up |
+| 20:32 | `trainer-0.log` opens (r4's ended 20:29) |
+| 20:46 | workers attached (durable `gym-worker-snorkel-general-bash-harbor`); first rollout-0 jobs dispatched (e.g. `resume-replay-ledger.g22` 20:46:21) |
+| 21:19 | timeout sample from the gym logs (`r5_jobs.txt`, 45 jobs): 8/8 trials time out at 947-957 s on 900 s tasks and 1841-1887 s on 1800 s tasks — r4's signature, unchanged |
+| 09-04 01:10 | r6 submitted alongside (next entry); r5 kept running — 4 steps done at that point |
+| 09-05 00:12 | killed on the user's order at step 40 (41 steps done, reward 0.395; `trainer-0.log` ends 00:12) to free its 12 nodes for r7 |
+
+**Results**
+
+- First 4 steps: rollouts 3874 / 3197 / 2592 / 2718 s, reward 0.273 / 0.328 /
+  0.367 / 0.398, ess_ratio 0.97, ppo_kl 0.011, actors ~21% duty (rollout-bound).
+- Steady state to step 40: ~50 min/rollout, ~10 min/step, reward 0.30-0.40 (0.39
+  at the kill), `kept_timeout` 183-221/256, `truncated_ratio` 0.71-0.86; dynamic
+  sampling published ~3.5x the kept groups (README).
+- The keep-timeout flag did its job: the 183-221 timeout trajectories per
+  rollout now train instead of being removed (r4 trained on 18-35 samples per
+  step after removing 222-245/256).
+- **Low effort did NOT cut timeouts.** ~90% of published trials still time out
+  at `task.toml timeout_sec` + ~40-90 s after ~13 turns of 60-120 s each. Cause:
+  the run is engine-KV-bound, not think-length-bound — the 4 engines sat at KV
+  usage 0.97 with ~100 running + 10-60 queued requests each, so per-request
+  decode stayed throughput-limited and less thinking per turn did not get
+  episodes to a natural stop inside the wall clock.
+- r5 is the first GLM run past `save_interval 20`; its checkpoint dir
+  (`slime_experiments/rl-glm53f-gbash-r5`, saves at steps 20/40) is where
+  `hf_export`'s behaviour on GLM can be inspected (not done).
+
+**Decision -> r6.** Attack the wall clock from both ends: 4x the engines and
+halve the per-engine queue (rbs 64 lifts the in-flight cap to 128 groups), and
+double the Harbor agent timeout gym-side (`ARENA_AGENT_TIMEOUT_MULTIPLIER`, which
+AREnATasks mainline `c1a0439` had just added for the eval path — authored
+19:01 PT, committed 20:39 PT) with
+`ARENA_NATS_ACK_WAIT` raised in lockstep. Rejected: raising `timeout_sec` per
+task (a dataset change); pushing effort lower (only `low`/`high` exist, and low
+was just shown ineffective); a multiplier > ~2.2 without the ack_wait change
+(the group deadline `ack_wait - 300 s` would cancel whole groups); staying at
+12 nodes (~5x rollout-bound at 50 min rollout vs 10 min step).
+
+Evidence archived under `arena-port-artifacts/glm53/glm53-reasoning/`
+(`r5_jobs*.txt`, `gym_pods.txt`, `gym_pod_nodes.txt`, `mount_check.txt` — model
+mount readable on 125 of the 128 gym pods, 3 BROKEN —, `onepod.log`, `tmo_pod.log`,
+`think_stats*.py`, `decode_head.py`, `apply_patch*.py`) and `glm53-tok/`. The
+think-token statistics those scripts printed were not archived.
+
+## 2026-09-04 01:10 PT — r6: 16 engines, rbs 64 / GBS 512, 2x agent timeout (prefix `rl-glm53f6`; gym `glm53-reasoning-20260904a`)
+
+Side-by-side with r5 (separate NATS: stream names are per-server). Submitted
+01:10 PT, kueue-admitted 01:37 PT; `trainer-0.log` opens 01:21 PT. `EXPERIMENT_NAME` /
+W&B group `rl-glm53f-gbash-r6`, W&B run `gweq9pme` — confirmed from the EFS log dir
+`/mnt/scratch-s3files-rw/guparpit/logs/rl-glm53f-gbash-r6/` (the r6 manifest itself
+was not saved).
+
+**Shape and levers (all now in the committed files, see the table at the end)**
+
+- Trainer 24 replicas = 8 actor (unchanged TP8/PP4/EP16/DP2) + 16 engine nodes
+  (TP8/EP8); `REPLICA=24`. Trainer image d; optimizer offload trio as r4.
+- `rollout_batch_size` 32 -> 64, `global_batch_size` 256 -> 512: the publisher's
+  in-flight cap (2x batch) goes 64 -> 128 groups, so each of 16 engines sees ~64
+  requests instead of r5's ~130. `num_rollout` 130 ~= 10 passes over the
+  2922-task list (~3.5x publish factor -> ~224 prompts/rollout -> ~13
+  rollouts/pass). Gym 128 -> 160 replicas (>= 128 in flight + slack).
+- Gym image `glm53-reasoning-20260904a` = AREnATasks mainline `c1a0439`
+  (`ARENA_AGENT_TIMEOUT_MULTIPLIER`, eval path only) + `0fb3e54` (effort
+  plumbing + splice fix rebased, 00:52 PT) + `bae6a6b` (pass the multiplier on
+  the training/rollout path too, 00:58 PT).
+- `ARENA_AGENT_TIMEOUT_MULTIPLIER=2` (task `timeout_sec` 900-1800 s -> 1800-3600 s),
+  `ARENA_NATS_ACK_WAIT` 4500 -> 6000 (per-message deadline `ack_wait - 300 s`
+  bounds all 8 trials of a group; trainer `NATS_TASK_DEADLINE_SECS` default 12600
+  still covers it). `ARENA_REASONING_EFFORT=low` kept. `sglang_disable_radix_cache`
+  deliberately unchanged.
+
+**Findings**
+
+1. **kueue priority is already maxed.** Only two WorkloadPriorityClasses exist:
+   `inference` = 1000 and `arena-backfill-low` = -10; every training job runs at
+   1000 through `priorityClassName: high`. "Submit at higher priority" cannot
+   jump other training jobs. (r7 adds the explicit
+   `kueue.x-k8s.io/priority-class: inference` label — visibility only.)
+2. **Fresh-node Docker-Hub trap, three layers deep** (gym pods scheduled onto
+   nodes with nothing cached; r5's pods had everything cached from launch):
+   - harbor 0.22 `DockerEnvironment` probes kernel nftables once per trial with
+     `docker run alpine:3.23.4@sha256:5b10f4...`; the anonymous Docker Hub pull
+     is rejected -> probe returns False -> egress control silently disabled ->
+     every `network_mode='no-network'` task rejected at `Trial.create`
+     ("network_mode='no-network' is not supported by EnvironmentType.DOCKER").
+     270 groups burned on this alone.
+   - with the probe passing, harbor builds its egress sidecar `FROM
+     docker.io/gogost/gost@sha256:afc0...` -> "Failed to build Docker image
+     harbor-prebuilt:harbor-docker-egress-control-sidecar--b1e6760734a9e6f6".
+   - mountpoint-s3 fast scratch (`ARENA_MODEL_PATH`) unreadable for minutes after
+     pod start -> `AutoTokenizer` falls through to the HF Hub ("Repo id must be
+     in the form 'repo_name'"); one pod failed every trial this way.
+   Fix, in the `gym-worker.yaml` start script: pull the ECR mirror
+   `arena-tasks-dev:alpine-probe-3.23.4` (made with `buildx imagetools create`,
+   index digest byte-identical; dind's containerd store resolves digest refs by
+   target digest) and `docker tag` it `alpine:3.23.4`; pull
+   `arena-tasks-dev:egress-sidecar-b1e6760734a9e6f6` (`docker save` from an r5
+   pod — identical sidecar context in 0.22.0, identical hash) and tag it under
+   harbor's content-addressed name (harbor skips the build when `docker image
+   inspect` succeeds); `until [ -f $ARENA_MODEL_PATH/tokenizer_config.json ]`.
+   Cost before the fix landed: ~1000 dropped groups, about 1/3 of a task-list
+   pass.
+3. **NATS after a gym scale-to-0** (needed for the start-script rollout):
+   delivered messages sit ack-pending for `ACK_WAIT` (now 6000 s). Reset from the
+   trainer pod with nats-py: `js.delete_consumer("ARENA_TASKS",
+   "gym-worker-snorkel-general-bash-harbor")` — the gym recreates the durable on
+   start. Monitor at `http://<nats-svc>:8222/jsz?streams=true&consumers=true`.
+4. Startup burn: the trainer publishes its 128-group in-flight window before the
+   engines are up; those groups fail "All connection attempts failed" (~4% of a
+   pass, bounded). Same in r7.
+
+**Results (rollout 0, steps 0-1)**
+
+| metric | r5 (12 nodes, rbs 32) | r6 (24 nodes, rbs 64) |
+|---|---|---|
+| kept_timeout share | 72-86% (183-221/256) | 45% (228/512) |
+| `truncated_ratio` | 0.71-0.86 | 0.45 |
+| reward | 0.30-0.40 | 0.40 |
+| mean response | — | 33k tokens (2x r5); episode total ~58k |
+| train step 0 | — | 6749 s (cold JIT) |
+| warm train step | ~10 min | 1380 s at 140 TFLOPs |
+
+Training is now shorter than the ~50 min rollout by ~2x (r5: ~5x), and half the
+kept samples reach a natural stop instead of a quarter or less.
+
+**Residual defect -> r7.** 33-74 of 512 samples per rollout (~7-14%) came back
+`failed` with `httpx.ReadTimeout` ("Unknown Error in LLM interaction: ", empty
+message): `amzn_arena_harbor/sglang_rollout.py::_get_client` hard-codes
+`httpx.Timeout(600.0)` and a 32k-token response at ~50 tok/s per request on a
+loaded engine runs past it. Fix written the same day on the local AREnATasks
+branch `guparpit/reasoning-effort`: env `ARENA_SGLANG_REQUEST_TIMEOUT_SEC`
+(default 600, validated > 0) + `TestSglangRequestTimeout`, `brazil-build release`
+green; not deployed into r6 — it needs a new gym image and a rolling restart of
+160 pods, to be done right after a rollout completes. r6 was still running at
+2026-09-05 05:15 PT, side by side with r7: latest completed step 33, reward 0.469
+on 512 samples (summary entry).
+
+## 2026-09-04 18:38 PT -> 2026-09-05 00:30 PT — r7: r6 shape + 1800 s SGLang call timeout + effort high (`rl-glm53f-gbash-r7`, prefix `rl-glm53f7`) — IN PROGRESS
+
+Identity (all in the committed manifests): `EXPERIMENT_NAME` / `PROJECT_NAME` /
+W&B group `rl-glm53f-gbash-r7`; PyTorchJob `rl-glm53f7-trainer`, NATS
+`rl-glm53f7-nats`, Service `rl-glm53f7-sglang`, gym `rl-glm53f7-gym-sgb` x160;
+trainer image `miles-glm53-20260903d`; gym image
+`arena-tasks-dev:glm53-sgltimeout-20260904b` = `0fb3e54` + `bae6a6b` + the
+uncommitted `ARENA_SGLANG_REQUEST_TIMEOUT_SEC` change (archived diff
+`arena-port-artifacts/glm53/arenatasks-patches/arenatasks-glm53-sgltimeout.patch`
+== `git diff c1a0439` at 18:59 PT; it is the change this plan commits in
+AREnATasks).
+
+Changes vs r6, both gym-side: `ARENA_SGLANG_REQUEST_TIMEOUT_SEC=1800` (new; the
+image reads it) and `ARENA_REASONING_EFFORT` low -> high (low did not reduce
+timeouts in r5; the template honours only these two values). Trainer side: only
+the rename and the `kueue.x-k8s.io/priority-class: inference` label.
+
+**Timeline (PT)**
+
+| when | what |
+|---|---|
+| 09-04 18:38 | gym-worker / miles-config / nats / sglang-svc renamed to `rl-glm53f7`, gym image + the two env changes, README r7 section |
+| 19:03 | first `kubectl apply`; kueue leaves the PyTorchJob Suspended (pending on quota) |
+| by 23:13 | the Suspended job is GONE — no events, no audit trail visible from arena-tasks; the NATS Deployment/Service/ConfigMaps survive |
+| 23:14 | second submission (the trainer yaml's last edit is stamped 23:14 PT; the committed copy carries the priority-class label) -> gone ~23:27 |
+| 23:41 | third submission -> gone ~00:10 |
+| 09-05 00:12 | r5 killed on the user's order (step 40, reward 0.39) |
+| 00:13 | fourth submission; 00:14 kueue admits it |
+| 00:30 | engines up, first `update_weights`; rollout 0 collecting |
+
+**Findings so far**
+
+- A PyTorchJob left Suspended in arena-tasks for ~25-30 min gets deleted by
+  something outside our RBAC view (3 for 3). Root cause unknown. Workaround that
+  worked: submit only when the quota gap is small, or within a minute of freeing
+  capacity.
+- Priority cannot help (r6 finding 1); the label only makes the 1000 visible on
+  the Workload.
+- Startup burn of the first 128 groups ("All connection attempts failed", window
+  published before engines are up) — ~4% of a pass, as in r6.
+- SGLang startup tracebacks (`cpu_ids` `int('\n')`, `sock.connect`) are benign
+  noise. Gym env checked with `kubectl exec ... env`: effort `high` is set (the
+  gym does not log the rendered effort).
+- Read back from `trainer-0.log` (opens 00:14 PT) at 05:15 PT, steps 0-3
+  complete: step 0 reward 0.33, `truncated_ratio` 0.69, `failed` 15,
+  `kept_timeout` 352/512, rollout 5944 s, train 6784 s (cold JIT, as r6's
+  step 0); step 1 reward 0.39, truncated 0.58, failed 43, kept_timeout 296,
+  rollout 3302 s, train 2054 s; step 2 reward 0.39, truncated 0.64, failed 16,
+  kept_timeout 326; step 3 reward 0.40.
+- Gym logs: zero `httpx` timeouts since the engines came up — the 1800 s
+  lever works. ~3-14% of calls hit `Context length exceeded` at ~99-101k
+  prompt tokens: the conversation may grow to
+  `ARENA_ROLLOUT_CONTEXT_LIMIT=131072` while each call still asks for
+  `ARENA_MAX_TOKENS=32768` new tokens; these end the episode as `truncated`,
+  not `failed`.
+
+**Pending (recorded in the summary entry's placeholder row, filled by a
+follow-up docs commit):** healthy-step count (the commit gate is >= 5, user
+instruction 2026-09-05 02:45 PT); `kept_timeout` share at effort high; whether
+1800 s removed r6's 7-14% `failed` samples; the context-ceiling /
+`context_error` observation against the 131072 `rollout_max_context_len` /
+`ARENA_ROLLOUT_CONTEXT_LIMIT`; W&B run id.
+
+**Manifest state committed with this entry** — the r7 files, because the r5 and
+r6 intermediates were never saved (reconstructing them by hand was rejected as
+fabricated history). Deltas vs the r4 tree (`3a6cbe5ba`):
+
+| file | delta | first used in |
+|---|---|---|
+| `miles-config.yaml` | `arena_keep_timeout_trajectories: true` | r5 |
+| | `replicas` 12 -> 24, `rollout_batch_size` 32 -> 64, `global_batch_size` 256 -> 512, `num_rollout` 90 -> 130 | r6 |
+| | `experiment_name`/`project_name` record r1 -> r7 (launcher never reads them) | r7 |
+| `trainer-pytorchjob.yaml` | 24 replicas (min/max/Worker), `REPLICA=24` | r6 |
+| | names `rl-glm53f` -> `rl-glm53f7`, `EXPERIMENT_NAME`/`PROJECT_NAME` r4 -> r7, `NATS_URL`, configmap name, priority-class label; image d unchanged | r7 |
+| `gym-worker.yaml` | image `rl-smoke-20260821b` -> `glm53-reasoning-20260903b` (now `glm53-sgltimeout-20260904b`), `--mode rollout --agent arena-terminus-2`, `ARENA_REASONING_EFFORT` | r5 |
+| | `replicas` 128 -> 160, `ARENA_NATS_ACK_WAIT` 4500 -> 6000, `ARENA_AGENT_TIMEOUT_MULTIPLIER=2`, pre-seed start script (probe + sidecar mirrors, tokenizer gate) | r6 |
+| | `ARENA_SGLANG_REQUEST_TIMEOUT_SEC=1800`, effort low -> high, names -> `rl-glm53f7` | r7 |
+| `nats.yaml`, `sglang-svc.yaml` | rename `rl-glm53f` -> `rl-glm53f7` only | r7 |
+| `README.md` | + sections "r5 gym image: reasoning effort + splice fix", "r6", "r7" | r5-r7 |
+
+Stale text deliberately left as history (fix in a separate docs commit if
+wanted): README "Current run identity is **r3**" and its 16-entry `NotIn`
+procedure, `nats.yaml` header "27B RL run 2", the `miles-config.yaml`
+"wandb group = ... r1" comment, the `gym-worker.yaml` header "replicas 8 -> 128".
+The README preflight claim that the tree carries the GLM merge is true on this
+branch from the PR #2786 merge commit onward.

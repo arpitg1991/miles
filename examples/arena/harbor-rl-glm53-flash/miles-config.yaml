@@ -6,7 +6,7 @@
 # (radixark/miles PR #2786, scripts/run_glm5_3_flash.py, shape (8,4)):
 #   workers 0-7  = Megatron actor (64 GPUs: TP8+SP x PP4 [11/11/11/12 layers]
 #                  x CP1, EP16/ETP1, DP=2)
-#   workers 8-11 = SGLang engines (32 GPUs, 4 engines at TP8/EP8)
+#   workers 8-23 = SGLang engines (128 GPUs, 16 engines at TP8/EP8; r6, was 4)
 # The upstream recipe ran COLOCATED (--colocate --offload-train-target disk);
 # this job is DISAGGREGATED like every arena harbor-rl run, so the
 # colocate/offload flags are deliberately NOT carried over.
@@ -37,13 +37,13 @@ user: guparpit
 cluster: bom
 # EXPERIMENT_NAME in the PyTorchJob pod env drives CKPT_DIR; these names are
 # the config-side record. NEVER reuse a finished run's name (silent resume).
-experiment_name: rl-glm53f-gbash-r1
-project_name: rl-glm53f-gbash-r1
+experiment_name: rl-glm53f-gbash-r7
+project_name: rl-glm53f-gbash-r7
 agislime_dir: /root/miles
-# 12 replicas = 8 actor nodes + 4 engine nodes (same convention as the parent:
+# r6: 24 replicas = 8 actor nodes + 16 engine nodes (r1-r5: 12 = 8 + 4) (same convention as the parent:
 # replicas - num_trainers = rollout nodes; the launcher derives
-# --actor-num-nodes 8 and --rollout-num-gpus 32 from these + the pod env)
-replicas: 12
+# --actor-num-nodes 8 and --rollout-num-gpus 128 from these + the pod env)
+replicas: 24
 num_trainers: 8
 # -> scripts/models/glm5.3-flash.py (ships in the merged image tree)
 model_arch: glm5.3-flash
@@ -88,9 +88,13 @@ apply_chat_template: false
 # GLM's template with zero warning.
 rollout_shuffle: true
 rollout_skip_special_tokens: true
-# ~1 epoch: 2922 tasks / rollout_batch_size 32 (r5-faithful batch shape)
-num_rollout: 90
-rollout_batch_size: 32
+# r6: ~10 passes over the 2922-task list. Dynamic sampling publishes ~3.5x
+# the kept groups (r5: 111-127 published per 32 kept), so at batch 64 each
+# rollout draws ~224 prompts -> ~13 rollouts per pass -> 130 for 10 passes.
+# Batch 32 -> 64 also lifts the publisher's in-flight cap (2x batch) from 64
+# to 128 groups so the 16 engines see ~64 requests each instead of ~130.
+num_rollout: 130
+rollout_batch_size: 64
 n_samples_per_prompt: 8
 # 2026-09-02 user-directed, with the gym's ARENA_MAX_TOKENS=32768 /
 # ARENA_ROLLOUT_CONTEXT_LIMIT=131072 (was 2048/32768, r5 parity): GLM at
@@ -100,7 +104,7 @@ n_samples_per_prompt: 8
 # NATS result messages toward the 8 MiB max_payload.
 rollout_max_response_len: 32768
 rollout_temperature: 1
-global_batch_size: 256
+global_batch_size: 512
 balance_data: true
 # ---- sglang block: upstream GLM-5.3-Flash recipe (PR #2786) ----
 # 4 engines at 8 GPUs each (vs the parent's 8 engines at 4 GPUs): GLM needs a
@@ -275,6 +279,13 @@ arena_sample_mode: full_trajectory
 # train_rollout_logprob_abs_diff and rollout/truncated_ratio (status stays
 # TRUNCATED, so the metric remains honest).
 arena_mask_clipped_final_turn: true
+# r5 (REQUIRES image miles-glm53-20260903d): keep Harbor wall-clock-timeout
+# trajectories. r4 removed 222-245/256 samples per step as agent timeouts
+# although every recorded turn ended cleanly and the verifier ran -- e.g.
+# rollout 9 had 51 reward-1 samples but only 29 survived removal. Kept
+# samples stay status TRUNCATED (truncated_ratio stays honest) and are
+# reported as kept_timeout=N in 'Removal reasons'.
+arena_keep_timeout_trajectories: true
 log_passrate: false
 wandb_host: https://mega.wandb.agi.amazon.dev
 wandb_project: rl-snorkel27

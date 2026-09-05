@@ -171,3 +171,78 @@ fine); 8 engines up 16:45:59; first `update_weights` 18.6 s (16:46:01-20);
   to rollout 0 + first step) and `monitor2.sh` (poll to terminal state). The
   README's gym-side apply/teardown lines point here because the run5 assets
   they cited live in an unversioned AREnATasks staging directory.
+
+## 2026-09-02 22:23 PT — Smoke follow-up closed: HF export tolerates ENOTSUPP on the aux-file copy (integration 44ddf62fb)
+
+Commit: `fix(megatron): tolerate ENOTSUPP when copying HF aux files in hf_export`
+(`miles/backends/megatron_utils/hf_export.py`, +8/-1; the worktree file is
+byte-identical to the 44ddf62fb blob). Closes the one defect the smoke left
+open in the previous entry.
+
+**What the smoke left behind (rl-milesgb1-smoke1, terminal 2026-09-02 00:34 PT)**
+
+| item | state after the run |
+|---|---|
+| DCP | `iter_0000003` saved, `latest_checkpointed_iteration.txt` = 3 (on `scratch-s3files-rw`, whose fs completes the `.metadata` rename) |
+| HF export `hf/rollout_3` | 178 weight shards written; **no `config.json`, no tokenizer files, no `model.safetensors.index.json`** |
+| cause line | rank 0 aborted the aux-file copy at `.gitattributes` with `OSError [Errno 524] ENOTSUPP` |
+| job outcome | `save_hf_model` caught it (`Failed to save HuggingFace format: ...`), the run continued to ray job SUCC exit 0 |
+
+Mount pair on the smoke: source `hf_checkpoint` `/mnt/models-ro/external/Qwen/Qwen3.5-27B`
+(the curated read-only volume, EFS/NFS per the storage notes) -> destination
+`/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/rl-milesgb1-smoke1/hf/rollout_3`
+(EFS). The archived trainer logs (`arena-port-artifacts/glm53/wud-evidence/trainer-0-{s3,live}.log`)
+stop at 2026-09-01 21:37 PT, before the final save, so the raw traceback is recorded only in
+the 00:34 PT terminal-state notes.
+
+**Root cause (code reading, `export_hf_model_direct`)**
+
+- The aux loop used `shutil.copy2` = `copyfile` + `copystat`. `copystat`'s xattr step raised
+  errno 524 `ENOTSUPP`, the kernel-internal errno that `shutil` does not swallow (it tolerates
+  `ENOTSUP` 95 / `ENODATA` / `EINVAL` only). Which side raised it (NFS source or EFS destination)
+  was not isolated; the fix is side-agnostic.
+- The exception escaped the `for meta_file in base_checkpoint.iterdir()` loop, so the
+  `model.safetensors.index.json` write right after it never ran; the `finally: barrier()` kept
+  the collective in step, `save_hf_model` logged and returned, and the `.complete` marker
+  (touched only after a clean return) was never written. The 178 shards were already on disk.
+- Any run of this example would hit the same path: `snorkel-27b.yaml` reads the same
+  `/mnt/models-ro` `hf_checkpoint`, `--save-hf <ckpt>/hf/rollout_{rollout_id}` is appended by
+  the launcher, and `save_hf_model` runs after every DCP save (`save_interval 20`,
+  `num_rollout 90` -> 4 saves + the final one, README "Teardown").
+
+**Fix (landed 22:23 PT, integration 44ddf62fb)**
+
+- `shutil.copyfile` (data only, no `copystat`) per aux file, wrapped in `try/except OSError ->
+  logger.warning("HF export: could not copy <name> to <path>: ...")`. One failing aux file no
+  longer aborts the export, skips the index write, or suppresses `.complete`.
+- Comment in the code names the case the fix was written for: a mountpoint-S3 / FUSE
+  `hf_checkpoint` (the GLM-5.3 job's BF16 weights live on fast scratch).
+
+**Alternatives considered**
+
+- The 00:34 PT note proposed "tolerate ENOTSUPP metadata ops + backfill aux files from the
+  base model dir". Rejected as the shape of the fix: avoiding the metadata op altogether
+  (`copyfile`) makes the data copy succeed, so no backfill pass is needed; a post-hoc backfill
+  would also have to run on rank 0 after the barrier and re-derive the file set.
+- Catching only errno 524 around `copy2`: not taken; the export must never lose the index
+  over a cosmetic file (`.gitattributes`, `README.md`), whatever the errno, and the per-file
+  warning keeps the omission visible.
+- Plugin-side workaround: none exists; `hf_export.py` is core and has no hook here, so this is
+  the ADR-0001 "core edit only where miles has no seam" case (same as the qwen3_5 mask).
+
+**Where it shipped, and what is NOT verified**
+
+- Baked into the GLM trainer image `arena-slime-dev:miles-glm53-20260902c` together with the
+  `--arena-mask-clipped-final-turn` flag (5f8925db0) and the r2 relaunch fix set (3098ae1d3);
+  `20260903d` is a superset, so GLM r2-r7 all carry it. It is in **no 27B image**: the smoke ran
+  `arena-slime-dev:miles-arena-20260901b` (built 2026-09-01, before the fix); a rebuild of
+  `examples/arena/Dockerfile` from this tree picks it up.
+- No CPU test covers the aux copy (the export is a distributed collective; the only test
+  touching `hf_export` is `tests/fast/backends/megatron_utils/test_lora_model_branches.py`).
+- **GPU effect unverified.** The GLM runs save at `save_interval 20`: run 1 / run 2 / r2 / r3
+  died in step 0 or 1, r4 ended after 13 steps (20:29 PT), so the first run that can have
+  exported HF after the fix is r5 (`rl-glm53f-gbash-r5`, reached step 40), then r6 (step 33 by
+  2026-09-05 05:15 PT) and r7. No source records a complete export. Before claiming the fix
+  works: `ls <ckpt>/hf/rollout_*/` for `config.json`, tokenizer files,
+  `model.safetensors.index.json` and `.complete`, and grep the EFS `trainer-0.log` for
+  `HF export: could not copy` (warning path) vs `Successfully saved merged HuggingFace model`.

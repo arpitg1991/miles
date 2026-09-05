@@ -84,7 +84,14 @@ def export_hf_model_direct(
             if base_checkpoint.is_dir():
                 for meta_file in base_checkpoint.iterdir():
                     if _is_hf_metadata_file(meta_file):
-                        shutil.copy2(meta_file, path / meta_file.name)
+                        # copyfile, not copy2: copy2's copystat/xattr step fails with
+                        # ENOTSUPP (errno 524, which shutil does not tolerate) when the
+                        # source is a mountpoint-S3 / FUSE mount. A missing aux file must
+                        # not abort the export or skip the index write below.
+                        try:
+                            shutil.copyfile(meta_file, path / meta_file.name)
+                        except OSError as e:
+                            logger.warning(f"HF export: could not copy {meta_file.name} to {path}: {e}")
             else:
                 logger.warning(f"hf_checkpoint {args.hf_checkpoint} is not a local dir; metadata not copied to {path}")
             index = {"metadata": {"total_size": total_size}, "weight_map": weight_map}

@@ -284,6 +284,23 @@ def _wait_for_head_port(head_addr: str) -> None:
         U.exec_command_cpu("sleep 5")
 
 
+# Raylet memory-monitor guard (run-2 root cause: ray 2.58's ThresholdMemoryMonitor
+# measured the whole p6 node -- no cgroup limit visible -- and killed the SGLang
+# engine actors at 95% of host MemTotal, /tmp/glm53-run2-t0.log:42541). The
+# raylet reads RAY_* from ITS OWN process environment (ray_config.h ReadEnv),
+# i.e. from the env `ray start` inherits here (exec_command_cpu -> subprocess
+# with the inherited environ); ray-job runtime_env env_vars never reach it. The
+# PyTorchJob env sets this too; setdefault keeps an explicit pod value
+# authoritative while making the launcher safe on manifests that forget it.
+_RAYLET_ENV_DEFAULTS = {"RAY_memory_monitor_refresh_ms": "0"}
+
+
+def _pin_raylet_env() -> None:
+    for key, value in _RAYLET_ENV_DEFAULTS.items():
+        os.environ.setdefault(key, value)
+        print(f"raylet env: {key}={os.environ[key]}", flush=True)
+
+
 def _execute_train(args: ScriptArgs) -> None:
     megatron_model_type, train_args = _build_train_args(args)
     dirs = " ".join(shlex.quote(path) for path in (args.ckpt_dir, args.log_dir, args.tb_dir, args.wandb_dir))
@@ -327,6 +344,7 @@ def train(args: ScriptArgs):
     # execute_train reads MASTER_ADDR for the ray head's node ip and for the torch
     # distributed rendezvous the worker ranks connect to.
     os.environ["MASTER_ADDR"] = args.head_addr
+    _pin_raylet_env()
     _execute_train(args)
 
 
@@ -336,6 +354,7 @@ def worker(args: ScriptArgs):
     """Worker role (replicas 1..N-1): join the head's ray cluster and block."""
     # A restarted pod inherits the previous run's agents, and ray refuses to join with them alive.
     U.exec_command_cpu("pkill -9 sglang; sleep 3; ray stop --force; pkill -9 ray; pkill -9 miles; sleep 3; true; ")
+    _pin_raylet_env()
     _wait_for_head_port(args.head_addr)
     U.exec_command_cpu(
         f"ray start --address={args.head_addr}:6379 "

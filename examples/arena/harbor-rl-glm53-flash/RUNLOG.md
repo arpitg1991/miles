@@ -639,3 +639,129 @@ GLM image. Run 2's death and the fix set itself are in the next entry.
   post-fix export (r6, at step 33 by 2026-09-05 05:15 PT, is the second); check its
   `hf/rollout_*/` for `config.json`, the index and `.complete`, and its EFS
   `trainer-0.log` for `HF export: could not copy` warnings, before claiming it.
+
+## 2026-09-02 17:33 PT — Run 2 (`rl-glm53f-gbash-r1`, image b) killed by Ray's memory monitor on engine node worker-5
+
+Run 2 is the image-b relaunch of the previous entry (same identity r1, ray head
+up 14:16 PT). It validated the fla patch at train step 0 and then died of a
+host-memory verdict that was Ray's, not the kernel's. Only post-mortem source:
+the replica-0 tee on EFS (`logs/rl-glm53f-gbash-r1/trainer-0.log`, 48,297
+lines; S3 mirror
+`s3://arena-scratch-prod-bom-ap-south-1/guparpit/logs/rl-glm53f-gbash-r1/trainer-0.log`;
+raw copy archived as `arena-port-artifacts/glm53/glm53-run2/glm53-run2-t0.log`)
+— the kubeflow operator deleted the failed job with its pods. Ray placed the 4
+engines on workers 1/5/7/10, not on "workers 8-11" as the topology comments say.
+
+**Timeline (PT, 2026-09-02)**
+
+| time | event |
+|---|---|
+| 14:17-14:24 | 4 engines (TP8/EP8) load the 120 shards in 363 s; per GPU: weights 73.7 GB, KV 25.4 GB (2,144,384 tokens), mamba state 22.8 GB, 48.9 GB free after CUDA graphs |
+| 14:34:48 | initial `update_weights`: 28.3 s on 64 ranks; `WeightChecker` compare -> equal tensors (the one-time check `check_weight_update_equal` was kept for) |
+| 14:35 -> 15:56 | rollout 0: 4894 s, raw reward 0.152, removed 230/256 (`truncated_ratio` 0.898), failed 0/256 |
+| 15:57 -> 16:53 | rollout 1 (async, alongside train step 0): 3393 s, raw reward 0.258, removed 227/256 (0.887) |
+| 15:57 -> 18:05:43 | train step 0: `ref_log_probs` 2388 s + `actor_train` 5332 s = 7722 s; loss -0.040, grad_norm 0.082, ess_ratio 0.099, ppo_kl 0.0013 |
+| 17:33:40 | engine 0 (`rl-glm53f-trainer-worker-5`, 10.100.176.96) still healthy GPU-side: 89 running / 10 queued requests, token usage 0.98 — not an outlier vs the other three |
+| 17:33:57 | raylet on that node: "9 Workers killed due to memory pressure" = the `SGLangEngine` actor + its 8 `_HttpPosterActor`s; node 1934.01 / 1996.03 GB (0.969) vs the 95% threshold of MemTotal 2,143,217,684,480 B. Top-10: `sglang::scheduler_TP0..7` at 78.83-79.00 GB each (~631 GB); ~1300 GB of the counted 1934 GB is outside the pod's processes |
+| 17:34 -> 17:43 | router health check fails 40x at 15 s; the worker is never removed (router `log_level=warn`); the other 3 engines keep serving (79 more NATS results, 70 success / 9 failed, vs 399 before) |
+| 18:05:44 | post-train `update_weights` -> `_pause_and_prepare_engines` -> `ray.get(pause_generation)` re-raises `OutOfMemoryError` for the dead actor; driver exits 18:05:56 |
+
+Run 1 (same config, 78 min of serving) had zero memory-pressure events: the
+snapshot plus ~3 h of serving was what reached 95%. Gym Deployment scaled to 0
+at 21:15 PT while the RCA ran.
+
+**RCA (24-agent pass, ~21:20-22:30 PT; notes `oom-context.md`,
+`log-forensics-notes.md`; Ray 2.58 monitor sources read for the accounting path)**
+
+1. **Ray measured the whole node.** containerd gives the privileged container no
+   cgroup namespace, so `/sys/fs/cgroup/memory.max` does not exist in-pod (the
+   pod's cgroup sits under `/sys/fs/cgroup/kubepods.slice/...`); Ray 2.58's
+   `ThresholdMemoryMonitor` falls back to `/proc/meminfo` MemTotal-MemAvailable
+   and its 2.56+ by_time policy kills at 95% node-wide. A pod memory *limit*
+   therefore cannot switch Ray to cgroup accounting here (confirmed by memprobe
+   variant -b, next entry).
+2. **The 79 GiB/rank is self-inflicted.** `check_weight_update_equal: true`
+   makes sglang's `WeightChecker` keep a permanent anonymous CPU copy of every
+   TP rank's shard (`param.data.detach().cpu()`, issued once at startup by
+   `miles/ray/placement_group.py`, never freed): 8 x ~79 GiB = ~632 GiB per
+   engine node, for a check that had already passed at 14:35.
+3. **~1300 GiB unattributed.** Co-tenant theory refuted: the dead node
+   (`i-099b9859c5430fec8`) hosted only 3 small swebad pods while survivors hosted
+   more. Engine USS minus the snapshot grew only ~5.6 GiB in 3 h -> no material
+   engine leak. The remainder is external to the pod (mount-s3 CSI page cache,
+   driver pinned pages, kernel — unknown); left open, instrumented below.
+4. **No survival path.** `use_fault_tolerance` was unset (log: False), so both
+   `rollout_health_check_*` knobs were inert and no `RolloutHealthMonitor`
+   existed; `SGLangEngine` actors have no `max_restarts`. The run served 32 min
+   on 3 engines and died the moment the trainer touched the dead one.
+5. **Perf, recorded not fatal:** MFU 0.26% (5.9 TFLOPs/rank, 1521 tok/s); the
+   ref pass is 31% of step 0 at kl coef 0; every ~32k-token sample exceeds
+   `max_tokens_per_gpu 8192`, so dynamic batching ran 127 micro-batches of one
+   sample; TileLang re-JITs the sparse-MLA backward per distinct padded length
+   (~3300 compiles across 64 ranks, ~12 s each); dynamo hits its recompile limit
+   on the mHC hyper-connections; KDA is replicated across TP (upstream design);
+   CP unsupported. Steady state: rollout 3393 s vs train 7722 s.
+
+## 2026-09-02 22:27-22:49 PT — memprobe Jobs, r2 fix set (integration 3098ae1d3, image c) and r2 launch (`rl-glm53f-gbash-r2`)
+
+**memprobe/ (files 22:22-22:27 PT; how to read the CSVs: `memprobe/README.md`).**
+A single-node SGLang host-memory experiment to decide hypotheses R1-R5 (Ray
+accounting scope; 79 GiB = snapshot; co-tenants; leak under load; own
+shmem/kernel) in ~75 min on ONE p6 node instead of a 12-node multi-hour run.
+`memprobe.sh` runs the phases boot/loading/idle/snapshot/load/post with the
+run's exact ServerArgs; `memsampler.py` writes 30 s CSVs (`mem.csv` node + own
+cgroup + a literal read of `/sys/fs/cgroup/memory.max`, `procs.csv` anon/file
+split per process, `pods.csv` per-pod `memory.current` from `kubepods.slice`);
+`loadgen.py` keeps 96 `/generate` requests in flight with 40k-100k-token
+prompts and 10% client aborts; Job `-a` mirrors the run (no memory limit), `-b`
+adds `limits.memory: 1800Gi`. Stdlib only; loadgen self-tested against a fake
+server before submit (39/39 requests, 0 errors).
+
+- 22:27 PT: `glm53-memprobe-a` / `-b` created (one ConfigMap
+  `glm53-memprobe-scripts`); deleted ~22:33 after kueue TAS mis-pins;
+  resubmitted 22:34 PT as `a2` / `b2` with two more `NotIn` nodes
+  (`i-0e7902b4e3d9f2d0c`, `i-04f9a44ac50ae500d`). 22:36: `b2` Running on
+  `i-0c0969769a21a3001`, `a2` Pending. `b2` finished rc=0; artifacts under EFS
+  `logs/glm53-memprobe/glm53-memprobe-b2/`. `a2`'s outcome is not recorded.
+- Result used for the fix set: a kubelet memory limit is NOT visible at
+  `/sys/fs/cgroup/memory.max` inside the privileged container, so
+  `limits.memory` alone cannot fix R1; `RAY_memory_monitor_refresh_ms=0` is
+  required.
+- Ops facts: kyverno rewrites `ttlSecondsAfterFinished` to 0 (the EFS artifacts
+  are the only record); kueue admits a `batch/v1 Job` carrying the queue label.
+  As-applied Job a: `arena-port-artifacts/glm53/memprobe-cm/job-a-live.yaml`.
+
+**Fix set (3098ae1d3, 22:37 PT; 10 files, +1490/-35)**
+
+| change | file | why |
+|---|---|---|
+| `RAY_memory_monitor_refresh_ms=0` in the pod env; launcher `_pin_raylet_env()` setdefaults it before `ray start` on both roles | trainer yaml, `scripts/run_arena_harbor.py` | installs Ray's NoopMemoryMonitor on every raylet; the raylet reads `RAY_*` from the env `ray start` inherits, ray-job runtime_env never reaches it. Same setting as miles' own GLM-5 launchers |
+| `check_weight_update_equal: false` (+ skip list removed) | miles-config | drops the ~632 GiB/node snapshot; equality already verified at 14:35. Re-enable only in a single-engine smoke |
+| `use_kl_loss` / `kl_loss_type` removed; `kl_coef`/`kl_loss_coef` stay 0.0 | miles-config | the ref pass was 2388 s of 7722 s at coef 0; the upstream recipe runs no ref pass. Only the `train/kl_loss` diagnostic is lost |
+| `use_fault_tolerance: true`; `rollout_health_check_timeout` 300 -> 900 | miles-config | the health knobs were inert; 900 s so the probe cannot false-kill a healthy engine under ~100-deep queues. UNVALIDATED on the arena NATS path |
+| `limits.memory: 1800Gi`, `/dev/shm sizeLimit: 256Gi`; request 1800Gi -> 1200Gi codified | trainer yaml | backstops: a real exhaustion now OOM-kills inside our cgroup; 256Gi keeps the ~186 GiB Ray object store on shm (exceeding it evicts the pod). The deployed run-2 manifest already ran 1200Gi — at 1800Gi only 11/304 p6 nodes were TAS-assignable |
+| 60 s `memsample-<idx>.log` host-memory sampler in the container command | trainer yaml | run 2's log had exactly one host-memory snapshot; node vs own-cgroup vs per-process over time is the only way to attribute the ~1300 GiB |
+| gym `NotIn` anti-affinity off `p6-b200.48xlarge` / `node-type: p6-gpu` | gym-worker | p6 nodes are untainted; the trainer's 1200Gi / 0-CPU request left ~746 GiB + ~190 vCPU per engine node for our 128 gym+dind pods to land on. Repels only OUR pods |
+| `data_pad_size_multiplier: 512` | miles-config | pads to multiples of TP*512 = 4096 tokens: distinct padded lengths ~37 -> ~10 for ~+6.5% pad tokens, bounding the TileLang bwd re-JIT count; verify loss parity |
+| `arena_mask_clipped_final_turn: true` (needs image c) | miles-config | ADR-0009; ~90% of run-2 samples carried no loss |
+| `NCCL_DEBUG` / `NCCL_DEBUG_SUBSYS` dropped | trainer yaml | EFA verified in runs 1-2; INFO at 96 ranks inflated the log to 48k lines |
+| TRITON / TILELANG / INDUCTOR caches -> EFS `kernel_cache/<EXPERIMENT_NAME>/worker-<idx>` | trainer yaml | for persistence across pod restarts (per-replica dirs against cross-NODE writers). **Regression:** the 8 ranks of one node still share the dir and race on NFS -> Triton ESTALE kills r2 step 0; reverted in the next entry |
+| `EXPERIMENT_NAME` / `PROJECT_NAME` -> `rl-glm53f-gbash-r2` | trainer yaml | run 2 saved no checkpoint (`save_interval 20`); a fresh name keeps ckpt dir and W&B group separate |
+
+Alternatives rejected: raising `RAY_memory_usage_threshold` alone (documented
+to still fail near the edge, slime #1851 at 0.99); relying on `limits.memory`
+to switch Ray to cgroup accounting (refuted by R1); keeping
+`check_weight_update_equal` as a per-update guard (its cost is the permanent
+snapshot, not the compare); a 300 s health timeout (false-kill risk); a
+platform taint on the GPU nodes (not ours to set); OnFailure restarts (still
+unproven on the ray-based launcher).
+
+**Image and launch.** `arena-slime-dev:miles-glm53-20260902c` = b +
+`--arena-mask-clipped-final-turn` + the hf_export ENOTSUPP fix (previous two
+entries); pushed to us-east-1 (replica ap-south-1) at 22:24 PT, one minute after
+the hf_export commit (ECR `describe-images`; digest `sha256:9c963ae7...`) — the
+22:20 PT manifest comment records that the tag did not exist yet. r2 launched
+22:49 PT: PyTorchJob `rl-glm53f-trainer`, 12 nodes,
+`EXPERIMENT_NAME` / W&B group `rl-glm53f-gbash-r2`, gym `rl-glm53f-gym-sgb`
+x128 (image `rl-smoke-20260821b`, unchanged) now kept off the p6 nodes.
+Outcome in the next entry.

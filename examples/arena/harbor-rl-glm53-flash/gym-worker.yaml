@@ -43,6 +43,28 @@ spec:
     spec:
       serviceAccountName: arena-tasks-runner
       enableServiceLinks: false
+      # Keep gym + dind pods OFF the GPU nodes: p6-b200 nodes are NOT tainted
+      # (1258 default-toleration pods sat on them in the 2026-09-03 snapshot) and
+      # the trainer requests 1200Gi / 0 CPU, leaving ~746 GiB and ~190 vCPU per
+      # engine node for anything kube-scheduler spreads there; run 2's 128 gym
+      # pods (48Gi req / 96Gi lim) had no placement constraint. Keys verified
+      # from live GPU pod specs (trainer-pytorchjob.yaml:66-68). NotIn needs
+      # updating for new GPU instance types. This only repels OUR pods; other
+      # submitters' pods need a platform taint (nvidia.com/gpu:NoSchedule --
+      # every GPU pod already tolerates it, trainer-pytorchjob.yaml:100-106).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: NotIn
+                values:
+                - p6-b200.48xlarge
+              - key: node-type
+                operator: NotIn
+                values:
+                - p6-gpu
       containers:
       - name: gym-worker
         # Run-3 proven image (digest 21fd6144…, verified identical us-east-1 /

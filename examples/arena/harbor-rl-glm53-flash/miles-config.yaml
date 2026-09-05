@@ -140,7 +140,22 @@ gym_autoscale: false
 skip_eval_before_train: true
 distributed_timeout_minutes: 60
 rollout_health_check_interval: 300
-rollout_health_check_timeout: 300
+# 900 (was 300): with use_fault_tolerance ON the monitor's health probe competes
+# with ~100 running + ~30 queued 30k-token requests per engine (KV usage 0.97 in
+# run 2); a 300 s timeout risks killing a HEALTHY engine and dropping its in-flight
+# trajectories. 900 s still detects a truly dead engine within one rollout.
+rollout_health_check_timeout: 900
+# Without this the two health knobs above are INERT (rollout_manager.py:115-123)
+# and one dead engine kills the run: run 2 served 32 min on 3 engines and then
+# died at 01:05:44 when update_weights called the dead actor (log 47802-47827;
+# SGLangEngine actors have no max_restarts). With FT the RolloutHealthMonitor
+# stops the dead engine and recover_updatable_engines rebuilds it at the next
+# update_weights (rollout_manager.py:343-354, server_group.py:215-245;
+# ft_components defaults to [rollout]). UNVALIDATED on the arena NATS path:
+# kill one engine's sglang in the 5-node smoke first; a 300 s health_generate
+# under 100-deep queues could false-kill a healthy engine (then raise
+# rollout_health_check_timeout to 600).
+use_fault_tolerance: true
 # ---- parallelism: upstream GLM recipe, shape (8,4) scaled to 64 GPUs ----
 # TP8+SP x PP4 x CP1 = 32 GPUs per replica-group, DP=2 on 64 actor GPUs.
 # 45 layers split 11/(11/11)/12 across the 4 pipeline stages (MTP layer 45 is
@@ -166,6 +181,15 @@ recompute_num_layers: 1
 micro_batch_size: 1
 use_dynamic_batch_size: true
 max_tokens_per_gpu: 8192
+# Pads each thd micro-batch token stream to a multiple of TP*512 = 4096 tokens
+# (default 128 -> 1024; miles/backends/training_utils/data.py:228-232).
+# tilelang_sparse_mla_bwd takes S/S_kv as static ints while the fwd uses
+# T.dynamic, so the DSA backward triplet re-JITs for every distinct padded
+# length (~3300 compile events across 64 ranks in run 2, ~12 s each, stalling
+# all PP stages); 4096-token granularity cuts distinct lengths ~37 -> ~10 for
+# ~+6.5% pad tokens. Pad tokens form their own cu_seqlens segment -- verify
+# loss parity in the smoke.
+data_pad_size_multiplier: 512
 # ---- misc: upstream GLM recipe ----
 attention_dropout: 0.0
 hidden_dropout: 0.0
@@ -178,14 +202,16 @@ qkv_format: thd
 # in the weight updater and the HF export path; the HF config class name alone
 # does not resolve it — the recipe passes this explicitly
 model_name: glm5_next
-# Run-1 hardening (upstream recipe carried both flags): first disaggregated
-# run of the glm5_next update-weights path (NCCL-bucketed broadcast, 4
-# PP-source groups x 32 engine GPUs vs the recipe's colocated
-# UpdateWeightFromTensor). Verifies megatron->sglang weight equality after
-# each update; skip list downgrades the engine-only visual./MTP tensors.
-# REMOVE both after step 1 passes (per-update cost).
-check_weight_update_equal: true
-check_weight_update_skip_list: visual.
+# check_weight_update_equal is OFF. Its cost is NOT a per-update compare but a
+# permanent ~73 GiB anonymous CPU copy of every TP rank's parameter shard
+# (sglang weight_checker.py:114-121 `param.data.detach().cpu()`, issued once at
+# startup by miles/ray/placement_group.py:213-217 and never released): 8 ranks x
+# ~79 GiB = ~632 GiB of the 1934 GiB Ray counted on the engine node at the
+# run-2 OOM kill (/tmp/glm53-run2-t0.log:47868-47876). Step-0 megatron->sglang
+# equality was already verified in run 2 (log 14798-14800). Re-enable only in a
+# single-engine smoke (false -> the launcher drops the flag; the skip list is
+# meaningless without it, so it is removed too).
+check_weight_update_equal: false
 # ---- algorithm/GRPO block: r5-faithful (parent values; the recipe's
 # eps 0.2/0.28 deliberately NOT taken) ----
 advantage_estimator: grpo
@@ -194,16 +220,14 @@ advantage_estimator: grpo
 # masked by the qwen heuristic. Do not disable without adding a GLM mask type.
 use_rollout_logprobs: true
 keep_old_actor: false
-# use_kl_loss: true makes with_ref=True — the ref checkpoint is loaded (plus
-# a pinned-CPU backup per node) and a full ref forward runs over the whole
-# GBS every step (~+25% step compute), all multiplied by kl_loss_coef 0.0 in
-# the loss. This is DELIBERATE r5-parity (the snorkel parent ran the same
-# shape); kl_loss_coef is pinned explicitly so nobody inherits a changed
-# default. Drop use_kl_loss/kl_loss_type to skip the ref pass entirely.
-use_kl_loss: true
+# use_kl_loss/kl_loss_type DROPPED (was r5-parity): with kl_loss_coef 0.0 the
+# gradient is identical, but use_kl_loss forced with_ref=True -> ref checkpoint
+# load, a second pinned bf16 CPU backup per actor rank, and a full ref forward
+# over the whole GBS every step = 2388 s of the 7722 s train step 0 (log 47796,
+# 31% of the step). Upstream run_glm5_3_flash.py runs no ref pass. Only the
+# train/kl_loss diagnostic is lost; kl coefs stay pinned at 0.0 explicitly.
 kl_coef: 0.0
 kl_loss_coef: 0.0
-kl_loss_type: low_var_kl
 entropy_coef: 0.0
 eps_clip: 0.4
 eps_clip_high: 0.4
@@ -225,6 +249,17 @@ use_distributed_post: true
 # key. `false` was inert (the converter drops false booleans) but flipping it
 # to true would emit an unknown flag and kill the trainer at argparse.
 arena_sample_mode: full_trajectory
+# REQUIRES image miles-glm53-20260902c: the flag (nats_rollout.py:1827) was
+# committed 2026-09-02 23:44 UTC, AFTER image b was built -- on image b the
+# strict argparse kills the trainer at startup. Run 2: truncated_ratio 0.898,
+# ess_ratio 0.099 (log 31133, 47792): ~90% of samples carried no loss because
+# a clipped final turn removed the whole sample (r5-lineage policy). Now only
+# the clipped final turn's loss-mask is zeroed and earlier turns stay
+# trainable (nats_rollout.py:447-470); degenerate stops, hard overflows and
+# zero-filled logprobs keep the removal behaviour. Watch
+# train_rollout_logprob_abs_diff and rollout/truncated_ratio (status stays
+# TRUNCATED, so the metric remains honest).
+arena_mask_clipped_final_turn: true
 log_passrate: false
 wandb_host: https://mega.wandb.agi.amazon.dev
 wandb_project: rl-snorkel27

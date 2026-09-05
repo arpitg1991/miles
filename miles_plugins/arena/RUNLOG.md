@@ -869,3 +869,37 @@ also makes this test's `_args` pass `arena_keep_timeout_trajectories=False`.
 **Naming trap.** "r5-lineage default" in the help text and the test docstring
 means the AGISlime snorkel run-5 removal policy (ADR-0007 lineage), not GLM
 r5 - the GLM runs reuse the r1..r7 labels.
+
+## 2026-09-02 22:37 PT — Launcher: `_pin_raylet_env()` pins `RAY_memory_monitor_refresh_ms=0` before `ray start` (integration 3098ae1d3)
+
+**Why.** GLM run 2 (`rl-glm53f-gbash-r1`, 2026-09-02 17:33 PT) lost an engine
+node to Ray 2.58's memory monitor, which measured the whole p6 node (no cgroup
+limit visible inside the privileged container) and killed the `SGLangEngine` +
+8 `_HttpPosterActor`s at 95% of host MemTotal (full RCA in
+`examples/arena/harbor-rl-glm53-flash/RUNLOG.md`). The raylet reads `RAY_*`
+from ITS OWN process environment (`ray_config.h` ReadEnv), i.e. from the env
+`ray start` inherits; ray-job `runtime_env.env_vars` never reach it — run 2's
+runtime env carried only `RAY_enable_open_telemetry_metrics=false`. The
+PyTorchJob manifest now sets the variable in the pod env; the launcher makes
+that robust for every manifest.
+
+**Change (`scripts/run_arena_harbor.py`, +19 lines; the file's final version).**
+`_RAYLET_ENV_DEFAULTS = {"RAY_memory_monitor_refresh_ms": "0"}`;
+`_pin_raylet_env()` runs `os.environ.setdefault` per key and prints
+`raylet env: KEY=VALUE`. Called in `train` right after `MASTER_ADDR` is set
+(before `U.execute_train` starts the head) and in `worker` after the
+stale-agent cleanup, before `ray start --address=...`. `setdefault` keeps an
+explicit pod value authoritative (a manifest can re-enable the monitor with a
+non-zero value); manifests that forget the variable get the safe default.
+
+**Alternatives.** Adding it to `extra_env_vars` (ray-job runtime_env): wrong
+layer, does not reach the raylet. `ray start --memory` /
+`--object-store-memory`: size Ray's resource accounting, not the monitor.
+Manifest-only: correct but fragile across the example manifests. Precedent:
+miles' own GLM-5 launchers set the same variable (`p2p_weight_transfer/run.py`,
+`run-glm5-disagg-profile.sh`, `scripts/run_inkling.py`).
+
+**Verification.** Launch-script snapshots unaffected (arena cases 4/4 still
+pass — the snapshot records the submitted command, the pin lives in the process
+env). Live: no `memory pressure` event in r2 or any later run (r2 engines at
+~3.4 GiB host RSS/rank without the WeightChecker snapshot).

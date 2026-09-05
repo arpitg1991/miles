@@ -790,3 +790,28 @@ Gap to remember: the README predates every post-port flag
 (`--arena-mask-clipped-final-turn`, `--arena-keep-timeout-trajectories`) and
 was not updated when they shipped; their documentation lives in the argparse
 help text, the ADRs and the GLM example run log.
+
+## 2026-09-01 16:39 PT -> 2026-09-02 00:34 PT - GPU validation of the port: rl-milesgb1-smoke1
+
+- The ported plugin trained for real on prod-bom: PyTorchJob
+  `rl-milesgb1-trainer` (arena-tasks, 3x p6-b200: 2 actor nodes TP4/PP2/CP2 +
+  1 node of 8 single-GPU SGLang engines), `EXPERIMENT_NAME=rl-milesgb1-smoke1`,
+  image `arena-slime-dev:miles-arena-20260901b` (radixark/miles:latest cu13
+  via `examples/arena/Dockerfile`, TCP fabric - no EFA layer yet), W&B
+  `arena/rl-snorkel27` group `rl-milesgb1-smoke1` run `j6gr37za`. Config =
+  the plain-stack snorkel example (ADR-0007) at smoke scale: rbs 8 / GBS 64,
+  num_rollout 4, 8 run5 gym workers.
+- A first attempt at 12:07 PT died at import on the `latest-cu12` nightly base
+  (TE<->torch `undefined symbol` ImportError); rebuilt on cu13 and relaunched
+  16:39 PT.
+- Outcome: 4/4 rollouts (avg reward 0.391 / 0.156 / 0.312 / 0.172; 8495 /
+  7968 / 6730 / 4082 s), 4 train steps, ray job SUCC exit 0 at 00:34 PT;
+  `iter_0000003` saved. Step 0: loss -0.022, grad_norm 0.30, ess_ratio 0.69.
+  Zero-variance filter kept 8/31 then 8/32 groups. `update_weights` 18.6 s
+  cold, 4.1 s steady (weight sync declared a non-issue).
+- Proven on GPU: `ref_load` fallback loads the slime-era TP4 DCP; NATS wire
+  contract with the unchanged run5 gym workers; native `group_index`
+  normalization + `check_reward_nonzero_std`; the asyncio driver end to end.
+  Defect found: HF export aux files missing on ENOTSUPP (fixed later).
+- Details, timeline and the as-applied manifests:
+  `examples/arena/harbor-rl-27b-snorkel/RUNLOG.md` and `smoke-3node/`.

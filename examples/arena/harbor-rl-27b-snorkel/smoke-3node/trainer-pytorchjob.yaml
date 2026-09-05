@@ -1,0 +1,153 @@
+# rl-milesgb1-smoke1: miles arena trainer GPU smoke (3x p6-b200.48xlarge).
+# Derived from examples/arena/harbor-rl-27b-snorkel/trainer-pytorchjob.yaml.
+# No-EFA deltas (radixark/miles image ships no libfabric/aws-ofi-nccl):
+# FI_PROVIDER=tcp, NCCL_IB_DISABLE=1, no LD_LIBRARY_PATH override (the
+# image's own CUDA paths must win), no vpc.amazonaws.com/efa resources,
+# no /dev/infiniband mount. Cross-node NCCL runs over TCP — acceptable for
+# a bounded smoke; EFA-enabled image is the perf follow-up.
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: rl-milesgb1-trainer
+  namespace: arena-tasks
+  labels:
+    app: rl-milesgb1
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+spec:
+  elasticPolicy:
+    minReplicas: 3
+    maxReplicas: 3
+    maxRestarts: 0
+    nProcPerNode: 8
+    rdzvBackend: c10d
+    rdzvId: rl-milesgb1-trainer
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: 3
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            app: rl-milesgb1
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
+        spec:
+          serviceAccountName: arena-tasks-runner
+          enableServiceLinks: false
+          priorityClassName: high
+          nodeSelector:
+            node-type: p6-gpu
+            node.kubernetes.io/instance-type: p6-b200.48xlarge
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                    - i-09907cd660684a460
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+          - effect: NoSchedule
+            key: vpc.amazonaws.com/efa
+            operator: Exists
+          containers:
+          - name: pytorch
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-arena-20260901b
+            imagePullPolicy: Always
+            command: ["bash", "-c"]
+            args:
+            - mkdir -p /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME} && ulimit -n 1000000 && if [ "${REPLICA_IDX}" = "0" ]; then ROLE=train; else ROLE=worker; fi && exec python3 /root/miles/scripts/run_arena_harbor.py "$ROLE" > >(tee /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME}/trainer-${REPLICA_IDX}.log) 2>&1
+            env:
+            - name: AGISLIME_DIR
+              value: /root/miles
+            - name: CLUSTER
+              value: bom
+            - name: PYTHONUNBUFFERED
+              value: '1'
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+            - name: FI_PROVIDER
+              value: tcp
+            - name: NCCL_IB_DISABLE
+              value: '1'
+            - name: NCCL_TIMEOUT
+              value: '7200'
+            - name: NCCL_SOCKET_IFNAME
+              value: eth0
+            - name: GLOO_SOCKET_IFNAME
+              value: eth0
+            - name: NCCL_PROTO
+              value: simple
+            - name: NCCL_P2P_DISABLE
+              value: '0'
+            - name: REPLICA
+              value: '3'
+            - name: REPLICA_TRAINER
+              value: '2'
+            - name: EXPERIMENT_NAME
+              value: rl-milesgb1-smoke1
+            - name: PROJECT_NAME
+              value: rl-milesgb1-smoke1
+            - name: CFG_NAME
+              value: /config/training/miles-config.yaml
+            - name: JOBNAME
+              value: rl-milesgb1-trainer
+            - name: USER
+              value: guparpit
+            - name: NATS_URL
+              value: nats://rl-milesgb1-nats:4222
+            - name: WANDB_BASE_URL
+              value: https://mega.wandb.agi.amazon.dev
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wandb-env-arena
+                  key: WANDB_API_KEY
+            - name: ARENA_DEFAULT_GYM
+              value: snorkel-general-bash-harbor
+            - name: ARENA_CHECKPOINTS_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/checkpoints
+            - name: ARENA_DATA_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/data
+            - name: LAKECTL_SERVER_ENDPOINT_URL
+              value: https://prod.artifact-vault.agi.amazon.dev
+            - name: LAKECTL_CREDENTIALS_PROVIDER_TYPE
+              value: aws_iam
+            - name: REPLICA_IDX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['training.kubeflow.org/replica-index']
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            resources:
+              limits:
+                nvidia.com/gpu: 8
+              requests:
+                ephemeral-storage: 32Gi
+                memory: 1800Gi
+                nvidia.com/gpu: 8
+            securityContext:
+              privileged: true
+            volumeMounts:
+            - mountPath: /config/training
+              name: training-config
+            - mountPath: /dev/shm
+              name: dshm
+            - mountPath: /dev/nvidia-caps
+              name: nvidia-caps
+          volumes:
+          - configMap:
+              name: rl-milesgb1-trainer-config
+            name: training-config
+          - emptyDir:
+              medium: Memory
+            name: dshm
+          - hostPath:
+              path: /dev/nvidia-caps
+            name: nvidia-caps

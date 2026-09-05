@@ -503,3 +503,99 @@ TP8/EP8), trainer image `arena-slime-dev:miles-glm53-20260902a`, gym
    still says 1800Gi; codified in the r2 fix set (`3098ae1d3`).
 5. Ops: the ECR docker login expires after 12 h — "authorization token has
    expired" means re-login, not missing permissions.
+
+## 2026-09-02 13:55 PT — fla KDA kernel patch for triton 3.7.1, image b, run 2 relaunch (`rl-glm53f-gbash-r1`, `miles-glm53-20260902b`)
+
+Answers finding (2) of the previous entry: run 1's train step 0 crashed on
+every rank inside fla. The fix is an image layer (integration 3c40b4660), the
+manifests move to image b (949434185), and run 2 — same identity, same
+job name — validates it 4 h later. Run 2's death that evening is a different
+defect and has its own entry (Ray host-memory OOM).
+
+**Timeline (PT)**
+
+| when | what |
+|---|---|
+| 11:03 -> 12:23 | run 1 rollout 0 on image a: 32 groups / 256 samples in 4800.6 s, avg_reward 0.180, `truncated_ratio` 0.910 |
+| 12:24 | first forward of train step 0 (the ref log-prob pass, 22.7 s in) dies on all 64 actor ranks — traceback below |
+| 13:53-13:54 | `examples/arena/patches/fla_kda_next_power_of_2.py` + Dockerfile `RUN` (3c40b4660) |
+| 13:55 | image `arena-slime-dev:miles-glm53-20260902b` built and pushed (us-east-1, replicated to ap-south-1) |
+| 13:58 | `trainer-pytorchjob.yaml` and `convert-job.yaml` pinned to b (949434185) |
+| 14:15 | run 2 trainer up (`rl-glm53f-trainer`, still `EXPERIMENT_NAME` / W&B group `rl-glm53f-gbash-r1`; nothing had been saved by run 1, so it restarted from the ref weights and re-collected rollout 0) |
+| 14:34 | engines loaded; initial `update_weights` 28.3 s on 64 ranks (weight-equality check on) |
+| 15:57 | rollout 0 done: 4893.6 s, episode reward 0.152, `truncated_ratio` 0.898, response_len median 19361 |
+| 15:57 -> 16:36 | `ref_log_probs` 2342.6 s wall-clock (`end (elapsed: ...)` line; the `perf/ref_log_probs_time` metric records 2388 s) — the same KDA forward that killed run 1 now runs through: **patch validated** |
+| 16:36 -> 18:05 | `actor_train` 5378 s wall-clock (perf metric 5332 s; `perf/train_time` 7722 s — the fix-set entry quotes the perf metrics); step 0 logged: loss -0.0401, grad_norm 0.0816, ppo_kl 0.0013, ess_ratio 0.099, pg_clipfrac 0.0017 |
+
+**Root cause (from the run-1 driver log, EFS tee — the pods were gone)**
+
+```
+fla/ops/kda/chunk_intra_token_parallel.py, line 153, in chunk_kda_fwd_intra_token_parallel
+  ...
+triton/runtime/jit.py, line 193, in visit_Attribute -> record_reference
+RuntimeError: Unsupported function referenced: <function next_power_of_2 at 0x...>
+```
+
+fla 0.4.2's `chunk_kda_fwd_kernel_intra_token_parallel` declares
+`BK: tl.constexpr = triton.next_power_of_2(K)` INSIDE the `@triton.jit` body.
+Triton 3.7.1's JIT dependency walker refuses host functions referenced from a
+kernel body, so every GLM-5.3-Flash (KDA) train step fails at its first
+forward. The engines were not affected: run 1 served rollout 0 normally (the
+fla KDA kernels they JIT-compiled, e.g. `chunk_kda_fwd_kernel_inter_solve_fused`,
+are not this one); the offender is reached only on the training forward. An AST
+scan over all of fla found no other in-kernel offender. The sibling
+`intra_sub_chunk` path already computes `BK` on the host, which is what the
+patch copies.
+
+**Fix: `examples/arena/patches/fla_kda_next_power_of_2.py` (+49 lines)**
+
+- Rewrites the installed file at
+  `/usr/local/lib/python3.12/dist-packages/fla/ops/kda/chunk_intra_token_parallel.py`:
+  deletes the in-body line, adds `BK: tl.constexpr` to the kernel signature
+  (after `BH`), passes `BK=triton.next_power_of_2(K)` at the launch site, then
+  `ast.parse`s the result. Semantics identical; K=128 is already a power of two.
+- Idempotent (`already applied` -> exit 0); exits 0 with a message when fla is
+  absent, so the same Dockerfile still builds the non-GLM (27B) images; exits 1
+  ("anchor not found — fla changed, refusing to guess") if any of the three
+  anchors drifted, so a base-image bump cannot ship an unpatched kernel silently.
+- Dockerfile: one `RUN python3 /root/miles/examples/arena/patches/...` after
+  `COPY . /root/miles` and before the import smoke. Image layer, no pod-start
+  step, no network. The patched source was checked inside the run-2 pods.
+
+**Alternatives considered**
+
+- Different triton/fla pins: both come with the `radixark/miles:glm53next`
+  base (the stack that exists because mainline lacks KDA/DSA support) — a base
+  change, not a config change.
+- Patch at pod start (entrypoint): rejected — a runtime dependency and a drift
+  source; the port had just removed AGISlime's pod-start pip installs for the
+  same reason.
+- A blind in-place edit (`sed`) in the Dockerfile: would not notice fla drift;
+  the script anchors on exact text and refuses to guess.
+- `FLA_CACHE_RESULTS=0` — found on 2026-09-03 in the precedent hunt
+  (ForgeModelEnablement `glm53-flash-sft-strl` sidesteps the same crash with
+  it). Not tried here: the image-layer patch was already validated and every
+  later tag (c, 20260903d) is a superset of b. Recorded as the fallback if the
+  anchors ever drift.
+
+**Manifest pins**
+
+- `trainer-pytorchjob.yaml`: image a -> b, nothing else (the 4-node `NotIn`
+  list and the 1800Gi request are as the previous entry left them; the
+  1200Gi drop was made in the deployed copy and is codified with the r2 fix set).
+- `convert-job.yaml`: a -> b is post hoc — the conversion finished ~04:00 PT on
+  image a and never ran on b. The pin keeps the example on one tag (README
+  lineage table); a re-apply hits the job's `REFUSING to overwrite` guard.
+
+**Also seen in run 2 (handled elsewhere)**
+
+- 89.8% of samples removed as TRUNCATED again (run 1: 91.0%) — the
+  `--arena-mask-clipped-final-turn` flag written at 16:44 PT while this run
+  was alive is the next entry; the timeout RCA that re-explains the number is
+  two entries on.
+- Rollout 1 completed asynchronously at 16:53 PT (3392.6 s, reward 0.258,
+  `truncated_ratio` 0.883) while step 0 trained.
+- 17:33 PT: Ray's memory monitor killed the SGLang schedulers on engine node
+  `trainer-worker-5`; the trainer only noticed at the post-train
+  `update_weights` (18:05 PT). Step-0 perf, RCA and fix set: the r2 fix-set
+  entry.

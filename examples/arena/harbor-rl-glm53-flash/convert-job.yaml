@@ -96,7 +96,7 @@ spec:
             operator: Exists
           containers:
           - name: pytorch
-            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902a
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902b
             imagePullPolicy: Always
             command: ["bash", "-c"]
             args:

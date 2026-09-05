@@ -1,0 +1,152 @@
+# rl-glm53f gym workers: run5-proven smoke asset renamed (rl-milesgb1 -> rl-glm53f),
+# replicas 8 -> 128 (r5 fleet size for rbs 32), ARENA_MODEL_PATH -> GLM-5.3-Flash-BF16
+# on fast scratch (workers tokenize against the policy model).
+# Deltas vs run 1: 96 replicas (up from 64) — run 2 enables the dynamic
+# sampling filter (zero-variance groups dropped, extras fetched), which
+# consumes up to 4x GBS groups per step; more workers keep rollout wall
+# time down so off-policy drift does not grow.
+# Deltas vs bom-27b-run2 (financeagent):
+#   - gym snorkel-general-bash-harbor; reward = the binary in-container
+#     pytest verifier (reward.txt) ONLY (option A). The Inspect seam's
+#     gpt-oss rubric leg is not in this loop, so no judge env is wired;
+#     worker-side rubric grading (option C) is the planned follow-up.
+#   - Tasks materialize per-task from lakeFS at the pinned commit
+#     (resolve_task_dir fallback) — no ARENA_DATASET_ROOT staging of the
+#     212k-object payload. Cache lives on the /trials volume.
+#   - Task images are prebuilt digest-pinned ECR refs
+#     (arena/snorkel-generic-bash-3k, us-west-2 replica): the entry script
+#     logs the dind daemon into ECR and refreshes the token every 6 h.
+#   - allow_internet=false on every task -> harbor builds its egress-control
+#     sidecar via `docker buildx`, but the worker image ships no buildx
+#     plugin (financeagent never hit this path). The entry script installs
+#     the pinned buildx binary before starting the worker.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rl-glm53f-gym-sgb
+  namespace: arena-tasks
+  labels:
+    app: rl-glm53f-gym-worker
+    arena.gym: snorkel-general-bash-harbor
+spec:
+  replicas: 128
+  selector:
+    matchLabels:
+      app: rl-glm53f-gym-worker
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+      labels:
+        app: rl-glm53f-gym-worker
+        arena.gym: snorkel-general-bash-harbor
+    spec:
+      serviceAccountName: arena-tasks-runner
+      enableServiceLinks: false
+      containers:
+      - name: gym-worker
+        # Run-3 proven image (digest 21fd6144…, verified identical us-east-1 /
+        # ap-south-1). Both repos are at the exact commits it was built from;
+        # this run ships no code changes, so no rebuild.
+        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-tasks-dev:rl-smoke-20260821b
+        command: ["bash", "-c"]
+        args:
+        - |
+          set -uo pipefail
+          # harbor 0.17.1 builds the egress-control sidecar (allow_internet=false)
+          # with `docker buildx build`; install the pinned plugin (verified sha).
+          BUILDX_URL=https://github.com/docker/buildx/releases/download/v0.30.1/buildx-v0.30.1.linux-amd64
+          BUILDX_SHA=c37114fcd034025ec68e224657c8a5a850df472ded3ddcbca75ad3a7ebb9710d
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          until curl -sfL --max-time 120 "$BUILDX_URL" -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+                && echo "$BUILDX_SHA  /usr/local/lib/docker/cli-plugins/docker-buildx" | sha256sum -c -; do
+            echo "buildx download retry"; sleep 10
+          done
+          chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+          docker buildx version
+          ecr_login() {
+            aws ecr get-login-password --region us-west-2 \
+              | docker login --username AWS --password-stdin 427267593057.dkr.ecr.us-west-2.amazonaws.com
+          }
+          until docker info >/dev/null 2>&1; do echo "waiting for dind"; sleep 2; done
+          until ecr_login; do echo "ecr login retry"; sleep 10; done
+          ( while sleep 21600; do ecr_login || true; done ) &
+          exec python3.12 -m amzn_arena_harbor.gym_worker \
+            --nats-url nats://rl-glm53f-nats:4222 \
+            --gym snorkel-general-bash-harbor \
+            --model policy \
+            --model-base-url http://rl-glm53f-sglang:30000
+        env:
+        # Per-task lakeFS materialization (pinned commit in the manifest row).
+        - name: ARENA_LAKEFS_AUTH
+          value: aws_iam
+        - name: ARENA_LAKEFS_CACHE_DIR
+          value: /trials/lakefs-cache
+        - name: ARENA_MODEL_PATH
+          value: /mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16
+        - name: ARENA_NATS_ACK_WAIT
+          value: "4500"
+        - name: ARENA_ROLLOUT_MAX_CONCURRENCY
+          value: "8"
+        # Sampling parity with snorkel-27b-r1.yaml (trainer config).
+        - name: ARENA_MAX_TOKENS
+          value: "2048"
+        - name: ARENA_TEMPERATURE
+          value: "1.0"
+        - name: ARENA_ROLLOUT_CONTEXT_LIMIT
+          value: "32768"
+        - name: ARENA_TASK_EVENTS_LOG
+          value: /tmp/task-events.jsonl
+        - name: DOCKER_HOST
+          value: unix:///var/run/docker.sock
+        # Harbor bind-mounts trial dirs into task containers; dockerd runs in
+        # the dind sidecar, so trial dirs must live on a volume mounted at
+        # the SAME path in both containers.
+        - name: TMPDIR
+          value: /trials
+        securityContext:
+          runAsUser: 0
+        resources:
+          requests:
+            cpu: "8"
+            memory: 32Gi
+            ephemeral-storage: 50Gi
+          limits:
+            cpu: "16"
+            memory: 64Gi
+            ephemeral-storage: 100Gi
+        volumeMounts:
+        - mountPath: /var/run
+          name: dind-sock
+        - mountPath: /trials
+          name: trials
+      - name: dind
+        image: docker:dind
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: "4"
+            memory: 16Gi
+          limits:
+            cpu: "8"
+            memory: 32Gi
+        volumeMounts:
+        - mountPath: /var/run
+          name: dind-sock
+        - mountPath: /var/lib/docker
+          name: dind-storage
+        - mountPath: /trials
+          name: trials
+      volumes:
+      - name: dind-sock
+        emptyDir: {}
+      - name: dind-storage
+        emptyDir:
+          sizeLimit: 150Gi
+      - name: trials
+        emptyDir:
+          sizeLimit: 100Gi

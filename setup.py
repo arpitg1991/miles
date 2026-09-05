@@ -59,6 +59,14 @@ setup(
             "uvicorn>=0.41",
             "prometheus_client>=0.24",
         ],
+        # arena NATS rollout plugin (miles_plugins/arena): NATS JetStream task
+        # dispatch, k8s autoscaling/eval, lakeFS manifests, S3 artifacts
+        "arena": [
+            "nats-py>=2.6.0",
+            "kubernetes==35.0.0",
+            "lakefs",
+            "boto3",
+        ],
     },
     python_requires=">=3.10",
     classifiers=[

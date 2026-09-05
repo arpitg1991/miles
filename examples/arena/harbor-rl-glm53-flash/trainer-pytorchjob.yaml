@@ -87,6 +87,16 @@ spec:
                     operator: NotIn
                     values:
                     - i-00cb6ebceda36a4ef
+                    # 2026-09-02 second incident, same signature: kueue TAS
+                    # assigned these three (each holds an unreaped Failed
+                    # arena-backfill pod, deletion-protected to its submitter;
+                    # 41 such pods fleet-wide) and the scheduler reports them
+                    # Insufficient — the 9 actor pods placed in ~3 min while
+                    # these three stalled the gang into the pods-ready
+                    # eviction. Remove when the backfill reaper catches up.
+                    - i-09913cb3a1edcc270
+                    - i-08c9e00e2a0af830a
+                    - i-04c8462a637bbf738
           tolerations:
           - effect: NoSchedule
             key: nvidia.com/gpu

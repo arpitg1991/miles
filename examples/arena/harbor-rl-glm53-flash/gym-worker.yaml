@@ -88,13 +88,18 @@ spec:
           value: "4500"
         - name: ARENA_ROLLOUT_MAX_CONCURRENCY
           value: "8"
-        # Sampling parity with snorkel-27b-r1.yaml (trainer config).
+        # 2026-09-02 user-directed (breaks r5 parity deliberately): GLM-5.3's
+        # max-effort reasoning burned the whole 2048-token turn cap thinking —
+        # first-rollout completions were 28/28 status=truncated, 0 success.
+        # Per-turn 32k, episode 131k (= trainer rollout_max_context_len and
+        # sglang_context_length). Keep ARENA_MAX_TOKENS in lockstep with the
+        # trainer's rollout_max_response_len.
         - name: ARENA_MAX_TOKENS
-          value: "2048"
+          value: "32768"
         - name: ARENA_TEMPERATURE
           value: "1.0"
         - name: ARENA_ROLLOUT_CONTEXT_LIMIT
-          value: "32768"
+          value: "131072"
         - name: ARENA_TASK_EVENTS_LOG
           value: /tmp/task-events.jsonl
         - name: DOCKER_HOST

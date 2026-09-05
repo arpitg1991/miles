@@ -92,7 +92,13 @@ rollout_skip_special_tokens: true
 num_rollout: 90
 rollout_batch_size: 32
 n_samples_per_prompt: 8
-rollout_max_response_len: 2048
+# 2026-09-02 user-directed, with the gym's ARENA_MAX_TOKENS=32768 /
+# ARENA_ROLLOUT_CONTEXT_LIMIT=131072 (was 2048/32768, r5 parity): GLM at
+# reasoning=max truncated every first-rollout episode. Long-sample watch
+# items: samples up to ~131k tokens overflow the 8192 max_tokens_per_gpu
+# microbatch budget alone (allowed, memory headroom absorbs it) and fatten
+# NATS result messages toward the 8 MiB max_payload.
+rollout_max_response_len: 32768
 rollout_temperature: 1
 global_batch_size: 256
 balance_data: true

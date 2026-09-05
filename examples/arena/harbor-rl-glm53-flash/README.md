@@ -242,6 +242,19 @@ snorkel parent.
 | `pin_rollout_manager_to_head`, `sglang_router_port 30000` | kept | forced — arena Service wiring |
 | launcher-consumed keys (`user`/`cluster`/`replicas`/...) | present | forced — `run_arena_harbor.py` contract; never reach the trainer argv |
 
+### Run-1 live change (2026-09-02, user-directed)
+
+First rollout with the r5-parity caps (`ARENA_MAX_TOKENS=2048`,
+`ARENA_ROLLOUT_CONTEXT_LIMIT=32768`, `rollout_max_response_len: 2048`) produced
+28/28 `truncated`, 0 `success` — GLM-5.3 at its default `max` reasoning effort
+spends the whole 2048-token turn thinking. Raised per user instruction to
+**32768 per turn / 131072 per episode** (trainer + gym env together; engines
+already ran `sglang_context_length: 131072`). Consequences to watch: single
+samples can now exceed the 8192 `max_tokens_per_gpu` microbatch budget by ~16x
+(allowed — a lone over-budget sample forms its own microbatch; memory analysis
+had ~50 GB headroom), rollouts get slower per episode, and a ~131k-token
+trajectory pushes the NATS result message toward the 8 MiB `max_payload`.
+
 ## Risks (accepted, watch on run 1)
 
 1. **GLM chat/tool-call format vs the gym parser — UNVERIFIED.** The snorkel

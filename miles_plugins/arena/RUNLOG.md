@@ -260,3 +260,95 @@ at `data_source.py:160` exists identically upstream (miles ruff excludes
 `miles_plugins/**`); `prompt_data_list` list-vs-JSON concern is moot — the
 launcher remaps `prompt-data-list` to `--prompt-data` (str), `json.loads`'d
 by `_resolve_gym_configs`.
+
+## 2026-09-01 ~01:00 PT — Milestone: NATS rollout hot path ported (`nats_arena/nats_rollout.py`)
+
+Source: AGISlime `src/amzn_agi_slime/amzn_agi_slime/nats_arena/nats_rollout.py`
+from the `mainline-0.3.0` checkout at `/workplace/guparpit/miles/src/AGISlime`
+(1698 lines; last changed there in `5f7cf5f`, 2026-08-19). Sibling files of
+the same porting task carry 01:06-01:07 PT mtimes (`message_format.py`,
+`rollout_metrics.py`, `logging_extensions.py`). The file lands at its
+verified 2026-09-01 state = integration-tree snapshot `7182346d7`
+(1819 lines, committed 2026-09-02 00:55 PT); the two salvage flags added on
+2026-09-02/03 follow in their own commits.
+
+- Ported: `NATSRolloutWorker` (daemon asyncio thread, JetStream publish /
+  collect / dedup / DLQ sweep), `_result_to_samples_full_trajectory` (fast
+  path from gym `token_ids`/`loss_mask`/`log_probs`, slow path via
+  `MultiTurnLossMaskGenerator`), `_process_group`, `generate_rollout`.
+- Import swaps only: `slime.utils.{types,mask_utils,misc,metric_utils}`,
+  `slime.rollout.filter_hub.base_types` -> `miles.*`;
+  `slime.utils.logging_utils.log` -> `miles.utils.tracking_utils.tracking.log`
+  (same `(args, metrics, step_key)` shape, still gated on `args.use_wandb`);
+  `amzn_agi_slime.*` -> `miles_plugins.arena.*`.
+- Wire values untouched (ADR-0002): `ARENA_TASKS`/`ARENA_RESULTS`, durable
+  `slime-trainer`, `ack_wait 3600` / `max_deliver 3`, `max_msg_size 134217728`,
+  `SALVAGEABLE_RESULT_STATUSES = ('success', 'truncated')`, `.g<counter>.`
+  task-id suffix, degenerate agent-stop set, synthetic-slot skip + sibling pad.
+- The one semantic adaptation: `s.group_id = gid` -> shared
+  `s.group_index = gid` + unique `s.index = gid * n_per_prompt + i`,
+  `rollout_id` left `None` (ADR-0003). The mechanical `rollout_id = gid`
+  mapping was tried first and raised
+  `all samples in rollout 99 must share one reward` on rewards `[1, 0, 1, 0]`.
+  Loss weighting thereby becomes per-trajectory (ADR-0004).
+- New `_add_arena_arguments` attached as `generate_rollout.add_arguments`
+  (the hook miles' strict `parse_args` auto-invokes for
+  `--rollout-function-path`): `--arena-sample-mode`,
+  `--dynamic-sampling-max-examine-mult` (4.0), `--gym-mixture-targets`,
+  `--mixture-adjustment-interval` (60) / `--mixture-smoothing` (0.3),
+  `--k8s-namespace`, the `--gym-autoscale*` family (interval 30, cooldown 180,
+  warmup 1800, headroom 2.0, deficit-alpha 0.5, growth 1.3 / 1.25,
+  profile-duration 1800, min-samples 50, windows 100 / 1000, `auto-tune`
+  default `True`). A `parse_args` probe confirmed every default equals its
+  `getattr` fallback in value and type; the `getattr` + env fallbacks stay for
+  `MILES_USE_LEGACY_ROLLOUT_V1=1`, where the hook is skipped. Under the
+  vendored megatron parser these knobs were silently dropped and the
+  defaults always won; on miles a YAML value now takes effect.
+- Not carried: the lazy `removed_sample_replacement` import
+  (`ARENA_NATS_REPLACE_REMOVED_SAMPLES`; AGISlime harbor-workspace revision
+  `b8aae83`, 1800 lines). The r3b-r5 survivor-normalisation custom is
+  descoped with the plain-stack decision (ADR-0007); only stale `__pycache__`
+  entries of the module and its test remain in the working tree.
+- Kept as-is (parity, not port defects): ruff's 4 findings (3x F841
+  import-guard fallbacks, 1x B905 `zip`) match the original;
+  `--gym-autoscale-auto-tune` cannot be switched off from YAML; the blocking
+  `output_queue.put` inside the event loop.
+- Checks at port time (CPU venv): imports in normal and legacy mode;
+  hunk-by-hunk diff vs the original; `_result_to_samples_full_trajectory`
+  cases (fast path, synthetic skip, length truncation, degenerate stop,
+  bad logprobs, context overflow); `_process_group` pad + stamping; two
+  groups through `postprocess_rollout_data` + `convert_samples_to_train_data`
+  (per-group normalised rewards `[0.866, -0.866, ...]`, per-trajectory
+  `rollout_mask_sums`); `generate_rollout` through `LegacyRolloutFnAdapter`
+  with a stubbed worker queue (4 groups x 2 samples); full `parse_args`.
+
+### 2026-09-01 02:34-02:58 PT — verification fix-ups folded into `nats_rollout.py`
+
+Two findings of the adversarial verification wave were fixed in place (the
+wave itself is logged with the verification-hardening commit):
+
+- **`rollout/truncated_ratio` -> `rollout/truncated_ratio_prefilter`**
+  (verify-redundancy, major). The plugin logged the ratio over the
+  pre-filter population (`all_data`, incl. groups dropped by the
+  dynamic-sampling filter) while miles-native `log_rollout_data` logs a
+  post-filter `rollout/truncated_ratio` at the same `rollout/step` — the only
+  colliding key across both metric sets; it would zigzag the chart on any
+  wandb-enabled run. The collision pre-dated the port (slime 0.3.0
+  `rollout.py:1243` vs AGISlime `nats_rollout.py:1616`) but fires identically
+  on miles. Decision: rename the plugin key, keep both populations, comment
+  at the log site.
+- **Slow-path zero-fill under `use_rollout_logprobs`** (verify-e2e, minor).
+  Messages-only trajectories left `rollout_log_probs = None`; a mixed
+  fast/slow group produced rows `[20, 20, 20, None]` and a `TypeError` at
+  tensorisation (slow-first: field silently dropped for the batch).
+  Decision: zero-fill to `response_length`, `ABORTED`, `remove_sample`,
+  reason `no_logprobs` (ADR-0004).
+
+Left open: blocking `output_queue.put` (e2e teardown showed `ack_pending=4`,
+identical to AGISlime; production drains every step and
+`ack_wait 3600` / `max_deliver 3` redeliver); per-trajectory weighting
+sign-off (ADR-0004); no regression test yet for the stamping (added in the
+verification-hardening commit). No GPU run had exercised this file yet: the
+first exercise was the CPU e2e harness (real NATS 2.14.6 JetStream + fake
+financeagent gym worker, 49/50 checks), then `rl-milesgb1-smoke1` on
+2026-09-01 (see the snorkel example run log).

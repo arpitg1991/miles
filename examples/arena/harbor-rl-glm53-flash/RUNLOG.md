@@ -1387,3 +1387,98 @@ procedure, `nats.yaml` header "27B RL run 2", the `miles-config.yaml`
 "wandb group = ... r1" comment, the `gym-worker.yaml` header "replicas 8 -> 128".
 The README preflight claim that the tree carries the GLM merge is true on this
 branch from the PR #2786 merge commit onward.
+
+## 2026-09-05 — State of the world at the end of the commit series: r1..r7 summary, open questions, r7 placeholder
+
+Closing entry; r7 is running. The two tables collapse the entries above into
+one row per launch so a reader can find the entry that carries the detail.
+Every number is quoted from an earlier entry, from the memory record behind
+it, or from the 2026-09-05 read-back of the EFS trainer logs
+(`/mnt/scratch-s3files-rw/guparpit/logs/<EXPERIMENT_NAME>/trainer-0.log`, present
+for r1-r7) and ECR `describe-images`; cells marked *unrecorded* are exactly that.
+Identities and images for run 1 .. r4 were re-read from the
+manifests at the integration commits named in the earlier entries; r5-r7
+manifests exist only at their r7 state (the r5/r6 intermediates were never
+saved), so those rows rely on the run-time record.
+
+### Numbering
+
+- GLM "run 1" and "run 2" are two launches under ONE identity,
+  `rl-glm53f-gbash-r1` (trainer images a and b; run 1 saved nothing, so run 2
+  restarted from the ref weights and re-collected rollout 0). `r2` onwards are
+  distinct identities `rl-glm53f-gbash-r<N>`. Kubernetes resource prefix:
+  `rl-glm53f-*` for r1-r5, `rl-glm53f6-*` for r6, `rl-glm53f7-*` for r7 (r6 ran
+  side by side with r5, so it needed its own NATS/Service/gym names).
+- "r5-faithful", "run5", "r5-lineage" in the YAML comments, the README and
+  `nats_rollout.py` help text mean AGISlime snorkel run 5 (2026-08-29), not GLM r5.
+- Trainer images a/b/c/d = `arena-slime-dev:miles-glm53-{20260902a,20260902b,20260902c,20260903d}`;
+  gym images are `arena-tasks-dev:<tag>`. Lineage tables: `examples/arena/README.md`.
+- ECR push times (`describe-images`, PT): trainer a 2026-09-02 01:41, b 13:57, c 22:24,
+  d 2026-09-03 01:40 (us-east-1; base mirror `glm53next-upstream-20260902` 09-02 00:49);
+  gym `glm53-reasoning-20260903b` 09-03 20:08, `glm53-reasoning-20260904a` 09-04 01:02,
+  `glm53-sgltimeout-20260904b` 09-04 10:22 (ap-south-1 replica, ~1 min after the push).
+  No `glm53-sgltimeout-20260904a` tag was ever pushed.
+
+### Runs: identity and shape
+
+| run | launch (PT) | end (PT) | `EXPERIMENT_NAME` / k8s prefix | nodes | batch | trainer image | gym image (Harbor) | W&B group |
+|---|---|---|---|---|---|---|---|---|
+| run 1 | 2026-09-02 ~09:15 (2nd gang attempt bound ~15 min later) | 09-02 12:24, train step 0 crash | `rl-glm53f-gbash-r1` / `rl-glm53f` | 12 = 8 actor + 4 engine | rbs 32 x n 8 = GBS 256, num_rollout 90 | a | `rl-smoke-20260821b` (0.21.0) x128 | `rl-glm53f-gbash-r1`, run `v57ymk1l` |
+| run 2 | 09-02 14:15 | 09-02 17:33 engine node OOM-killed by Ray; noticed at update_weights 18:05 | same | 12 | same | b | same | same group |
+| r2 | 09-02 22:49 | 09-03 00:36, train step 0 ESTALE | `rl-glm53f-gbash-r2` / `rl-glm53f` | 12 | same | c | same | `rl-glm53f-gbash-r2` (run id unrecorded) |
+| r3 | 09-03 01:32 | 09-03 04:58, train step 1 CUDA OOM | `rl-glm53f-gbash-r3` / `rl-glm53f` | 12 | same | c | same | `rl-glm53f-gbash-r3` (run id unrecorded) |
+| r4 | 09-03 05:50 | 09-03 20:29, torn down for r5 after 13 steps (last completed step perf 12, reward 0.19; `trainer-0.log` ends 3 min before r5's opens) | `rl-glm53f-gbash-r4` / `rl-glm53f` | 12 | same | d | same | `rl-glm53f-gbash-r4` (run id unrecorded) |
+| r5 | 09-03 20:32 (`trainer-0.log` opens; the offline argv parse of its config was 20:22) | 2026-09-05 00:12, killed by the user at step 40 (41 steps, reward 0.395) to free nodes for r7 | `rl-glm53f-gbash-r5` / `rl-glm53f` | 12 | same | d | `glm53-reasoning-20260903b` (0.22.0) x128 | `rl-glm53f-gbash-r5`, run `43f0vjwx` |
+| r6 | 09-04 01:10 submit, 01:37 admitted; `trainer-0.log` opens 01:21 | **in progress** (still running at 09-05 05:15 PT: step 33 done, reward 0.469) | `rl-glm53f-gbash-r6` / `rl-glm53f6` | 24 = 8 actor + 16 engine | rbs 64 x n 8 = GBS 512, num_rollout 130 | d | `glm53-reasoning-20260904a` x160 | `rl-glm53f-gbash-r6`, run `gweq9pme` |
+| r7 | 09-05 00:13 submit, 00:14 admitted, engines up + first update_weights 00:30. Three earlier Suspended submissions vanished without events or audit: 09-04 19:03 -> gone by 23:13, 23:14 -> ~23:27, 23:41 -> ~00:10 | **in progress** | `rl-glm53f-gbash-r7` / `rl-glm53f7` | 24 | same as r6 | d | `glm53-sgltimeout-20260904b` x160 | `rl-glm53f-gbash-r7` (run id unrecorded) |
+
+### Runs: levers and outcome
+
+| run | new in this run (vs the previous row) | outcome, numbers as logged | detail entry |
+|---|---|---|---|
+| run 1 | first launch at r5-parity caps; live 10:18 PT: TAS `NotIn` 1 -> 4 nodes; live 10:41 PT (user-directed): `ARENA_MAX_TOKENS` / `rollout_max_response_len` 2048 -> 32768, `ARENA_ROLLOUT_CONTEXT_LIMIT` 32768 -> 131072; `check_weight_update_equal` on, `use_kl_loss` on, `NCCL_DEBUG=INFO` | EFA live on all ranks (aws-ofi-nccl 1.18.0 + Libfabric 2.4 with NCCL 2.29/cu13); at the old caps 28/28 first completions truncated; after the caps rollout 0 4800.6 s, avg reward 0.180, truncated_ratio 0.910 (23/256 samples with loss), wire 272 success / 54 failed / 0 truncated; train step 0 crashed on all 64 actor ranks in fla `chunk_kda_fwd_kernel_intra_token_parallel` (triton 3.7.1 rejects the in-kernel `next_power_of_2`) | r1 launch; run-1 live changes and findings |
+| run 2 | image b (fla KDA patch as an image layer) | patch validated: step 0 on 64 ranks, loss -0.0401, grad_norm 0.0816, ess_ratio 0.099; rollout 0 4893.6 s, reward 0.152, truncated 0.898; rollout 1 3392.6 s, reward 0.258; step 0 = ref_log_probs 2342.6 s + actor_train 5378 s wall-clock (perf metrics 2388 + 5332 = 7722 s), MFU 0.26%, 127 micro-batches of one sample, ~3300 TileLang backward re-JITs; 17:33 PT Ray's monitor killed the SGLang schedulers on `trainer-worker-5` at 1934/1996 GB = 0.969 of host MemTotal (WeightChecker snapshot ~79 GiB x 8 ranks) | fla patch / image b; r2 relaunch fix set |
+| r2 | image c; `RAY_memory_monitor_refresh_ms=0` (pod env + launcher); `check_weight_update_equal` false; `use_kl_loss` removed; `use_fault_tolerance` + `rollout_health_check_timeout` 900; request 1200Gi / limit 1800Gi / shm 256Gi; `data_pad_size_multiplier` 512; `arena_mask_clipped_final_turn`; memsample sampler; gym anti-affinity off p6 nodes; kernel JIT caches moved to EFS | OOM fixes held: engines ~3.4 GiB host RSS/rank, no memory-pressure events, FT monitor healthy, initial sync 38 s, rollout 0 4938 s with 135/20 success/failed; train step 0 died 7 min in on Triton autotuner `OSError [Errno 116] Stale file handle` (8 ranks per node racing on NFS cache files); `arena_mask_clipped_final_turn` salvaged nothing (229/256 removed, truncated_ratio 0.8945, zero "masked clipped final turn" lines) | r3 local caches |
+| r3 | kernel caches back on local `/tmp/kernel_cache`; `NotIn` 4 -> 16 nodes | step 0 61 min (MFU 0.40%, no ref pass); post-train update_weights 19.7 s; rollout 1 3724 s, reward 0.281; train step 1 CUDA-OOM after 73 s in fla `chunk_kda_bwd_wy_dqkg_fused` on ~37k-token samples ("177 GiB in use, 144 GiB allocated, 1 GiB free"; Adam states ~33 GB/rank absent in step 0, KDA runs all 64 heads on every TP rank); ~50 min of rollout 0 lost to the NATS-restart trap | r3; r4 optimizer offload |
+| r4 | image d; `optimizer_cpu_offload` + `overlap_cpu_optimizer_d2h_h2d` + `use_precision_aware_optimizer`; `--arena-keep-timeout-trajectories` present but OFF | rollout 0 4890 s, reward 0.164, `Removal reasons: timeout=230/256 (kept_timeout=0)`; step 0 4273 s (cold JIT), loss -0.029; rollout 1 3734 s, reward 0.258, timeout=221; step 1 584 s with NO OOM (loss -0.091, ppo_kl 0.0016); offloaded Adam state 438-615 GiB pod-anon per actor node (max 34% of 1800Gi); GPU 36-40 GB/rank after step 0 (r3: ~109); steady state 12 rollouts + 12 steps in 13.7 h, warm step 373-449 s, rollouts 3478-4094 s (rollout-bound ~9x), reward 0.16-0.27 with no trend, timeouts removing 222-245/256 (18-35 trainable, ess_ratio 0.07-0.13), >= 22 reward-1 trajectories discarded per rollout; timeout mechanism measured: AgentTimeoutError at task.toml `timeout_sec` + 30-80 s | r4 optimizer offload |
+| r5 | `arena_keep_timeout_trajectories` true; gym image 20260903b: `ARENA_REASONING_EFFORT=low`, `<|user|><|user|>` splice fix, `--mode rollout --agent arena-terminus-2` | healthy through step 40: ~50 min/rollout, ~10 min/step, reward 0.30-0.40 (first 4 steps: rollouts 3874/3197/2592/2718 s, reward 0.273/0.328/0.367/0.398, ess 0.97, ppo_kl 0.011); low effort did NOT cut timeouts: kept_timeout 183-221/256, truncated 0.71-0.86 (engines KV-bound at ~100 running requests each; actors ~21% duty); final step 40 reward 0.39 | r5-r7 gym and scale-out |
+| r6 | 16 engines; rbs 64 / GBS 512 / num_rollout 130 (in-flight cap 128 groups, ~64 requests per engine); 160 gym workers; gym image 20260904a with `ARENA_AGENT_TIMEOUT_MULTIPLIER=2` and `ARENA_NATS_ACK_WAIT` 6000; fresh-node ECR pre-seed (alpine probe, gost egress sidecar, tokenizer-mount guard) in the gym start script | kueue priority `inference`=1000 found to be the cluster maximum; fresh-node Docker-Hub trap cost ~1000 dropped groups before the pre-seed fix; rollout 0 kept_timeout 228/512 (45%) vs r5's 72-86%, truncated 0.45, reward 0.40, mean response 33k tokens (2x r5), episode total ~58k; step 0 6749 s (JIT), step 1 1380 s at 140 TFLOPs, so training is faster than the ~50 min rollouts; residual ~8% of samples per rollout (33-74/512) `failed` on the hardcoded 600 s httpx read timeout; still running at 2026-09-05 05:15 PT (step 33 done, reward 0.469 on 512 samples) | r5-r7 gym and scale-out |
+| r7 | gym image 20260904b with `ARENA_SGLANG_REQUEST_TIMEOUT_SEC=1800`; `ARENA_REASONING_EFFORT=high`; kueue `priority-class: inference` label on the workload | admitted 00:14 PT, engines up and first update_weights 00:30 PT; steps 0-3 done by 05:15 PT: reward 0.33 / 0.39 / 0.39 / 0.40, truncated 0.69 / 0.58 / 0.64, `failed` 15 / 43 / 16 of 512 (r6: 33-74), `kept_timeout` 352 / 296 / 326 of 512, rollouts 5944 then 3302 s, train step 0 6784 s (cold JIT) then 2054 s; zero httpx timeouts in the gym logs (the 1800 s lever works); ~3-14% of calls hit `Context length exceeded` at ~99-101k prompt tokens (the conversation may reach `ARENA_ROLLOUT_CONTEXT_LIMIT` 131072 while each call asks for `ARENA_MAX_TOKENS` 32768 more) and end the episode `truncated`, not `failed`; startup burn of the first 128-group in-flight window published before the engines were up (~4% of a task-list pass, same in r6); SGLang startup tracebacks (`cpu_ids int('\n')`, `sock.connect`) are benign; **conclusion pending: see the placeholder below** | r5-r7 gym and scale-out; follow-up entry |
+
+### r7 conclusion: placeholder (fill in a follow-up docs commit)
+
+> **r7 at `ARENA_REASONING_EFFORT=high`: context-ceiling / `context_error` observation -- TO RECORD**
+> from `/mnt/scratch-s3files-rw/guparpit/logs/rl-glm53f-gbash-r7/trainer-0.log`: the per-rollout
+> `Removal reasons: timeout=.., context_error=.., length=.. (kept_timeout=N)` line, i.e. the
+> `context_error` count against the kept_timeout share, under the ceilings in force
+> (`rollout_max_context_len` = `sglang_context_length` = `ARENA_ROLLOUT_CONTEXT_LIMIT` = 131072;
+> `ARENA_MAX_TOKENS` = `rollout_max_response_len` = 32768). It is in no on-disk source yet;
+> ask the user before drafting.
+
+Also to record with it: (1) the gate: did r7 complete >= 5 healthy training
+steps (user instruction, 2026-09-05 02:45 PT)?; (2) kept_timeout share and
+truncated_ratio at effort `high` against r6's 45% / 0.45 at `low`; (3) whether
+the 1800 s request timeout removed r6's ~8% `failed` samples
+(`httpx.ReadTimeout`, surfaced as "Unknown Error in LLM interaction: " with an
+empty message); (4) reward trajectory and rollout / step times at 24 nodes;
+(5) the W&B run id; (6) end state and who stopped it.
+
+### Open questions and unverified claims
+
+| item | status |
+|---|---|
+| `hf_export` ENOTSUPP fix (image c) on GLM | unverified. `save_interval` 20 means only r5 (reached step 40) and r6 (step 33 by 2026-09-05 05:15 PT) can have written `hf/` exports, and no source records anyone checking one. Look at `<ARENA_CHECKPOINTS_DIR>/slime_experiments/rl-glm53f-gbash-r5/hf/` before claiming the fix works on GLM |
+| `--arena-mask-clipped-final-turn` (on since r2) | never observed to salvage anything: r2 logged zero "masked clipped final turn" lines (229/256 removed) and no r3-r7 source records one. Correct but inert on this workload (ADR-0009): the removals are agent timeouts, not clips |
+| `use_fault_tolerance` on the arena NATS path | unvalidated. r2-r7 report the monitor healthy, but no source records an engine dying and being rebuilt by `recover_updatable_engines`; the 5-node kill-one-engine smoke the README asks for was never run. A 900 s `health_generate` under 100-deep queues could still false-kill a healthy engine |
+| r6 end state | none yet: still running at 2026-09-05 05:15 PT (step 33 done, reward 0.469), side by side with r7; `trainer-0.log` open since 2026-09-04 01:21 PT. Record its end with the r7 conclusion |
+| W&B run ids | run 1 / run 2 `v57ymk1l`, r5 `43f0vjwx`, r6 `gweq9pme`; r2-r4 ids unrecorded, r7's not yet read back |
+| memprobe Job `glm53-memprobe-a2` | fate unrecorded (`b2` ran rc=0; results under EFS `logs/glm53-memprobe/`). The as-applied Job a is archived at `arena-port-artifacts/glm53/memprobe-cm/job-a-live.yaml` |
+| ~1300 GiB unattributed on run 2's engine node | open (co-tenant theory refuted; engine USS grew 5.6 GiB in 3 h). The `memsample-<idx>.log` files from r2-r7 have not been analysed for it |
+| GLM tool-call format vs the snorkel textual bash agent | never formally verified; non-zero rewards (0.15-0.40 across r1-r6) show commands are being extracted, not that every turn parses |
+| `use_dynamic_batch_size` + PP>1 `send_forward` deadlock (ForgeModelEnablement measurement) | not hit so far because every sample exceeds `max_tokens_per_gpu` 8192 (one sample per micro-batch); becomes live once short samples appear |
+| stale text kept as history | README "Current run identity is r3"; `nats.yaml` header "27B RL run 2"; `miles-config.yaml` comment "wandb group = EXPERIMENT_NAME (rl-glm53f-gbash-r1)"; `gym-worker.yaml` header "replicas 8 -> 128". Fix in a separate docs commit if wanted |
+
+### Where the story continues
+
+- The r7 conclusion is appended here in a follow-up docs commit that fills the placeholder above.
+- The gym-side ledger for the same runs (image lineage per run, NATS-restart and consumer-reset recipes, the fresh-node Docker-Hub trap, the 0.21 -> 0.22 CLI contract and envelope-status drift) lives in AREnATasks `eval-runs/2026-09-02/glm53-flash-snorkel-harbor-rl.md` and ADR-0047; trainer-side RCAs stay in this file.

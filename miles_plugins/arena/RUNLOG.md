@@ -980,3 +980,100 @@ the r3 launch (01:32 PT, image c, so r3 does not carry it). ADR-0010.
   reasoning effort and SGLang request timeout followed in AREnATasks
   (ADR-0047 there); the trainer-side flag only stops discarding what the gym
   already scored.
+
+## 2026-09-05 (PT) — State of the package at the end of the commit series
+
+What `miles_plugins/arena` is at this commit, what has exercised it, and what
+is still open. GLM r7 (`rl-glm53f-gbash-r7`) is running; its read-out belongs
+in `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`, not here.
+
+### Tests (verified 2026-09-05 on the equivalent tree: fork + PR #2786 + port)
+
+| check | result |
+|---|---|
+| `pytest tests/fast/plugins tests/fast/utils/test_loss_mask_qwen3_5.py` | 177 passed, 0 skipped = 145 ported (test_nats_arena 102, test_rollout_metrics 19, test_plugins 10, test_argo_eval_trigger 6, test_weight_versions 5, test_eval_coordinator_batched 3) + test_group_identity 5 + test_loss_mask_qwen3_5 3 + test_mask_clipped_final_turn 5 + test_keep_timeout_trajectories 19 |
+| `tests/manual/launch_scripts/test_py_launch_scripts.py -k arena` | 4/4; snapshots `train.txt` 963 lines / `worker.txt` 13 lines, byte-identical since they were recorded 2026-09-01 01:21 PT |
+| `tests/fast/launch_scripts` | 43 passed (the launcher's 15 env knobs are in `py_harness.CLEARED_ENV`) |
+| `tests/fast/utils/test_arguments.py` + `test_hf_config.py` + `tests/fast/test_kpool_indexer_packed.py` | 159 passed / 1 skipped |
+| `python -c 'import miles_plugins.models.glm5_next'` | ok |
+
+Environment: the CPU test venv from `arena-port-artifacts/reports/testEnv.md`
+(`PYTHONDONTWRITEBYTECODE=1 -p no:cacheprovider`); no GPU on the host.
+
+### Tree
+
+This branch equals the image build tree at its last commit (integration
+`3a6cbe5ba`, 2026-09-03 05:31 PT, archived as `refs/archive/glm53-arena`;
+upstream PR history as `refs/archive/pr2786`) plus what only ever existed in
+the fork: the r5-r7 edits to the six GLM example files (README, gym-worker,
+miles-config, nats, sglang-svc, trainer-pytorchjob), the smoke's as-applied
+manifests under `examples/arena/harbor-rl-27b-snorkel/smoke-3node/`, the
+`tests/fast/launch_scripts/py_harness.py` `CLEARED_ENV` additions, and the run
+logs / ADRs / `examples/arena/README.md`. `git diff --stat refs/archive/glm53-arena`
+should list exactly those. Trainer images a-d were built from that tree, so
+every GLM run so far executed code that is now on this branch.
+
+### What has exercised the plugin on GPU
+
+- `rl-milesgb1-smoke1` (Qwen3.5-27B, 3x p6-b200, 2026-09-01 16:39 -> 09-02 00:34 PT):
+  4/4 rollouts, 4 train steps, ray job SUCC (GPU validation entry above).
+- GLM-5.3-Flash run 1, run 2, r2-r7 (12 then 24 nodes, 2026-09-02 -> in
+  progress). Plugin-side changes those runs produced, all recorded above:
+  `--arena-mask-clipped-final-turn` (image c, ADR-0009; correct but inert on
+  this workload), `--arena-keep-timeout-trajectories` with the
+  `Removal reasons:` summary (image d, ADR-0010; r5 kept 183-221/256 timeout
+  trajectories per rollout, r6 228/512), and `run_arena_harbor._pin_raylet_env()`
+  (`RAY_memory_monitor_refresh_ms=0` before `ray start`). Everything else the
+  GLM runs needed was config, manifest or image-layer work under
+  `examples/arena/`; the NATS hot path itself has not changed since 2026-09-03 01:38 PT.
+
+### Follow-ups (carried, none started)
+
+Plugin:
+
+1. Eval coordinator as a wandb shared-mode secondary writer (miles'
+   `init_wandb_secondary` pattern), retiring the `eval_metrics_drain` file
+   queue and `.trainer_alive` heartbeat (ADR-0005; README). The hosted eval
+   path is still unexercised by any GPU run (no `eval_datasets` in the 27B or
+   GLM jobs) and depends on K8s templates outside this tree.
+2. Ride miles' `CheckpointEvalFn` / `EvalDispatcher` seam instead of the
+   fire-and-forget Argo trigger.
+3. Class-based `RolloutFn` so `generate_rollout` receives the authoritative
+   `weight_version` from `RolloutFnTrainInput` instead of inferring staleness
+   from `rollout_id`.
+4. Per-trajectory (miles) vs per-group (AGISlime) GRPO loss weighting,
+   ADR-0004: still awaiting job-owner sign-off; every GLM run trained
+   per-trajectory.
+5. Parity limitations kept on purpose (README): data-source buffer not
+   persisted across restarts; resume dedup guard mostly vacuous;
+   `--gym-autoscale-auto-tune` cannot be switched off from YAML.
+6. `use_fault_tolerance` on the NATS path has never been exercised by a real
+   engine death (GLM RUNLOG open questions).
+7. The package README predates the post-port flags; they are documented in the
+   argparse help, ADR-0009/0010 and the GLM run log only.
+8. Ruff findings inherited byte-for-byte from AGISlime and preserved (miles'
+   ruff paths exclude `miles_plugins/**`): `nats_rollout.py` F841 x3 / B905,
+   `data_source.py` UP028, `test_nats_arena.py` F841 / UP037 / F821,
+   `test_rollout_metrics.py` UP037. Separate chore commit if wanted.
+
+Model plugin `glm5_next` (upstream PR #2786, not this package; listed because
+the GLM example depends on it):
+
+9. TP-sharded KDA heads (8x less KDA memory and compute per rank; templates in
+   radixark/Megatron-Bridge PR #35 `glm5_next/kda.py` and miles branch kimi-k3
+   `KimiK3Attention`). The r3 step-1 OOM was worked around with optimizer CPU
+   offload instead (ADR-0008 consequences; GLM RUNLOG r4 entry).
+10. `use_dynamic_batch_size` + PP>1 `send_forward` deadlock measured by
+    ForgeModelEnablement `glm53-flash-sft-strl`; the GLM config runs dynamic
+    batching with PP4 and is exposed once short samples appear.
+11. Re-sync when PR #2786 lands upstream (pinned `dbbd610e7`; may force-push).
+12. One diagnostic step with `use_rollout_logprobs` off: with it on,
+    `train_rollout_logprob_abs_diff` is tautologically 0.
+
+### Pending
+
+- r7 read-out (>= 5 healthy training steps gate; kept_timeout share at effort
+  `high`; whether the 1800 s SGLang request timeout removed r6's ~8% failed
+  samples; the effort=high context-ceiling / `context_error` observation that
+  no on-disk source records yet) -> the placeholder row in
+  `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`, in a follow-up docs commit.

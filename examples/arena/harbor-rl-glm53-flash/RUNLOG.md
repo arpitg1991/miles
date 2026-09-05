@@ -936,3 +936,183 @@ and ADR-0010.
   options above and #11 fault tolerance unvalidated on the NATS path.
 - Not yet in this README: r3's step-1 CUDA OOM and the optimizer offload
   (next entry), r4 results, the r5 gym image (later entries).
+
+## 2026-09-03 01:32-04:58 PT - r3 outcome (`rl-glm53f-gbash-r3`, image c): memory fix set proven, then step-1 CUDA OOM
+
+Continues the r3 launch entry above (identity, image c, NATS-restart trap
+unchanged). First GLM run to get past the point that killed run 2.
+
+**What happened (trainer-0.log, all green until step 1)**
+
+| phase | result | note |
+|---|---|---|
+| train step 0 | 61 min, MFU 0.40% | no ref pass (`use_kl_loss` dropped in the r2 set); r2's step 0 had been 7722 s incl. 2388 s of ref_log_probs |
+| post-train `update_weights` | 19.7 s, OK | the exact point where run 2 died (Ray killed an engine 32 min earlier); Ray monitor off + no WeightChecker snapshot + FT on all held |
+| rollout 1 | 3724 s, avg reward 0.281 | engines healthy throughout |
+| train step 1 | **CUDA OOM after 73 s** on every rank | in fla `chunk_kda_bwd_wy_dqkg_fused` (KDA backward) on ~37k-token samples: "177 GiB in use, 144 GiB allocated, 1 GiB free" |
+
+**Root cause (from the OOM trace + post-step-0 memory readings)**
+
+- Step 0 fits, step 1 does not, because step 1 is the first step that carries the
+  Adam states: fp32 master + m + v, ~33 GB/rank even sharded over DP=2 (they
+  materialise at the first `optimizer.step`, i.e. at the END of step 0). After step
+  0 each rank already held ~109 GB allocated.
+- The KDA layers run all 64 heads on every TP rank (upstream `glm5_next` design:
+  KDA projections are replicated, not TP-sharded), so the long-sequence backward
+  transient of one ~37k-token sample is large and lands on top of the new ~33 GB.
+- Structural follow-up if the offload had not sufficed: shard KDA heads across TP in
+  the `glm5_next` plugin (~8x less KDA memory/compute per rank). Not attempted.
+
+r3 ended 04:58 PT (kubeflow deleted the failed job; the EFS tee is the record).
+No checkpoint (save_interval 20).
+
+## 2026-09-03 05:31-05:50 PT - r4 fix + launch: optimizer CPU offload trio (`rl-glm53f-gbash-r4`, image d, integration 3a6cbe5ba)
+
+**Decision.** Turn on the optimizer-offload trio in `miles-config.yaml` and relaunch
+as r4 - the same three flags every upstream large-MoE miles recipe uses
+(`scripts/run_deepseek_v32.py`, `amd/run_glm5_2_744b_a40b.py`):
+
+```yaml
+optimizer_cpu_offload: true
+overlap_cpu_optimizer_d2h_h2d: true
+use_precision_aware_optimizer: true
+```
+
+All three go together: Megatron requires precision-aware with CPU offload and
+miles asserts the reverse implication. Yaml prediction written at the time: ~66 GB
+fp32 state per rank -> ~530 GB per actor node, inside the 1800Gi limit; engine
+nodes unaffected.
+
+**Alternatives considered and not taken**
+
+- DP4 (16 actor nodes): halves the per-rank optimizer shard but costs 8 more
+  p6-b200 nodes on a cluster where the 12-node gang already fights TAS mis-pins;
+  kept as the fallback if host RAM under offload proved tight.
+- TP-sharded KDA in the `glm5_next` plugin: the structural fix, but a model-code
+  change with no CPU test path here; deferred (templates exist upstream, see the
+  precedent entry below).
+- Shorter samples (`rollout_max_response_len` / context caps back down): removes
+  the training signal the 32k/131k caps were raised for in run 1.
+- `micro_batch_size` and recompute were already at their floor (1 / full-uniform-1).
+
+**Verification before launch.** Offline strict+full `parse_args` of the
+launcher-built argv (`/tmp/glm53-e3`, same harness as the r2 fix set) passed at
+05:30 PT with `--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d
+--use-precision-aware-optimizer` present. Committed as integration 3a6cbe5ba
+05:31 PT - the LAST integration-tree commit; every later change lives only in the
+fork.
+
+**Run identity**
+
+| item | value |
+|---|---|
+| `EXPERIMENT_NAME` / `PROJECT_NAME` / W&B group (`arena/rl-snorkel27`) | `rl-glm53f-gbash-r4` (r1-r3 saved no checkpoint, so nothing resumes) |
+| trainer image | `arena-slime-dev:miles-glm53-20260903d` = c + `--arena-keep-timeout-trajectories` (default OFF, NOT set here) + the per-rollout `Removal reasons:` line; built 01:40 PT, i.e. after r3 launched on c |
+| shape / batch | unchanged: 12x p6-b200 (8 actor TP8/PP4[11/11/11/12]/EP16, DP2 + 4 engines TP8/EP8); rbs 32 x 8 = GBS 256, num_rollout 90, save_interval 20; 128 gym workers on `arena-tasks-dev:rl-smoke-20260821b` (Harbor 0.21.0) |
+| manifest state | NotIn list 16 nodes, request 1200Gi / limit 1800Gi, shm 256Gi, `RAY_memory_monitor_refresh_ms=0`, local `/tmp/kernel_cache`; `arena_mask_clipped_final_turn: true` still on (inert - no clips) |
+
+Launched 05:50 PT.
+
+## 2026-09-03 05:50-19:20 PT - r4: offload trio validated end to end; steady state is rollout-bound and timeout-starved
+
+**Validation (first two steps)**
+
+| phase | r4 | r3 for comparison |
+|---|---|---|
+| rollout 0 | 4890 s, reward 0.164, `Removal reasons: timeout=230 (kept_timeout=0)` of 256 | - |
+| train step 0 | 4273 s (cold JIT caches), loss -0.029 | 61 min |
+| post-train sync | 19.7 s | 19.7 s |
+| rollout 1 | 3734 s, reward 0.258, timeout=221 | 3724 s, reward 0.281 |
+| train step 1 | **584 s, NO OOM**, loss -0.091, ppo_kl 0.0016 | OOM at 73 s |
+
+- GPU after step 0: ~36-40 GB allocated per rank (r3: ~109 GB) - the ~70 GB/rank
+  the offload bought.
+- Host RAM: the offloaded Adam state materialised at the end of step 0 and
+  plateaued within ~2 min at 438-615 GiB pod-anon per actor node (PP-stage
+  dependent; ~245 GiB before), max 34% of the 1800Gi limit with >= 1.1 TB
+  MemAvailable. Brackets the yaml's ~530 GB/node estimate and sits far below the
+  880-990 GB the later 16 B/param model predicted for the PP3 nodes. DP2 is fine;
+  no DP4.
+- Engine-side "Connection refused" tracebacks during weight sync are benign retries.
+
+**Steady state to the 19:20 PT handoff** (user monitors r4 from another session)
+
+- 12 rollouts + 12 train steps in 13.7 h; no memory / OOM / fault-tolerance event;
+  host anon flat at 439-618 GiB per actor node.
+- Warm train step 373-449 s; rollouts 3478-4094 s -> rollout-bound ~9x.
+- Reward 0.16-0.27 oscillating, no trend. Reward-1 samples per rollout 42-43
+  (steps 0-5) -> 51-68 (steps 6-11; step 10 dipped to 43).
+- Timeouts remove 222-245/256 samples every step -> only 18-35 trainable samples,
+  ess_ratio 0.07-0.13. >= 22 reward-1 trajectories discarded as timeouts per
+  rollout (rollout 9: 51 reward-1 vs 29 kept).
+
+**Timeout mechanism, measured** (12 gym pods, ~45 jobs; `jobdelta.py` pipes
+`kubectl logs <gym pod> -c gym-worker | grep -aE "Rollout job |AgentTimeoutError
+is in exclude"` into per-job start/timeout deltas; archived at
+`arena-port-artifacts/glm53/jobdelta.py`):
+
+- Every timed-out job's 8 trials throw `AgentTimeoutError` in a burst at the
+  task.toml `[agent] timeout_sec` + 30-80 s (environment build): clusters
+  1829-1878 s (1800-s tasks; 8/13 cached tasks), 1555-1562 (1500), 1231-1258
+  (1200), 933-987 (900). Typically 8/8 trials of a group.
+- The gym's 4200-s job deadline (`ARENA_NATS_ACK_WAIT` 4500 - 300) never fires.
+- At 100+ running requests per engine a 1800-s episode is ~40-45k generated
+  tokens incl. thinking - why GLM-5.3 at max effort runs out of clock.
+- The deployed gym image runs Harbor 0.21.0, which ALREADY has
+  `JobConfig.agent_timeout_multiplier` + `AgentConfig.override_timeout_sec` /
+  `max_timeout_sec` (`trial.py _compute_agent_timeout_sec` = (override or task
+  timeout_sec) x multiplier); the RL path `gym_worker.build_rollout_job_config`
+  hard-wires task.toml, while the eval CLI has had `--agent-timeout-multiplier`
+  since 2026-08-26. Decision: the fix is gym-side (AREnATasks) - plumb
+  `ARENA_AGENT_TIMEOUT_MULTIPLIER` into the rollout job config and raise
+  `ARENA_NATS_ACK_WAIT` in lockstep on gym AND trainer (a multiplier > ~2.2 would
+  otherwise hit the 4200-s deadline). Trainer-side `--arena-keep-timeout-trajectories`
+  (available in image d, OFF in r4) is the complement, first enabled in r5.
+
+r4's `trainer-0.log` ends 2026-09-03 20:29 PT after 13 steps (last completed step
+perf 12, reward 0.19); it was torn down 3 min before r5's log opens at 20:32 PT
+(next entry). No checkpoint (save_interval 20 > 13 steps).
+
+## 2026-09-03 - Precedent hunt (14-agent workflow) while r4 ran: what others did with this shape
+
+Recorded here because it shaped r5-r7; verified unless marked.
+
+- **AGISlime `origin/v0.3.1/glm52`** (GLM-5.2 744B RL on prod-bom-v2,
+  `experiments/k8s/glm52/glm52-chakra-config.yaml`): the same offload trio, 32
+  trainer nodes TP4/PP8/CP2/EP8 DP4 + 32 single-node FP8 engines (fp8_e4m3 KV,
+  `cuda_graph_max_bs 32`, overlap schedule), `rollout_batch_size 64`. Their engines
+  were STARVED; ours are saturated - so batch is not a copy-paste lever. Its "DP2
+  hit 1.84 TB host RAM (exp8)" is a comment on an unlimited pod with an uncommitted
+  config - not transferable. `partial_rollout` inert there; `enable_pipeline_rl` ==
+  miles `pause_generation_mode: in_place`; `arena_instance_timeout` is read only by
+  the AREnABase gym, never by the Harbor gym. CP is closed for `glm5_next` (kpool
+  indexer raises on CP > 1; KDA has no CP).
+- **Host RAM under offload** (Megatron `e8f57451` in image d): 16 B/param of the
+  rank's shard (fp32 master + pinned fp32 grad + AdamW m, v), materialised at the
+  first `optimizer.step`; expert params are NOT DP-sharded (expert-DP =
+  64/(1x16x4) = 1) and KDA projections are replicated per TP rank. Predicted
+  ~880-990 GB on the PP3 actor nodes (~50% of 1800Gi); r4 measured 438-615 GiB.
+  Precision-aware dtype knobs are inert under offload (miles PR #1592).
+  `optimizer_offload_fraction` (default 1.0; AMD DSv4 recipe 0.75) is the config
+  lever if host RAM ever binds; DP4 = 16 actor nodes is the fallback.
+- **Upstream miles:** PR #1571 (GLM-5.2 on GB300) is the exact "step 0 fits, step 1
+  OOMs on fp32 m/v" precedent (their fix: a smaller per-rank optimizer shard).
+  TP-sharded KDA already exists as templates: radixark/Megatron-Bridge PR #35
+  `glm5_next/kda.py` (bridge mode, used by miles PR #3098) and the miles `kimi-k3`
+  branch (PR #1825) `kimi_k3/layers.py` (`local_num_heads = num_heads // tp`);
+  fla issue #1155 confirms KDA backward memory is linear in resident heads.
+  Upstream `run_glm5_3_flash.py` has NO offload flags, `micro_batch_size 1`, no
+  dynamic batching.
+- **Internal ForgeModelEnablement `enablements/glm53-flash-sft-strl`** (run
+  `zhuoweli-glm53-rl-hmwg`) independently enabled GLM-5.3-Flash RL on p6-b200 and
+  MEASURED a `use_dynamic_batch_size` + PP > 1 deadlock in `send_forward` (the
+  micro-batch count is all-reduced over DP only). **Live risk for this config**
+  (dynamic batching with PP4): harmless while every ~32k sample is its own
+  micro-batch, but it can fire once short samples appear. They use
+  `FLA_CACHE_RESULTS=0` instead of our fla kernel patch (alternative, not
+  adopted), plus the same `RAY_memory_monitor_refresh_ms=0` / local Triton cache /
+  rotary-base fixes. `use_rollout_logprobs` makes `train_rollout_logprob_abs_diff`
+  tautologically 0 - run one diagnostic step with it off before trusting that
+  metric. `log_probs_chunk_size 16384` is hygiene only.
+- **FP8 engines are NOT config-only for `glm5_next`** (`quantizer_fp8` lacks
+  `modules_to_not_convert` handling; `kv_b_proj`). Not pursued.

@@ -39,7 +39,12 @@ def _step(loss_mask: list[int], stop_reason: str = "length", traj_extra: dict | 
 
 
 def _args(flag: bool) -> SimpleNamespace:
-    return SimpleNamespace(arena_mask_clipped_final_turn=flag)
+    # Carry both arena salvage knobs explicitly (the read sites use
+    # getattr-with-default, so older callers without them still work).
+    return SimpleNamespace(
+        arena_mask_clipped_final_turn=flag,
+        arena_keep_timeout_trajectories=False,
+    )
 
 
 # Multi-turn trajectory: prompt, turn A (2 toks), tool output, turn B (3 toks,

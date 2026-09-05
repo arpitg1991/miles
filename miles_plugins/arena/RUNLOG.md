@@ -903,3 +903,80 @@ miles' own GLM-5 launchers set the same variable (`p2p_weight_transfer/run.py`,
 pass — the snapshot records the submitted command, the pin lives in the process
 env). Live: no `memory pressure` event in r2 or any later run (r2 engines at
 ~3.4 GiB host RSS/rank without the WeightChecker snapshot).
+
+## 2026-09-03 ~00:40-01:40 PT — Truncation RCA and `--arena-keep-timeout-trajectories` (integration 32da04357, image miles-glm53-20260903d)
+
+Commit: `feat(arena): --arena-keep-timeout-trajectories and removal-reason log`.
+Second post-port plugin feature, written between the r2 death (00:36 PT) and
+the r3 launch (01:32 PT, image c, so r3 does not carry it). ADR-0010.
+
+### What was examined
+
+- The trainer log could not answer the question: run 1's wire statuses were
+  272 `success` / 54 `failed` / 0 `truncated` while 233/256 samples were
+  removed, and `--arena-mask-clipped-final-turn` (ADR-0009, image c) had
+  salvaged nothing in r2 (229/256 removed, `truncated_ratio` 0.8945, zero
+  "masked clipped final turn" lines).
+- So the evidence was pulled from the gym side of r2: 96 trials (12 task
+  groups x 8 trials, run 23:07-00:29 PT) from 12 of the 128
+  `rl-glm53f-gym-sgb-*` pods, the per-pod job history of all 128 pods (250
+  jobs 23:07-00:40 PT), the gym package source in the deployed image
+  (`amzn_arena_harbor 1.0.763.0`: `gym_worker.py`, `sglang_rollout.py`,
+  `task_events.py`, `agents.py`) and the task-events logs. Artifacts
+  (`analysis1-3.txt`, `trials_summary.json`, `pod_runs.json`,
+  `r0_kept_map.json`, `gym-src/`) pulled 01:23-01:29 PT, archived under
+  `arena-port-artifacts/glm53/glm53-salvage/`.
+
+### Findings
+
+| Claim | Evidence |
+| --- | --- |
+| Removals are Harbor agent wall-clock timeouts, not length clips | 91/96 trials: `AgentTimeoutError: Agent execution timed out after N seconds`, N = `task.toml` `[agent] timeout_sec` (1800 x59, 1500 x16, 1200 x8, 900 x8), fired 31-85 s after trial start; 5/96 finished. 0/1033 per-turn outputs at the 32768 cap (max 15033, p50 630, p90 4948). |
+| The timed-out trajectories are clean | All 96 end at the model's turn-close token, no tokens after the last assistant turn, `weight_versions` count == turn count, every step `stop_reason=stop`. Median timeout: 8 turns, 34k tokens (max 74k < 131k cap). |
+| Real reward is being discarded | 8/91 timeouts scored 1 (~9%); of the 5 finished trials 4 scored 1. Per step, >=19 of the ~46 reward-1 samples were removed. |
+| Why: thinking length vs decode speed | GLM at template-default `max` effort thinks 8-15k tokens/turn; p50 14.5 tok/s per sample (p10 5.5, p90 22.3) at ~400 concurrent trials on 4 saturated engines; 61 turns had >8k output tokens, median latency 494 s. |
+| Trainer mechanism | gym `_EXCEPTION_AGENT_STOPS`: `AgentTimeoutError` -> `agent_stop_reason="timeout"`; `timeout` is in `nats_rollout._DEGENERATE_AGENT_STOP` -> TRUNCATED + `remove_sample` (r5-lineage policy). The Harbor 0.21 envelope still said `success`, which is why the wire looked clean. |
+
+### Decision and implementation (01:37-01:38 PT)
+
+- Opt-in flag, default off, keeps a fast-path timeout trajectory only when
+  the timeout is the sole defect (no `length` step, no hard overflow, no bad
+  log-probs, non-empty response); status stays TRUNCATED; precedence with the
+  mask-clipped salvage fixed (timeout + clip -> mask-clipped path if that flag
+  is on, else removed). Rejected: reclassifying `timeout` as COMPLETED,
+  loosening the degenerate-stop set wholesale, waiting for the gym-side fix
+  (details in ADR-0010).
+- Removal bookkeeping: `metadata["removal_reason"]` on every removal,
+  `metadata["kept_timeout"]` on every salvage, `agent_stop_reason` on every
+  real sample; `_removal_reason_counts` feeds a per-rollout
+  `Removal reasons: timeout=.., context_error=.., length=.. (kept_timeout=N)`
+  line after the failed-sample distribution.
+- `nats_rollout.py` +153/-8 lines (mtime 01:37 PT); committed 01:38:49 PT as
+  integration `32da04357`; image `miles-glm53-20260903d` built and pushed
+  01:40 PT (c + this change; replicated to ap-south-1).
+- Tests: `tests/fast/plugins/arena/test_keep_timeout_trajectories.py` — 13
+  functions / 19 cases (flag off and `args=None` still remove; clean
+  multi-turn timeout kept, info line `(2 turns, 6 response tokens)`; the 5
+  other degenerate stops still removed; timeout + clipped turn removed unless
+  mask-clipped is on, salvaged by the mask-clipped path when both are on,
+  refused by mask-clipped alone; `None`/`completed`/`max_iterations` untouched;
+  empty response, hard overflow (`rollout_max_context_len=4`) and misaligned
+  log-probs still removed with `context_overflow` / `bad_logprobs` reasons;
+  `_removal_reason_counts` aggregation incl. `failed` pads and `other`).
+  `test_mask_clipped_final_turn.py` now passes both knobs explicitly (+6/-1:
+  its `_args` helper sets `arena_keep_timeout_trajectories=False`) so its 5
+  cases hold under the new precedence. Arena CPU suite:
+  153 + 5 + 19 = **177** (re-verified 177 passed on 2026-09-05).
+
+### Where it went
+
+- Image d shipped the flag OFF; r4 (05:50 PT, image d) is the first run to
+  print the attribution: `Removal reasons: timeout=230 (kept_timeout=0)` in
+  rollout 0, 222-245/256 per step after. r5 (2026-09-03 evening PT) was the
+  first to enable it: `kept_timeout` 183-221/256, `truncated_ratio`
+  0.71-0.86 — the metric and the removed fraction diverge from here on by
+  design. Run narrative in `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`.
+- The cause (wall clock vs thinking length) is gym-side: timeout multiplier,
+  reasoning effort and SGLang request timeout followed in AREnATasks
+  (ADR-0047 there); the trainer-side flag only stops discarding what the gym
+  already scored.

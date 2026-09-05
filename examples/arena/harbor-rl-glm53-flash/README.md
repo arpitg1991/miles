@@ -57,22 +57,38 @@ separate curated read-only EFS volume, not a view of fast scratch.)
 
 ### 2. Build and push the trainer image
 
-From the miles repo root (the whole integration tree ships in the image):
+From the integration tree (`/tmp/glm53-integration`, branch `glm53-arena`;
+the whole tree ships in the image). Push to us-east-1 — `arena-ecr-dev` can
+only push there and the repo replicates to ap-south-1:
 
 ```bash
 docker build -f examples/arena/Dockerfile \
   --build-arg MILES_BASE_IMAGE=427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:glm53next-upstream-20260902 \
-  -t 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902a .
-docker push 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902a
+  -t 427267593057.dkr.ecr.us-east-1.amazonaws.com/arena-slime-dev:miles-glm53-<tag> .
+docker push 427267593057.dkr.ecr.us-east-1.amazonaws.com/arena-slime-dev:miles-glm53-<tag>
+aws ecr describe-images --profile arena-ecr-dev --region ap-south-1 \
+  --repository-name arena-slime-dev --image-ids imageTag=miles-glm53-<tag>   # replica landed
 ```
+
+Image lineage (`arena-slime-dev:`; each tag is a superset of the previous):
+
+| tag | carries | integration commit |
+|---|---|---|
+| `miles-glm53-20260902a` | glm53next base + integration tree + EFA layer (run 1) | — |
+| `miles-glm53-20260902b` | + fla 0.4.2 KDA kernel patch for triton 3.7.1 (`examples/arena/patches/fla_kda_next_power_of_2.py`, applied by the Dockerfile) | 3c40b4660 |
+| `miles-glm53-20260902c` | + `--arena-mask-clipped-final-turn` flag; hf_export ENOTSUPP fix for FUSE/mountpoint-S3 aux files (`miles/backends/megatron_utils/hf_export.py`). **Pinned by `trainer-pytorchjob.yaml` (r2, r3)** | 5f8925db0, 44ddf62fb |
+| `miles-glm53-20260903d` | + `--arena-keep-timeout-trajectories` (default off) and the per-rollout `Removal reasons:` summary line (`miles_plugins/arena/nats_arena/nats_rollout.py`) | 32da04357 |
+
+miles argparse is strict: a `miles-config.yaml` key whose flag the image does
+not know kills the trainer at startup (`arena_mask_clipped_final_turn` needs
+>= c, `arena_keep_timeout_trajectories` needs d). Bump the manifest image tag
+together with any such key.
 
 The base is the ECR mirror of `docker.io/radixark/miles:glm53next` (SGLang
 branch `sglang-miles-glm53next@9a26e749` + radixark/Megatron-LM PR#89
-`@e8f57451`). `examples/arena/Dockerfile` now also bakes the EFA userspace +
+`@e8f57451`). `examples/arena/Dockerfile` also bakes the EFA userspace +
 aws-ofi-nccl layer — without it multi-node NCCL silently falls back to raw IB
-and hangs (see the Dockerfile comment). Verify the pushed digest changed
-(`aws ecr describe-images --region ap-south-1 --repository-name
-arena-slime-dev --image-ids imageTag=miles-glm53-20260902a`).
+and hangs (see the Dockerfile comment).
 
 This step runs BEFORE the convert: convert-job.yaml pins this exact image
 (`imagePullPolicy: Always`), so applying it before the push gives
@@ -103,19 +119,20 @@ pre-validation of the exact command: point `--hf-checkpoint` at
 
 ### 4. Deploy
 
-Gym-worker side first — take the smoke-proven
-`/tmp/miles-smoke-deploy/{nats,gym-worker}.yaml` with every `rl-milesgb1-`
-name replaced by `rl-glm53f-` (NATS config/Deployment/Service, gym Deployment,
-`--nats-url nats://rl-glm53f-nats:4222`,
-`--model-base-url http://rl-glm53f-sglang:30000`) and the gym worker's
-`ARENA_MODEL_PATH` pointed at
-`/mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16` (the workers tokenize
-against the policy model). Size the worker replica count for rbs 32 like the
-snorkel run (the smoke ran 8 replicas for rbs 8).
+Gym-worker side first. `nats.yaml` and `gym-worker.yaml` in this directory
+are the smoke-proven assets with every `rl-milesgb1-` name replaced by
+`rl-glm53f-` (`--nats-url nats://rl-glm53f-nats:4222`,
+`--model-base-url http://rl-glm53f-sglang:30000`), `ARENA_MODEL_PATH` on the
+GLM BF16 fast-scratch path (workers tokenize against the policy model),
+128 replicas for rbs 32 with dynamic sampling, the 32768/131072 caps from the
+run-1 live change, and — since r2 — a required `NotIn` anti-affinity that
+keeps gym + dind pods off `p6-b200.48xlarge`/`p6-gpu` nodes (GPU nodes are
+untainted and the trainer's 1200Gi/0-CPU request leaves room the scheduler
+would otherwise fill; see the YAML comment).
 
 ```bash
-kubectl apply -f nats.yaml           # rl-glm53f-nats (renamed smoke asset)
-kubectl apply -f gym-worker.yaml     # rl-glm53f gym workers (renamed smoke asset)
+kubectl apply -f nats.yaml           # rl-glm53f-nats
+kubectl apply -f gym-worker.yaml     # rl-glm53f-gym-sgb, 128 replicas
 ```
 
 Trainer side (this directory):
@@ -135,24 +152,73 @@ silently. Bump `EXPERIMENT_NAME`/`PROJECT_NAME` for a fresh run. The job runs
 mid-run failure means delete + re-apply the PyTorchJob, and the SAME
 `EXPERIMENT_NAME` then resumes from the last save intentionally.
 
+Current run identity is **r3** (`EXPERIMENT_NAME`/`PROJECT_NAME` =
+`rl-glm53f-gbash-r3` in `trainer-pytorchjob.yaml`; `miles-config.yaml` still
+records `r1` — inert, the launcher never reads it). r1 and r2 both died in
+train step 0, before `save_interval 20`, so no checkpoint exists and nothing
+resumes; the fresh name keeps the W&B group and checkpoint dir separate from
+the dead runs.
+
+Every replica tees its stdout to
+`/mnt/scratch-s3files-rw/guparpit/logs/${EXPERIMENT_NAME}/trainer-<idx>.log`
+and a 60 s host-memory sampler writes `memsample-<idx>.log` next to it. The
+kubeflow operator deletes a failed PyTorchJob together with its pods, so that
+EFS copy is the only post-mortem source.
+
+**kueue TAS mis-pin check — within ~2 min of every apply.** kueue's
+topology-aware scheduler writes a `kubernetes.io/hostname` pin into each pod;
+when that node is occupied outside kueue's view the pod stays `Pending` with
+`Unschedulable`/`FailedScheduling` (Insufficient `nvidia.com/gpu` /
+`vpc.amazonaws.com/efa` / memory), the 12-pod gang never binds, the ~10 min
+pods-ready timeout evicts it and the operator records a FAILED job (logs
+gone). Reproduced on 2026-09-02 (convert job, run-1 launch) and 2026-09-03
+(r3, 12 nodes at once).
+
+```bash
+kubectl get pods -n arena-tasks -l app=rl-glm53f -o wide          # all 12 Running?
+kubectl describe pod -n arena-tasks <pending-pod> | grep -E 'Unschedulable|FailedScheduling|Insufficient'
+kubectl get pod -n arena-tasks <pending-pod> -o jsonpath='{.spec.nodeSelector}'   # the TAS pin
+```
+
+Procedure: add every pinned-but-rejected hostname to the
+`kubernetes.io/hostname` `NotIn` list in `trainer-pytorchjob.yaml` (16 entries
+as of 2026-09-03; integration commits 86d2d0ec5 and earlier), then
+`kubectl delete pytorchjob rl-glm53f-trainer -n arena-tasks` and re-apply
+under the SAME job name (`rdzvId`, `JOBNAME`, the `rl-glm53f-sglang` Service
+selector and the NATS URL are bound to it). Karpenter refuses to provision
+for hostname-pinned pods, so the gang binds only to existing nodes. Drop
+exclusions as nodes heal — each one costs capacity.
+
 ### 5. First-run verification
 
-- **EFA is load-bearing**: worker-0 (and any actor worker) NCCL INFO log must
-  show the libfabric provider (`NET/OFI Selected provider is efa` /
-  `Loaded net plugin Libfabric`). `Using network IB` or `Using network
-  Socket` means the ofi-nccl plugin did not load — stop, fix the image/env,
-  do not let a 64-rank all_gather "run" over TCP. `NCCL_DEBUG=INFO` +
-  `NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH` are set in the manifest for exactly this
-  check; drop them once verified.
+- **EFA is load-bearing**: verified in runs 1-2 (aws-ofi-nccl 1.18.0 +
+  Libfabric 2.4 selected on all ranks), so `NCCL_DEBUG=INFO` /
+  `NCCL_DEBUG_SUBSYS` were dropped from the manifest (INFO at 96 ranks
+  inflated the driver log to 48k lines). Re-add both only after an image or
+  base change, and then require `NET/OFI Selected provider is efa` /
+  `Loaded net plugin Libfabric`; `Using network IB` or `Socket` means the
+  ofi-nccl plugin did not load — stop, do not let a 64-rank all_gather "run"
+  over TCP.
+- **Run-2 OOM signature absent**: no `Workers (tasks / actors) killed due to
+  memory pressure` in `trainer-0.log`; `memsample-<idx>.log` growing on every
+  replica; engine `sglang::scheduler` RSS a few GiB per rank (r2: ~3.4 GiB),
+  not ~79 GiB (that would mean the WeightChecker snapshot is back on).
+- **r2 signature absent**: no `Stale file handle` in train step 0 — the
+  kernel caches must resolve under `/tmp/kernel_cache` (container command),
+  never EFS.
 - Rendered `--load` names the new experiment dir; no
   `Loaded slime extra state`/`Restored wandb_run_id` lines (those mean
   resume).
 - Data source pulls the lakeFS manifest (2922 rows); engines pass router
   health (allow up to 40 x 15 s — DSA/tilelang startup is slow); gym workers
   log `Completed <task>: n/m real`.
-- W&B (`arena/rl-snorkel27`, group `rl-glm53f-gbash-r1`): binary-reward
+- W&B (`arena/rl-snorkel27`, group `rl-glm53f-gbash-r3`): binary-reward
   signal check as in the snorkel README — if >~80% of groups are
   zero-variance early, stop and revisit.
+- `rollout/truncated_ratio` ~0.89 is the KNOWN Harbor agent-timeout
+  signature (Incident history), not a clipping problem; on image d the
+  rollout summary's `Removal reasons: timeout=.., context_error=..,
+  length=.. (kept_timeout=N)` line attributes it directly.
 
 ### Teardown
 
@@ -164,12 +230,14 @@ kubectl delete -f sglang-svc.yaml
 # gym side: kubectl delete -f gym-worker.yaml -f nats.yaml
 # fetch: kubectl delete job glm53-fetch-20260902 -n arena-tasks
 #        kubectl delete configmap glm53-fetch-script -n arena-tasks
+# memprobe (see memprobe/README.md): kubectl delete job glm53-memprobe-<suffix> -n arena-tasks
+#        kubectl delete configmap glm53-memprobe-scripts -n arena-tasks
 ```
 
 Checkpoints: at 321B a DCP save is roughly the 643 GB weight footprint plus
 optimizer state per save point (`save_interval: 20`, `no_save_optim` trims
-it); prune `${ARENA_CHECKPOINTS_DIR}/slime_experiments/rl-glm53f-gbash-r1`
-when done.
+it); prune `${ARENA_CHECKPOINTS_DIR}/slime_experiments/rl-glm53f-gbash-r3`
+(and any r1/r2 dirs, which should be empty) when done.
 
 ## Deviations
 
@@ -180,7 +248,7 @@ Legend: **forced** = the model swap / platform makes the parent value wrong;
 
 | setting | this config | source/reason |
 |---|---|---|
-| `experiment_name`/`project_name` | `rl-glm53f-gbash-r1` | forced — new run identity (ADR-0004: never reuse) |
+| `experiment_name`/`project_name` | `rl-glm53f-gbash-r1` in the YAML (inert record); pod env `EXPERIMENT_NAME`/`PROJECT_NAME` = **`rl-glm53f-gbash-r3`** is authoritative | forced — new run identity (ADR-0004: never reuse; r1/r2 saved nothing) |
 | `agislime_dir` | `/root/miles` | chosen — matches the baked image tree (snorkel YAML carried the legacy `/opt/AGISlime` record; the smoke already used `/root/miles`) |
 | `replicas` / `num_trainers` | 12 / 8 (was 6 / 2) | forced — GLM needs 64 actor GPUs (TP8xPP4 = 32 per DP replica, DP=2) + 4 engine nodes; same launcher convention as the smoke (rollout nodes = replicas − num_trainers) |
 | `model_arch` | `glm5.3-flash` (was `qwen3.5-27B`) | forced — model swap; resolves `scripts/models/glm5.3-flash.py` |
@@ -198,7 +266,9 @@ Legend: **forced** = the model swap / platform makes the parent value wrong;
 | `sglang_mem_fraction_static` | 0.7 (was 0.85) | forced — recipe; weights alone are ~80 GB/GPU |
 | `sglang_disable_radix_cache`, `sglang_dsa_prefill_backend`/`_decode_backend: tilelang`, `sglang_kv_cache_dtype: bfloat16` | added | forced — recipe; DSA layers need the tilelang backends on this SGLang branch |
 | `router_health_success_threshold`/`_check_interval_secs`/`_failure_threshold` | 1 / 15 / 40 (absent before) | forced — recipe; slow DSA engine startup |
-| `rollout_health_check_interval`/`_timeout` | 300 / 300 (absent before) | forced — recipe |
+| `rollout_health_check_interval`/`_timeout` | 300 / **900** (absent before; recipe 300/300) | forced/chosen — recipe knobs; timeout raised for r2 because with FT on the probe competes with ~100 running + ~30 queued 30k-token requests per engine (KV usage 0.97 in run 2) and 300 s risks killing a healthy engine. Still catches a dead engine within one rollout |
+| `use_fault_tolerance` | `true` (absent before) | chosen — without it both health knobs are INERT (`rollout_manager.py:115-123`) and one dead engine kills the run (run 2 served 32 min on 3 engines, then died at `update_weights`). With it the monitor stops the dead engine and `recover_updatable_engines` rebuilds it at the next update. UNVALIDATED on the arena NATS path (see Risks) |
+| `data_pad_size_multiplier` | 512 (default 128; absent before) | chosen — pads each thd micro-batch to a multiple of TP*512 = 4096 tokens; `tilelang_sparse_mla_bwd` takes S/S_kv as static ints and re-JIT'd for every distinct padded length (~3300 compiles across 64 ranks in run 2, ~12 s each). Distinct lengths ~37 -> ~10 for ~+6.5% pad tokens; verify loss parity |
 | `max_tokens_per_gpu` | 8192 (was 65536) | forced — recipe token budget for 321B at full recompute; `use_dynamic_batch_size: true` **kept** (arena packing mechanism), `micro_batch_size: 1` added as the recipe-faithful fallback (ignored under dynamic batching). Reconciliation documented in the YAML |
 | `update_weight_buffer_size` | 1073741824 (absent before) | forced — recipe (1 GiB staged weight-update buffer) |
 | `train_memory_margin_bytes` | 3221225472 (absent before) | forced — recipe |
@@ -207,13 +277,20 @@ Legend: **forced** = the model swap / platform makes the parent value wrong;
 | `lr` | 1e-6 (was 15e-7) | chosen — GLM recipe optimizer block taken whole per the port decision |
 | trainer manifest: replicas/elastic | 12, `maxRestarts: 0`, `restartPolicy: Never` (was 6, 0, Never) | chosen — replicas forced by GLM; restart semantics kept at the known-good arena values. OnFailure+3 was considered and reverted: recovery is unproven on this ray-based launcher (needs all 11 workers to exit on head-GCS loss or the restarted head hangs in `_wait_for_ray_nodes`); revisit after run 1 |
 | `enable_trajectory_tracing` | **dropped** (parent carried `false`) | forced — no miles flag with that name is registered (deploy.sh-era key); `false` was inert, `true` would crash the trainer at argparse |
-| `kl_loss_coef` | `0.0` pinned explicitly (parent left it to the default 0.0) | chosen — `use_kl_loss: true` makes with_ref=True (ref checkpoint + full ref forward every step, x0.0 in the loss); kept for r5-parity and documented in the YAML rather than silently inherited |
-| `check_weight_update_equal` + `check_weight_update_skip_list: visual.` | added for run 1 (absent in parent) | chosen — first disaggregated run of the glm5_next update-weights path; remove after step 1 passes |
-| trainer manifest: image | `arena-slime-dev:miles-glm53-20260902a` | forced — GLM needs the glm53next SGLang/Megatron stack |
-| trainer manifest: node-exclusion affinity (`i-09907cd660684a460`) | **dropped** | chosen — point-in-time S3-CSI incident workaround (2026-08-27); at 12 nodes a stale exclusion costs real capacity |
+| `use_kl_loss` / `kl_loss_type` | **removed** since r2 (parent: `true`/`low_var_kl`); `kl_coef`/`kl_loss_coef` stay pinned `0.0` | chosen — with coef 0.0 the gradient is identical, but `use_kl_loss` forced with_ref=True: ref checkpoint load, a second pinned bf16 CPU backup per actor rank, and a full ref forward over the GBS every step = 2388 s of run 2's 7722 s step 0 (31%). Upstream `run_glm5_3_flash.py` runs no ref pass. Only the `train/kl_loss` diagnostic is lost |
+| `check_weight_update_equal` (+ `check_weight_update_skip_list`) | `false` since r2 (run 1-2: `true` + `visual.`) | chosen — the flag's cost is NOT a per-update compare but a permanent ~73 GiB anonymous CPU copy of every TP rank's shard (sglang WeightChecker snapshot, `weight_checker.py:114-121`, issued once by `miles/ray/placement_group.py:213-217`, never freed): 8 x ~79 GiB = ~632 GiB of the 1934 GiB Ray counted at the run-2 OOM. Step-0 megatron->sglang equality was verified in run 2. `false` -> the launcher drops the flag; skip list removed with it. Re-enable only in a single-engine smoke |
+| `arena_mask_clipped_final_turn` | `true` (flag new in image c; absent in parent) | chosen — run 2: truncated_ratio 0.898, ess_ratio 0.099 because any clipped final turn removed the whole sample (r5-lineage policy); now only that turn's loss-mask is zeroed. REQUIRES image >= `miles-glm53-20260902c`. Inert in r2 (the removals turned out to be agent timeouts, not clips — see Incident history) |
+| `arena_keep_timeout_trajectories` | **not set** (default off; flag exists only in image d) | open — keeps clean Harbor agent-timeout trajectories (~89% of removals) as training samples; see Risks/open items before enabling |
+| trainer manifest: image | `arena-slime-dev:miles-glm53-20260902c` (run 1: a, run 2: b) | forced — GLM needs the glm53next SGLang/Megatron stack; c adds the fla KDA patch, the mask-clipped flag and the hf_export ENOTSUPP fix (lineage table in step 2) |
+| trainer manifest: node-exclusion affinity | parent's `i-09907cd660684a460` **dropped**; a live `kubernetes.io/hostname NotIn` list of 16 kueue-TAS-mispinned nodes **added** (2026-09-02/03) | chosen — the parent entry was a point-in-time S3-CSI workaround; the current list is the only fix for TAS pinning pods to nodes the scheduler rejects (step 4). Prune as nodes heal |
+| trainer manifest: `RAY_memory_monitor_refresh_ms=0` | added (pod env; `scripts/run_arena_harbor.py` also `setdefault`s it before `ray start`) | forced — run-2 root cause: with no cgroup limit visible, Ray 2.58's monitor measured the WHOLE node (total = MemTotal) and its by_time policy killed the SGLangEngine + 8 `_HttpPosterActor`s at 95% node-wide usage while the pod held ~633 GiB. `0` installs a NoopMemoryMonitor on every raylet (pod env is inherited by `ray start`; ray-job `runtime_env` would NOT reach it). Same setting as miles' own GLM-5 launchers |
+| trainer manifest: `resources.limits.memory` / `/dev/shm` | limit **1800Gi** (request 1200Gi) / emptyDir `sizeLimit: 256Gi` (parent: request 1800Gi, no limit, unbounded shm) | chosen — request lowered after run 1 (kueue counts requests: at 1800Gi only 11/304 p6 nodes were TAS-assignable); limit + shm cap added in r2 as OOM backstops: a real exhaustion OOM-kills inside our cgroup instead of the node. NOTE containerd gives privileged containers no cgroupns, so Ray may still read host totals — `refresh_ms=0` is the fix, this is the backstop. 256Gi keeps the ~186 GiB Ray object store on shm; exceeding the sizeLimit EVICTS the pod |
+| trainer manifest: kernel JIT caches | `TILELANG_CACHE_DIR`/`TRITON_CACHE_DIR`/`TORCHINDUCTOR_CACHE_DIR` exported in the container command under local `/tmp/kernel_cache` (parent: Triton/Inductor env entries, default locations) | forced — r2 put them on EFS for persistence and train step 0 died in Triton's autotuner with `OSError [Errno 116] Stale file handle` (8 ranks/node racing on NFS). Local disk only; recompiles per pod start are the accepted cost |
+| trainer manifest: host-memory sampler | added — background loop in the container command writing `memsample-<idx>.log` (60 s: node meminfo, own cgroup via `/proc/self/cgroup`, `/dev/shm`, anon/file RSS of every sglang scheduler / actor process) next to `trainer-<idx>.log` on EFS | chosen — run 2's driver log had exactly one host-memory snapshot; `node_used - cgroup_used` over time is the only way to attribute co-tenant vs own growth (open item: ~1.3 TB unattributed) |
+| gym-worker manifest: node anti-affinity | required `NotIn` on `node.kubernetes.io/instance-type: p6-b200.48xlarge` and `node-type: p6-gpu` (added r2; run 2 had none) | chosen — p6 nodes are untainted and the trainer's 1200Gi / 0-CPU request leaves ~746 GiB + ~190 vCPU per engine node for the scheduler to fill with our 128 gym+dind pods. Repels only OUR pods; other submitters need a platform taint |
 | trainer manifest: `WANDB_API_KEY` secretKeyRef (`wandb-env-arena`) + `WANDB_BASE_URL` | added | chosen — smoke-proven pattern (snorkel manifest predates the secret) |
-| trainer manifest: `NCCL_DEBUG=INFO`, `NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH` | added | chosen — bring-up diagnostics for the EFA/ofi-nccl check; drop after the first verified run |
-| trainer manifest: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_HEALTH_CHECK_TIMEOUT=120`, `PYTHONFAULTHANDLER=1`, `TORCHINDUCTOR_COMPILE_THREADS=1`, `TRITON_CACHE_DIR`, `TORCHINDUCTOR_CACHE_DIR` | added | chosen — the upstream recipe's `extra_env_vars`, carried as pod env (inherited by the ray workers) |
+| trainer manifest: `NCCL_DEBUG=INFO`, `NCCL_DEBUG_SUBSYS=INIT,NET,GRAPH` | added for runs 1-2, **dropped** since r2 | chosen — EFA/libfabric selection verified (aws-ofi-nccl 1.18.0 + Libfabric 2.4 on all ranks); INFO at 96 ranks bloated the driver log and Ray dedup hid per-rank counts. Re-add only for NCCL debugging |
+| trainer manifest: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_HEALTH_CHECK_TIMEOUT=120`, `PYTHONFAULTHANDLER=1`, `TORCHINDUCTOR_COMPILE_THREADS=1` | added | chosen — the upstream recipe's `extra_env_vars`, carried as pod env (inherited by the ray workers); the cache-dir entries moved into the container command (row above) |
 | names | everything `rl-glm53f-*` | forced — parallel-run isolation (NATS streams are per-server; services/configmaps must not collide) |
 
 Everything not listed (batch shape `rollout_batch_size 32` /
@@ -221,8 +298,8 @@ Everything not listed (batch shape `rollout_batch_size 32` /
 over-sampling via `dynamic_sampling_filter_path` at the default 4x examine
 cap, GRPO eps 0.4/0.4/c2.0 + low_var_kl at 0, `prompt-data-list` lakeFS pin,
 rollout keys, wandb project/team, EFA env/resources/tolerations/hostPaths,
-memory 1800Gi + ephemeral 32Gi, kueue queue label) is **unchanged** from the
-snorkel parent.
+ephemeral 32Gi, kueue queue label) is **unchanged** from the snorkel parent
+(memory request/limit and shm are listed above — they did change).
 
 ### vs (b) the upstream GLM-5.3-Flash recipe (PR #2786 `run_glm5_3_flash.py`)
 
@@ -232,9 +309,9 @@ snorkel parent.
 | actor shape | 8 nodes x 8 GPUs (DP=2) | chosen — the recipe's validated `(8,4)` = 32 GPUs at DP=1, scaled x2 data-parallel on arena capacity; per-replica parallelism identical |
 | rollout/data path | arena NATS gym (`rollout_function_path`, `data_source_path`, lakeFS `prompt-data-list`) | forced — arena training path vs the recipe's dapo-math + `--rm-type math` |
 | batch shape | rbs 32, n 8, GBS 256, num_rollout 90, response len 2048, temp 1 | chosen — r5-faithful arena shape (recipe: rbs 4, temp 0.8, response len 4096, num_rollout 5 smoke) |
-| GRPO block | eps 0.4/0.4, `eps_clip_c` 2.0, `use_kl_loss` + `kl_coef` 0, `use_rollout_logprobs` | chosen — r5-faithful (recipe: eps 0.2/0.28, `--kl-loss-coef 0`) |
+| GRPO block | eps 0.4/0.4, `eps_clip_c` 2.0, `kl_coef`/`kl_loss_coef` 0 with `use_kl_loss` removed (since r2), `use_rollout_logprobs` | chosen — r5-faithful clipping (recipe: eps 0.2/0.28); the ref pass now matches the recipe (none) |
 | `use_dynamic_batch_size` | `true` | chosen — arena packing mechanism kept; recipe ran static mbs 1 (its `max_tokens_per_gpu 8192` is honored as the budget) |
-| `--check-weight-update-equal --check-weight-update-skip-list visual.` | **kept for run 1** | chosen — first disaggregated (NCCL-bucketed) run of the glm5_next update path; the recipe validated colocated (UpdateWeightFromTensor) only. Per-update cost accepted for run 1; remove after step 1 passes |
+| `--check-weight-update-equal --check-weight-update-skip-list visual.` | kept for runs 1-2, **dropped since r2** | chosen — the first disaggregated (NCCL-bucketed) glm5_next update was verified equal at run-2 step 0; the flag's permanent ~79 GiB/rank CPU snapshot was a run-2 OOM contributor (table (a)) |
 | checkpoint flow | `--load`/`--save`/`--save-hf` appended by `run_arena_harbor.py` from `EXPERIMENT_NAME` (ADR-0004), `save_interval 20`, `no_load_optim`/`no_save_optim` | forced — arena run-identity contract (recipe defaulted to `skip_saving`) |
 | wandb | config keys (`wandb_host/project/team`) + `WANDB_API_KEY` secret | forced — arena tracking contract vs `U.get_default_wandb_args` |
 | `sglang_context_length` / `rollout_max_context_len` | 131072 | chosen — arena parent values (recipe left engine defaults) |
@@ -255,18 +332,99 @@ samples can now exceed the 8192 `max_tokens_per_gpu` microbatch budget by ~16x
 had ~50 GB headroom), rollouts get slower per episode, and a ~131k-token
 trajectory pushes the NATS result message toward the 8 MiB `max_payload`.
 
-## Risks (accepted, watch on run 1)
+## Incident history
+
+Dated, oldest first; each fix names the file that carries it. Driver logs
+survive only on EFS (`/mnt/scratch-s3files-rw/guparpit/logs/<EXPERIMENT_NAME>/trainer-0.log`)
+because the kubeflow operator deletes a failed PyTorchJob with its pods.
+
+- **2026-09-02 run 1 (image a, `rl-glm53f-gbash-r1`)** — first rollout
+  28/28 truncated at 2048 tokens/turn; caps raised live (previous section).
+  Rollout 0 then returned 272 success / 54 failed / 0 truncated on the wire,
+  but train step 0 crashed on every rank: fla 0.4.2's
+  `chunk_kda_fwd_kernel_intra_token_parallel` declares
+  `BK = triton.next_power_of_2(K)` inside the jit body and triton 3.7.1
+  rejects it ("Unsupported function referenced"; the only in-kernel offender
+  in fla). Fix: hoist BK to a host-side constexpr launch arg —
+  `examples/arena/patches/fla_kda_next_power_of_2.py`, applied as an image
+  layer by `examples/arena/Dockerfile` -> image `miles-glm53-20260902b`
+  (integration 3c40b4660, 949434185). Also seen: only 23/256 samples carried
+  loss (any step with `stop_reason=length` removed the whole sample) —
+  misread then as length clipping; see the truncation RCA below.
+- **2026-09-02 21:15 -> 09-03 01:05 UTC run 2 (image b, still r1)** — fla
+  patch validated (step 0 on 64 ranks: loss -0.040, grad_norm 0.082). At
+  00:33:57 the raylet on the engine node `trainer-worker-5` (10.100.176.96)
+  logged "9 Workers killed due to memory pressure": node 1934.01 / 1996.03 GB
+  (0.969), with `sglang::scheduler_TP0..7` at ~79 GB each (~632 GB) as the
+  only large processes. Root causes: (1) Ray 2.58's monitor accounted
+  **host-wide** (`/proc/meminfo` MemTotal-MemAvailable, total =
+  2143217684480 B) because containerd gives the privileged container no cgroup
+  namespace and it had no memory limit, so `/sys/fs/cgroup/memory.max` does
+  not exist in-pod and the by_time policy fired on node usage. (2) The
+  79 GiB/rank is the sglang **WeightChecker snapshot** from
+  `check_weight_update_equal: true` — a permanent anonymous CPU copy of each
+  TP rank's shard (`param.data.detach().cpu()`, weight_checker.py:114-121,
+  issued once by `miles/ray/placement_group.py:213-217`, never freed).
+  `use_fault_tolerance` was unset, so the health knobs were inert; the run
+  served 32 min on 3 engines and died at the post-train `update_weights`
+  (OutOfMemoryError re-raised for the dead actor). Fix set (integration
+  3098ae1d3, image c): `RAY_memory_monitor_refresh_ms=0` pod env (every
+  raylet; `scripts/run_arena_harbor.py` also `setdefault`s it),
+  `check_weight_update_equal: false`, `limits.memory: 1800Gi` +
+  `/dev/shm sizeLimit: 256Gi` as backstops (request stays 1200Gi),
+  `use_fault_tolerance: true` with `rollout_health_check_timeout: 900`,
+  gym-worker `NotIn` anti-affinity off p6 nodes, plus `use_kl_loss` removed,
+  `data_pad_size_multiplier 512`, `arena_mask_clipped_final_turn`, the
+  `memsample-<idx>.log` sampler and the `memprobe/` tooling. Run-2 perf
+  facts: step 0 = ref_log_probs 2388 s + actor_train 5332 s (7722 s) vs
+  steady-state rollout 3393 s (engine-bound); MFU 0.26%; every ~32k-token
+  sample exceeds `max_tokens_per_gpu 8192`, so dynamic batching ran 127
+  micro-batches of one sample; TileLang re-JIT'd the sparse-MLA backward
+  ~3300 times per step.
+- **2026-09-03 05:49-07:36 UTC r2 (image c, `rl-glm53f-gbash-r2`)** — all
+  OOM fixes held (engines ~3.4 GiB host RSS/rank, no memory-pressure events,
+  FT monitor healthy, initial weight sync 38 s, rollout 0 in 4938 s with
+  135/20 success/failed). Train step 0 died 7 min in with
+  `OSError [Errno 116] Stale file handle` in Triton's autotuner: the r2 patch
+  had moved the TRITON/TILELANG/INDUCTOR caches to EFS for persistence, and
+  8 ranks per node raced on the same NFS cache files. Reverted to local
+  `/tmp/kernel_cache` in the container command (integration 0ee733986);
+  recompiles per pod start are the accepted cost. Rule: kernel JIT caches
+  never go on EFS/NFS. Also: `arena_mask_clipped_final_turn` salvaged
+  nothing (removed 229/256, truncated_ratio 0.8945, zero "masked clipped
+  final turn" lines).
+- **2026-09-03 truncation RCA (gym-pod trial artifacts + task-events logs)**
+  — the ~89% removed/"truncated" samples in r1/r2 are Harbor **agent
+  wall-clock timeouts** (`AgentTimeoutError`; per-task `[agent] timeout_sec`
+  900-1800 s, no gym override), NOT length clips: 0/1033 generates hit the
+  32k per-turn cap (max seen 15k). The gym maps the exception to
+  `agent_stop_reason="timeout"`, which `nats_rollout.py` treats as degenerate
+  -> TRUNCATED + remove_sample, although these trajectories are clean (every
+  turn `finish_reason=stop`, no partial turn, verifier ran) and ~9% carry
+  reward 1 — >=19 of the ~46 reward-1 samples per step were discarded.
+  Driver: ~14.5 tok/s decode per sample with ~400 concurrent trials on 4
+  saturated engines; GLM thinks 8-15k tokens/turn -> ~500 s/turn. Mitigation
+  shipped: `--arena-keep-timeout-trajectories` (default off; integration
+  32da04357, image `miles-glm53-20260903d`, tests included) plus the
+  per-rollout `Removal reasons: timeout=.., context_error=.., length=..
+  (kept_timeout=N)` log line. Not yet enabled in `miles-config.yaml`.
+- **2026-09-03 08:3x UTC r3 launched** (image c, local caches, identity
+  r3): kueue TAS pinned pods to 12 more nodes the scheduler rejected; they
+  were added to the `NotIn` list (integration 86d2d0ec5) and the job
+  resubmitted under the same name (procedure in step 4).
+
+## Risks / open items (watch on r3)
 
 1. **GLM chat/tool-call format vs the gym parser — UNVERIFIED.** The snorkel
    textual bash agent worked against qwen output; GLM-5.3's template and
    tool-call conventions differ, and no sglang tool-call/reasoning parser is
    configured. If early trajectories show malformed command extraction or
    zero real completions, this is the first suspect.
-2. **EFA pairing untested**: the Dockerfile's aws-efa-installer 1.47.0
-   (aws-ofi-nccl 1.18.x) against the glm53next base's NCCL 2.29/cu13 has not
-   run multi-node before this job. First-run gate: the NCCL log must show the
-   libfabric/efa provider — `Using network IB` or `Socket` means broken
-   fallback (hang/crawl), not success.
+2. **EFA pairing — VERIFIED in runs 1-2**: aws-efa-installer 1.47.0
+   (aws-ofi-nccl 1.18.0, Libfabric 2.4) with the glm53next base's NCCL
+   2.29/cu13 selected the libfabric/efa provider on all ranks. Re-verify
+   with `NCCL_DEBUG=INFO` after any image/base change (`Using network IB` or
+   `Socket` = broken fallback).
 3. **Engine memory is tight**: bf16 weights ~643 GB / TP8 ≈ 80 GB per B200
    (180 GB) and `mem_fraction_static 0.7` budgets ~126 GB — ~46 GB left for
    KV + activations per GPU. Long multi-turn contexts may hit engine OOM or
@@ -293,17 +451,49 @@ trajectory pushes the NATS result message toward the 8 MiB `max_payload`.
    parallel_state); EP24 would be needed. At 64 GPUs, PP8 does not reduce
    expert-optimizer memory and EP8 is strictly worse (~130 GB static) —
    EP16/PP4/DP2 is the right 64-GPU shape.
-6. **First disaggregated glm5_next weight update**: the recipe validated the
-   colocated UpdateWeightFromTensor path; this run exercises the NCCL-bucketed
-   UpdateWeightFromDistributed path for the first time. The known cross-bucket
-   hazard (fused q_a_proj/kv_a_proj_with_mqa must co-arrive) is provably
-   covered by miles' q_lora atomic-update grouping, and
-   `check_weight_update_equal` is on for run 1 — additionally grep engine logs
-   for `The full weights of the ModelRunner are partially updated` as the
-   failure signature.
-7. **Token budget vs trajectory length**: `max_tokens_per_gpu 8192` is
-   recipe-validated for ≤4k responses; arena full-trajectory samples can
-   reach the gym's 32k context limit, and a single over-budget sample forms
-   its own oversized micro-batch under dynamic batching. Watch actor memory
-   on long-trajectory steps; first mitigation is raising recompute or
-   lowering the gym context limit, not raising the budget.
+6. **Disaggregated glm5_next weight update — verified equal at run-2
+   step 0** (NCCL-bucketed UpdateWeightFromDistributed; the recipe had only
+   validated colocated UpdateWeightFromTensor). `check_weight_update_equal`
+   is now OFF (its snapshot was a run-2 OOM contributor), so the remaining
+   guard is the engine-log signature `The full weights of the ModelRunner
+   are partially updated`; the cross-bucket hazard (fused
+   q_a_proj/kv_a_proj_with_mqa) stays covered by miles' q_lora atomic-update
+   grouping.
+7. **Token budget vs trajectory length — confirmed inert batching**: every
+   ~32k-token sample exceeds `max_tokens_per_gpu 8192`, so run 2 trained
+   127 micro-batches of one sample each (memory held). Watch actor memory on
+   long-trajectory steps; first mitigation is raising recompute or lowering
+   the gym context limit, not raising the budget. CP is unsupported (kpool
+   indexer), so long samples cannot be split across ranks.
+8. **Unattributed ~1.3 TB on run 2's dead engine node.** Ray counted
+   1934 GB used while the pod's processes summed to ~633 GB. The dead node
+   (`i-099b9859c5430fec8`) hosted only 3 small co-tenant pods and survivors
+   hosted more, so the co-tenant theory is refuted; engine USS grew only
+   ~5.6 GiB in 3 h, so it is not an engine leak. The remainder is external
+   to the pod (mount-s3 CSI page cache, driver pinned pages, kernel —
+   unknown). The `memsample-<idx>.log` sampler now records node vs own-cgroup
+   vs per-process anon/file every 60 s on the real run, and the isolated
+   single-node probe lives in `memprobe/` (hypotheses R1-R5 and how to read
+   the CSVs: `memprobe/README.md`; Job `glm53-memprobe-b2` ran rc=0, results
+   under `/mnt/scratch-s3files-rw/guparpit/logs/glm53-memprobe/`).
+   `refresh_ms=0` makes the run immune to Ray's verdict, but a real node-wide
+   exhaustion would still end in the kernel OOM killer.
+9. **Timeouts dominate removals (~89%)** — the reward-1 samples lost per
+   step are training signal. Options, cheapest first: (a)
+   `arena_keep_timeout_trajectories: true` (needs image d; status stays
+   TRUNCATED so `truncated_ratio` stays honest; never keeps a trajectory
+   with a clipped turn); (b) raise the Harbor per-task `timeout_sec`
+   (dataset/gym-side change); (c) wire `reasoning_effort` /
+   `max_thinking_tokens` through the gym's arena-sglang path
+   (`ArenaSGLangLLM` currently drops them) to cut the 8-15k-token thinking
+   per turn; (d) more engine throughput (more engine nodes or fewer
+   concurrent trials per engine) — ~14.5 tok/s/sample today.
+10. **Actor perf (run 2)**: KDA layers are replicated across TP (upstream
+    design), dynamo hits its recompile limit on the mHC hyper-connections,
+    CP is unsupported, MFU 0.26%. `data_pad_size_multiplier 512` bounds the
+    TileLang backward re-JIT count — verify loss parity of the pad segments
+    in a smoke; with local caches every pod start recompiles.
+11. **`use_fault_tolerance` is UNVALIDATED on the arena NATS path**: kill one
+    engine's sglang in a 5-node smoke first. A 900 s `health_generate` under
+    100-deep queues could still false-kill a healthy engine and drop its
+    in-flight trajectories.

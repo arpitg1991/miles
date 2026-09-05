@@ -848,3 +848,91 @@ Trainer image `arena-slime-dev:miles-glm53-20260902c` for both runs.
   any NATS restart; the trainer's `Waiting for results: 0/N groups` with idle
   engines is the detection signal, pod status is not.
 - r3 outcome (step 0, post-train sync, rollout 1, step-1 CUDA OOM): r4 entry.
+
+## 2026-09-03 00:40-01:47 PT — Truncation RCA: the ~89% "truncated" are Harbor agent timeouts; image d; README to its r3 state
+
+Sits between the r3 launch (01:32 PT, previous entry) and the r3 outcome
+(next entry). Not a run: a root-cause analysis done on r2's gym pods while r3
+was being relaunched, the trainer-side flag it produced, and the README
+catch-up that records runs 1-2, r2 and r3 as incident history. Plugin-side
+detail and the decision record: `miles_plugins/arena/RUNLOG.md` (same date)
+and ADR-0010.
+
+### Timeline (PT)
+
+| when | what |
+|---|---|
+| 00:36 | r2 dies in train step 0 (Triton ESTALE, previous entry). Its rollout 0 had removed 229/256 with the mask-clipped flag on and no salvage line - the length-clip reading of run 1 is falsified. |
+| 01:23-01:29 | Evidence pulled from the still-running r2 gym deployment (`rl-glm53f-gym-sgb-*`, 128 pods, gym image `arena-tasks-dev:rl-smoke-20260821b` = Harbor 0.21.0 / `amzn_arena_harbor 1.0.763.0`): 96 trials from 12 pods (12 groups x 8; trials run 23:07-00:29 PT), job history of all 128 pods, gym source, task-events logs. Archived: `arena-port-artifacts/glm53/glm53-salvage/{analysis1-3.txt,trials_summary.json,pod_runs.json,r0_kept_map.json,r0_pods.txt,pods.txt,gym-src/}`. |
+| 01:32 | r3 launched on image c (flag does not exist yet; r3 runs under the unchanged removal policy). |
+| 01:37-01:38 | `--arena-keep-timeout-trajectories` + removal-reason log committed (integration `32da04357`, 19 tests). |
+| 01:40 | Trainer image `arena-slime-dev:miles-glm53-20260903d` built and pushed (c + the flag, default OFF), replicated to ap-south-1. Not deployed to r3. |
+| 01:47 | README brought to its r2/r3 state (integration `37164f537`, +250/-60) - this commit ships that version. |
+
+### What the gym pods showed
+
+- 91/96 trials: `AgentTimeoutError: Agent execution timed out after N seconds`
+  with N = the task's `task.toml` `[agent] timeout_sec` (1800 s x59, 1500 x16,
+  1200 x8, 900 x8; no gym override), reached 31-85 s after trial start (env
+  build). 5/96 finished normally.
+- 0/1033 generates hit the 32768 per-turn cap (max 15033; p50 630, p90 4948
+  output tokens). Every trajectory ends cleanly at the model's turn-close
+  token; every step `stop_reason=stop`; turn count == `weight_versions`
+  count. Median timeout: 8 turns, 34k tokens; max 74k (< 131k episode cap).
+- The gym (`gym_worker._EXCEPTION_AGENT_STOPS`) maps the exception to
+  `agent_stop_reason="timeout"`, which `nats_rollout.py` treats as a
+  degenerate stop -> TRUNCATED + `remove_sample`. The Harbor 0.21 envelope
+  still reports the group `success`, so the wire statuses (run 1: 272/54/0)
+  never showed it.
+- Reward in the discard pile: 8/91 timeouts scored 1 (~9%; 4 of the 5
+  finished trials did) - >=19 of the ~46 reward-1 samples per step were lost.
+- Driver: GLM at its template-default `max` reasoning effort thinks 8-15k
+  tokens/turn; decode p50 14.5 tok/s per sample with ~400 concurrent trials
+  on 4 saturated engines -> ~500 s for a >8k-token turn (61 such turns,
+  median latency 494 s).
+
+### Decision
+
+- Trainer side (this commit): keep a timeout trajectory only when the timeout
+  is its sole defect, default off, status stays TRUNCATED; log
+  `Removal reasons: timeout=.., context_error=.., length=.. (kept_timeout=N)`
+  every rollout so the next run needs no pod forensics. ADR-0010 lists the
+  precedence with `arena_mask_clipped_final_turn` (correct but inert here -
+  there are no clips) and the alternatives.
+- Gym/dataset side (not this tree): raise `timeout_sec` (Harbor 0.21 already
+  has `JobConfig.agent_timeout_multiplier`, unplumbed by
+  `gym_worker.build_rollout_job_config`; needs `ARENA_NATS_ACK_WAIT` raised
+  in lockstep), cut thinking via `reasoning_effort` (dropped by the gym's
+  `ArenaSGLangLLM`), or more engine throughput. All three were taken later
+  (r5 gym image, r6 multiplier + 16 engines) and are logged with those runs.
+- Rollout plan: image d ships the flag OFF so r4 measures the loss with
+  attribution before anything changes (`Removal reasons: timeout=230/256
+  (kept_timeout=0)` in its rollout 0); r5 is the first run to set
+  `arena_keep_timeout_trajectories: true` (image d required - strict argparse
+  kills a trainer on image c).
+
+### README state at `37164f537` (what this commit's README carries)
+
+- Image lineage table a -> b -> c -> d with the integration commit of each
+  layer and the rule "bump the image tag together with any new config key"
+  (`arena_mask_clipped_final_turn` needs >= c, `arena_keep_timeout_trajectories`
+  needs d); push to us-east-1 and check the ap-south-1 replica.
+- Run identity r3 (`EXPERIMENT_NAME`/`PROJECT_NAME`, YAML still says r1 -
+  inert); EFS tee + 60 s `memsample-<idx>.log` as the only post-mortem
+  source; the kueue TAS mis-pin check and `NotIn` procedure (16 nodes as of
+  2026-09-03).
+- First-run verification: EFA provider line required, run-2 OOM signature
+  absent, r2 ESTALE signature absent, `truncated_ratio` ~0.89 explained as
+  the timeout signature with the image-d log line.
+- Deviations table (a) extended for r2/r3: `use_fault_tolerance` +
+  `rollout_health_check_timeout 900`, `data_pad_size_multiplier 512`,
+  `use_kl_loss` removed, `check_weight_update_equal false`,
+  `arena_mask_clipped_final_turn true`, `arena_keep_timeout_trajectories`
+  "not set - open", image c, `RAY_memory_monitor_refresh_ms=0`, 1800Gi limit
+  + 256Gi shm, local kernel caches, memsampler, gym anti-affinity off p6
+  nodes, NCCL debug dropped, upstream `extra_env_vars` as pod env.
+- New "Incident history" (run 1, run 2, r2, truncation RCA, r3 launch) and
+  "Risks / open items (watch on r3)" 1-11, incl. #9 timeouts with the four
+  options above and #11 fault tolerance unvalidated on the NATS path.
+- Not yet in this README: r3's step-1 CUDA OOM and the optimizer offload
+  (next entry), r4 results, the r5 gym image (later entries).

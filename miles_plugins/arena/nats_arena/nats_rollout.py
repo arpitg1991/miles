@@ -55,7 +55,11 @@ __all__ = ["generate_rollout"]
 # ``context_error`` while its last turn's finish_reason is "stop". Flagged
 # TRUNCATED -> remove_sample=True so their tokens are masked out of the loss
 # (a final turn clipped by the per-turn cap can instead be partially salvaged
-# via --arena-mask-clipped-final-turn; degenerate stops never are).
+# via --arena-mask-clipped-final-turn; degenerate stops never are -- with ONE
+# opt-in exception: ``timeout`` is the Harbor agent's per-task wall-clock
+# deadline (AgentTimeoutError), whose recorded turns all ended cleanly and
+# whose verifier still ran, so it can be kept via
+# --arena-keep-timeout-trajectories).
 # ``completed`` and ``max_iterations`` are intentionally NOT here (legitimate
 # finishes).
 _DEGENERATE_AGENT_STOP = frozenset({
@@ -358,13 +362,32 @@ def _result_to_samples_full_trajectory(
         # misses them. The trajectory is a mangled/incomplete conversation (e.g.
         # context-overflow recovery failed) that must not be trained on as
         # COMPLETED. Flag TRUNCATED so remove_sample fires below.
-        agent_degenerate = (
-            str(traj.get("agent_stop_reason") or "").lower() in _DEGENERATE_AGENT_STOP
+        agent_stop_reason = str(traj.get("agent_stop_reason") or "").lower()
+        agent_degenerate = agent_stop_reason in _DEGENERATE_AGENT_STOP
+        # --arena-keep-timeout-trajectories: the Harbor gym worker maps its
+        # per-task wall-clock AgentTimeoutError to agent_stop_reason
+        # "timeout" even though every recorded turn ended with finish_reason
+        # "stop", the token stream ends at the model's turn-close token (no
+        # partial turn) and the verifier still ran, so the reward is real.
+        # With the flag on, a "timeout" stop no longer disqualifies the
+        # sample on its own (nor blocks --arena-mask-clipped-final-turn
+        # salvage); every other degenerate stop is unaffected. Status stays
+        # TRUNCATED either way so truncated_ratio remains an honest metric.
+        timeout_salvageable = (
+            bool(getattr(args, "arena_keep_timeout_trajectories", False))
+            and agent_stop_reason == "timeout"
         )
+        # True when the agent stop alone makes the sample untrainable.
+        agent_blocks_training = agent_degenerate and not timeout_salvageable
         status = (
             Sample.Status.TRUNCATED if (any_step_truncated or agent_degenerate)
             else Sample.Status.COMPLETED
         )
+        # Why the sample was dropped from the loss (None when trained on);
+        # stamped into Sample.metadata for the per-rollout "Removal reasons"
+        # summary log. Set alongside every ``remove_sample = True`` below.
+        removal_reason = None
+        kept_timeout = False
         s = Sample()
         # --- Fast path: GenerateClient produced real token-level data ---
         # When the gym used ARENA_CLIENT_TYPE=generate, the last step in the
@@ -451,15 +474,17 @@ def _result_to_samples_full_trajectory(
             # tokens follow the last generate). Zero only that run and keep
             # the earlier, cleanly-stopped turns trainable — instead of the
             # r5-lineage default of removing the whole sample. Degenerate
-            # agent stops, hard context overflows, and zero-filled logprobs
-            # are NOT salvageable and keep the old removal behavior. Status
-            # stays TRUNCATED so truncated_ratio remains an honest metric.
+            # agent stops (except a "timeout" admitted by
+            # --arena-keep-timeout-trajectories), hard context overflows, and
+            # zero-filled logprobs are NOT salvageable and keep the old
+            # removal behavior. Status stays TRUNCATED so truncated_ratio
+            # remains an honest metric.
             final_clip_masked = False
             if (
                 getattr(args, "arena_mask_clipped_final_turn", False)
                 and status == Sample.Status.TRUNCATED
                 and any_step_truncated
-                and not agent_degenerate
+                and not agent_blocks_training
                 and not hard_overflow
                 and not bad_logprobs
             ):
@@ -475,8 +500,51 @@ def _result_to_samples_full_trajectory(
                         "tokens); earlier turns stay trainable.",
                         task_id, clipped_len, len(resp_loss_mask),
                     )
-            if (status == Sample.Status.TRUNCATED and not final_clip_masked) or bad_logprobs:
+            # --arena-keep-timeout-trajectories: keep the sample, loss_mask
+            # untouched, when the ONLY thing flagging it TRUNCATED is the
+            # agent-loop "timeout" stop -- no per-turn length clip, no hard
+            # context overflow, no zero-filled logprobs, and at least one
+            # trainable token. Precedence when a timeout trajectory ALSO has
+            # a clipped final turn (any_step_truncated): the
+            # --arena-mask-clipped-final-turn salvage above applies if that
+            # flag is on (the timeout no longer blocks it); otherwise the
+            # sample stays removed -- this branch never keeps a trajectory
+            # with a clipped turn. Slow-path (messages-only) trajectories are
+            # out of scope, exactly like the mask-clipped salvage.
+            if (
+                timeout_salvageable
+                and status == Sample.Status.TRUNCATED
+                and not any_step_truncated
+                and not hard_overflow
+                and not bad_logprobs
+                and has_response
+            ):
+                kept_timeout = True
+                # #turns == number of 1-runs in the response loss_mask (each
+                # assistant turn is one run, separated by tool/user 0s).
+                n_turns = sum(
+                    1 for i, m in enumerate(resp_loss_mask)
+                    if m == 1 and (i == 0 or resp_loss_mask[i - 1] == 0)
+                )
+                logger.info(
+                    "Task %s: kept timeout trajectory (%d turns, %d response "
+                    "tokens); agent hit its wall-clock deadline but every "
+                    "turn ended cleanly.",
+                    task_id, n_turns, len(resp_loss_mask),
+                )
+            if (
+                status == Sample.Status.TRUNCATED
+                and not final_clip_masked
+                and not kept_timeout
+            ) or bad_logprobs:
                 s.remove_sample = True
+                removal_reason = (
+                    "bad_logprobs" if bad_logprobs
+                    else "context_overflow" if hard_overflow
+                    else agent_stop_reason if agent_degenerate
+                    else "length" if any_step_truncated
+                    else "other"
+                )
         else:
             if not messages:
                 logger.warning("Trajectory for %s has no messages, skipping", task_id)
@@ -513,7 +581,9 @@ def _result_to_samples_full_trajectory(
                 )
                 raise
 
+            slow_overflow = False
             if max_ctx and len(token_ids) > max_ctx:
+                slow_overflow = True
                 # Context overflow: hard-truncate token_ids/loss_mask (and any
                 # parallel per-token field) to max_ctx. We don't bother dropping
                 # the final assistant turn to keep the conversation well-formed —
@@ -558,9 +628,16 @@ def _result_to_samples_full_trajectory(
                 s.rollout_log_probs = [0.0] * response_length
                 status = Sample.Status.ABORTED
                 s.remove_sample = True
+                removal_reason = "no_logprobs"
             s.status = status
             if status == Sample.Status.TRUNCATED:
                 s.remove_sample = True
+                removal_reason = (
+                    "context_overflow" if slow_overflow
+                    else agent_stop_reason if agent_degenerate
+                    else "length" if any_step_truncated
+                    else "other"
+                )
         # Per-turn SGLang weight versions for the off_policy_round metric.
         # Prefer the explicit parallel list emitted by the gym; fall back to
         # the per-step ``weight_version`` keys for older gym builds. Empty
@@ -570,6 +647,16 @@ def _result_to_samples_full_trajectory(
             wvs = [st.get("weight_version") for st in (traj.get("steps") or [])]
         s.weight_versions = [str(v) for v in wvs if v is not None]
         s.metadata = {"task_id": task_id, "mode": "full_trajectory", "gym_name": gym_name}
+        # Removal-reason bookkeeping for the per-rollout "Removal reasons"
+        # summary (generate_rollout). agent_stop_reason is recorded for every
+        # real sample; removal_reason only when remove_sample was set;
+        # kept_timeout only for --arena-keep-timeout-trajectories salvages.
+        if agent_stop_reason:
+            s.metadata["agent_stop_reason"] = agent_stop_reason
+        if removal_reason:
+            s.metadata["removal_reason"] = removal_reason
+        if kept_timeout:
+            s.metadata["kept_timeout"] = True
         # Attach group_metrics to ONLY the first sample of each group —
         # all samples in the group share the same metrics, and stamping
         # them on every sample would inflate the per-batch aggregate.
@@ -577,6 +664,32 @@ def _result_to_samples_full_trajectory(
             s.metadata["group_metrics"] = group_metrics
         samples.append(s)
     return samples
+
+
+def _removal_reason_counts(groups) -> tuple[dict[str, int], int]:
+    """Aggregate why samples were removed from the loss, for the per-rollout
+    "Removal reasons" summary log.
+
+    Returns ``(reason -> count over samples with remove_sample=True,
+    number of samples kept by --arena-keep-timeout-trajectories)``. Reasons
+    come from ``Sample.metadata["removal_reason"]`` as stamped by
+    ``_result_to_samples_full_trajectory``; gym-side pads (``mode="failed"``)
+    count as ``failed``; anything else unattributed is ``other``.
+    """
+    removal_reasons: dict[str, int] = {}
+    kept_timeout_count = 0
+    for g in groups:
+        for s in g:
+            meta = s.metadata or {}
+            if meta.get("kept_timeout"):
+                kept_timeout_count += 1
+            if not getattr(s, "remove_sample", False):
+                continue
+            reason = meta.get("removal_reason") or (
+                "failed" if meta.get("mode") == "failed" else "other"
+            )
+            removal_reasons[reason] = removal_reasons.get(reason, 0) + 1
+    return removal_reasons, kept_timeout_count
 
 
 # ---------------------------------------------------------------------------
@@ -1543,6 +1656,24 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
         failed_count, total_samples, failed_frac,
         removed_count, total_samples, removed_frac,
     )
+    # Per-reason breakdown of removed_total so a rollout log shows WHY
+    # training signal was lost without a post-hoc investigation. Reasons are
+    # stamped into Sample.metadata["removal_reason"] by
+    # _result_to_samples_full_trajectory: the degenerate agent stop
+    # ("timeout", "context_error", ...), "length" (per-turn clip),
+    # "context_overflow", "bad_logprobs"/"no_logprobs"; gym-side pads carry
+    # mode="failed". kept_timeout counts the (non-removed) samples salvaged
+    # by --arena-keep-timeout-trajectories; timeout=N under the flag then
+    # means "timeout AND another defect" (see precedence note there).
+    removal_reasons, kept_timeout_count = _removal_reason_counts(data)
+    logger.info(
+        "Removal reasons: %s (kept_timeout=%d)",
+        ", ".join(
+            f"{k}={v}"
+            for k, v in sorted(removal_reasons.items(), key=lambda kv: (-kv[1], kv[0]))
+        ) or "none",
+        kept_timeout_count,
+    )
 
     # ---- reward-collapse telemetry ----------------------------------------
     # We're trying to detect when GRPO advantages flatline (all-zero groups →
@@ -1831,6 +1962,20 @@ def _add_arena_arguments(parser):
         "(the gym stamps stop_reason=length only for the final turn), zero "
         "only that clipped final turn's loss-mask tokens and keep the "
         "earlier turns trainable, instead of removing the whole sample "
+        "(the r5-lineage default).",
+    )
+    group.add_argument(
+        "--arena-keep-timeout-trajectories",
+        action="store_true",
+        default=False,
+        help="Keep token-level (GenerateClient) trajectories whose agent loop "
+        "stopped with agent_stop_reason=timeout (the Harbor agent hit its "
+        "per-task wall-clock deadline) as training samples when that is the "
+        "only defect: loss_mask untouched, remove_sample stays False, status "
+        "stays TRUNCATED. Timeout trajectories that also have a clipped "
+        "final turn, a hard context overflow or zero-filled logprobs are "
+        "still removed (a clipped final turn can be salvaged by "
+        "--arena-mask-clipped-final-turn). Default: remove them "
         "(the r5-lineage default).",
     )
     group.add_argument("--gym-autoscale", action="store_true", default=False)

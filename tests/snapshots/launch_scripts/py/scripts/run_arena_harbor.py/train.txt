@@ -1,0 +1,963 @@
+### 0
+mkdir -p /root/shared_data/arena/checkpoints/slime_experiments/arena-smoke /root/shared_data/arena/data/logs /root/shared_data/arena/data/tb_logs/arena-smoke/arena-smoke_260101-000000-000 /root/shared_data/arena/data/logs/wandb/arena-smoke/arena-smoke
+
+### 1
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 2
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 3
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 4
+sleep 5
+
+### 5
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 6
+sleep 5
+
+### 7
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 8
+sleep 5
+
+### 9
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 10
+sleep 5
+
+### 11
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 12
+sleep 5
+
+### 13
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 14
+sleep 5
+
+### 15
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 16
+sleep 5
+
+### 17
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 18
+sleep 5
+
+### 19
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 20
+sleep 5
+
+### 21
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 22
+sleep 5
+
+### 23
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 24
+sleep 5
+
+### 25
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 26
+sleep 5
+
+### 27
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 28
+sleep 5
+
+### 29
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 30
+sleep 5
+
+### 31
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 32
+sleep 5
+
+### 33
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 34
+sleep 5
+
+### 35
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 36
+sleep 5
+
+### 37
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 38
+sleep 5
+
+### 39
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 40
+sleep 5
+
+### 41
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 42
+sleep 5
+
+### 43
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 44
+sleep 5
+
+### 45
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 46
+sleep 5
+
+### 47
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 48
+sleep 5
+
+### 49
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 50
+sleep 5
+
+### 51
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 52
+sleep 5
+
+### 53
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 54
+sleep 5
+
+### 55
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 56
+sleep 5
+
+### 57
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 58
+sleep 5
+
+### 59
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 60
+sleep 5
+
+### 61
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 62
+sleep 5
+
+### 63
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 64
+sleep 5
+
+### 65
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 66
+sleep 5
+
+### 67
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 68
+sleep 5
+
+### 69
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 70
+sleep 5
+
+### 71
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 72
+sleep 5
+
+### 73
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 74
+sleep 5
+
+### 75
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 76
+sleep 5
+
+### 77
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 78
+sleep 5
+
+### 79
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 80
+sleep 5
+
+### 81
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 82
+sleep 5
+
+### 83
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 84
+sleep 5
+
+### 85
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 86
+sleep 5
+
+### 87
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 88
+sleep 5
+
+### 89
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 90
+sleep 5
+
+### 91
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 92
+sleep 5
+
+### 93
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 94
+sleep 5
+
+### 95
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 96
+sleep 5
+
+### 97
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 98
+sleep 5
+
+### 99
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 100
+sleep 5
+
+### 101
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 102
+sleep 5
+
+### 103
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 104
+sleep 5
+
+### 105
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 106
+sleep 5
+
+### 107
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 108
+sleep 5
+
+### 109
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 110
+sleep 5
+
+### 111
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 112
+sleep 5
+
+### 113
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 114
+sleep 5
+
+### 115
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 116
+sleep 5
+
+### 117
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 118
+sleep 5
+
+### 119
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 120
+sleep 5
+
+### 121
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 122
+sleep 5
+
+### 123
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 124
+sleep 5
+
+### 125
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 126
+sleep 5
+
+### 127
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 128
+sleep 5
+
+### 129
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 130
+sleep 5
+
+### 131
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 132
+sleep 5
+
+### 133
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 134
+sleep 5
+
+### 135
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 136
+sleep 5
+
+### 137
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 138
+sleep 5
+
+### 139
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 140
+sleep 5
+
+### 141
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 142
+sleep 5
+
+### 143
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 144
+sleep 5
+
+### 145
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 146
+sleep 5
+
+### 147
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 148
+sleep 5
+
+### 149
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 150
+sleep 5
+
+### 151
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 152
+sleep 5
+
+### 153
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 154
+sleep 5
+
+### 155
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 156
+sleep 5
+
+### 157
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 158
+sleep 5
+
+### 159
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 160
+sleep 5
+
+### 161
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 162
+sleep 5
+
+### 163
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 164
+sleep 5
+
+### 165
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 166
+sleep 5
+
+### 167
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 168
+sleep 5
+
+### 169
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 170
+sleep 5
+
+### 171
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 172
+sleep 5
+
+### 173
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 174
+sleep 5
+
+### 175
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 176
+sleep 5
+
+### 177
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 178
+sleep 5
+
+### 179
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 180
+sleep 5
+
+### 181
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 182
+sleep 5
+
+### 183
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 184
+sleep 5
+
+### 185
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 186
+sleep 5
+
+### 187
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 188
+sleep 5
+
+### 189
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 190
+sleep 5
+
+### 191
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 192
+sleep 5
+
+### 193
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 194
+sleep 5
+
+### 195
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 196
+sleep 5
+
+### 197
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 198
+sleep 5
+
+### 199
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 200
+sleep 5
+
+### 201
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 202
+sleep 5
+
+### 203
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 204
+sleep 5
+
+### 205
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 206
+sleep 5
+
+### 207
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 208
+sleep 5
+
+### 209
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 210
+sleep 5
+
+### 211
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 212
+sleep 5
+
+### 213
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 214
+sleep 5
+
+### 215
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 216
+sleep 5
+
+### 217
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 218
+sleep 5
+
+### 219
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 220
+sleep 5
+
+### 221
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 222
+sleep 5
+
+### 223
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 224
+sleep 5
+
+### 225
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 226
+sleep 5
+
+### 227
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 228
+sleep 5
+
+### 229
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 230
+sleep 5
+
+### 231
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 232
+sleep 5
+
+### 233
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 234
+sleep 5
+
+### 235
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 236
+sleep 5
+
+### 237
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 238
+sleep 5
+
+### 239
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 240
+sleep 5
+
+### 241
+ray status
+  --address=127.0.0.1:6379 2>/dev/null | sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true
+
+### 242
+sleep 5
+
+### 243
+ray status
+  --address=127.0.0.1:6379
+
+### 244
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 245
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "TENSORBOARD_DIR": "/root/shared_data/arena/data/tb_logs/arena-smoke/arena-smoke_260101-000000-000", "WANDB_DIR": "/root/shared_data/arena/data/logs/wandb/arena-smoke/arena-smoke", "RAY_enable_open_telemetry_metrics": "false", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/miles_plugins/arena/train_async_arena.py
+  --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
+  --disable-bias-linear
+  --qk-layernorm
+  --group-query-attention
+  --num-attention-heads 24
+  --num-query-groups 4
+  --kv-channels 256
+  --num-layers 64
+  --hidden-size 5120
+  --ffn-hidden-size 17408
+  --normalization RMSNorm
+  --apply-layernorm-1p
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --rotary-percent 0.25
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 248320
+  --rotary-base 10000000
+  --attention-output-gate
+  --hf-checkpoint /mnt/models-ro/external/Qwen/Qwen3.5-27B
+  --ref-load /mnt/scratch-s3files-rw/bowenxie/checkpoints/dcp/tp4/Qwen/Qwen3.5-27B
+  --save-interval 10
+  --no-load-optim
+  --no-save-optim
+  --rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.generate_rollout
+  --data-source-path miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWithBuffer
+  --sglang-enable-dp-attention
+  --sglang-disable-overlap-schedule
+  --input-key messages
+  --metadata-key metadata
+  --loss-mask-type qwen3_5
+  --rollout-shuffle
+  --rollout-skip-special-tokens
+  --num-rollout 30
+  --rollout-batch-size 8
+  --n-samples-per-prompt 8
+  --rollout-max-response-len 2048
+  --rollout-temperature 1
+  --global-batch-size 64
+  --balance-data
+  --rollout-num-gpus-per-engine 4
+  --rollout-max-context-len 131072
+  --sglang-context-length 131072
+  --sglang-chunked-prefill-size 12288
+  --sglang-router-port 30000
+  --sglang-tool-call-parser qwen3_coder
+  --sglang-reasoning-parser qwen3
+  --sglang-mem-fraction-static 0.85
+  --update-weights-interval 1
+  --partial-rollout
+  --skip-eval-before-train
+  --distributed-timeout-minutes 60
+  --tensor-model-parallel-size 4
+  --sequence-parallel
+  --pipeline-model-parallel-size 2
+  --context-parallel-size 2
+  --expert-model-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 65536
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --advantage-estimator grpo
+  --use-rollout-logprobs
+  --use-kl-loss
+  --kl-coef 0.0
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.0
+  --eps-clip 0.4
+  --eps-clip-high 0.4
+  --eps-clip-c 2.0
+  --optimizer adam
+  --lr 2e-06
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --use-distributed-optimizer
+  --use-distributed-post
+  --arena-sample-mode full_trajectory
+  --log-passrate
+  --prompt-data '[{"path":"/mnt/scratch-s3files-rw/guparpit/rl-smoke27/datasets/financeagent/manifest.jsonl","gym_name":"financeagent","weight":1.0}]'
+  --wandb-group arena-smoke
+  --actor-num-nodes 2
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --rollout-num-gpus 8
+  --load /root/shared_data/arena/checkpoints/slime_experiments/arena-smoke
+  --save /root/shared_data/arena/checkpoints/slime_experiments/arena-smoke
+  --save-hf '/root/shared_data/arena/checkpoints/slime_experiments/arena-smoke/hf/rollout_{rollout_id}'

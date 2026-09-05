@@ -1,0 +1,102 @@
+# Harbor RL smoke: Qwen3.5-27B + financeagent (Harbor gym worker) on
+# p6-b200.48xlarge — the AGISlime ADR-0039 smoke #2 config ported to miles.
+# 3-node scale: 2 trainer nodes (TP4/PP2/CP2, 16 GPUs) + 1 rollout node (8 GPUs).
+#
+# Converted to a flat train argv by scripts/run_arena_harbor.py with
+# hydra_converter semantics (true -> bare flag, false/None -> dropped,
+# prompt-data-list -> --prompt-data moved last). The launcher consumes
+# user/cluster/experiment_name/project_name/agislime_dir/replicas/num_trainers/
+# model_arch — they never reach the trainer (miles argparse is strict). Run
+# identity (checkpoint dir, wandb group) comes from the EXPERIMENT_NAME pod env
+# (ADR-0004), and cluster shape from REPLICA/REPLICA_TRAINER — the values here
+# are kept for schema compatibility with the AGISlime configs.
+#
+# Deltas from the AGISlime original (see ARGV_PARITY.md):
+#   - rollout_function_path / data_source_path: amzn_agi_slime.* -> miles_plugins.arena.*
+#   - rollout_global_dataset: true removed — miles has no --rollout-global-dataset
+#     flag (it is the default; only --disable-rollout-global-dataset exists).
+user: guparpit
+cluster: bom
+experiment_name: rl-smoke27-financeagent
+project_name: rl-smoke27-financeagent
+agislime_dir: /opt/AGISlime
+replicas: 3
+num_trainers: 2
+model_arch: qwen3.5-27B
+hf_checkpoint: /mnt/models-ro/external/Qwen/Qwen3.5-27B
+ref_load: /mnt/scratch-s3files-rw/bowenxie/checkpoints/dcp/tp4/Qwen/Qwen3.5-27B
+save_interval: 10
+no_load_optim: true
+no_save_optim: true
+rollout_function_path: miles_plugins.arena.nats_arena.nats_rollout.generate_rollout
+data_source_path: miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWithBuffer
+prompt-data-list: '[{"path":"/mnt/scratch-s3files-rw/guparpit/rl-smoke27/datasets/financeagent/manifest.jsonl","gym_name":"financeagent","weight":1.0}]'
+sglang_enable_dp_attention: true
+sglang_disable_overlap_schedule: true
+input_key: messages
+metadata_key: metadata
+apply_chat_template: false
+loss_mask_type: qwen3_5
+rollout_shuffle: true
+rollout_skip_special_tokens: true
+num_rollout: 30
+rollout_batch_size: 8
+n_samples_per_prompt: 8
+rollout_max_response_len: 2048
+rollout_temperature: 1
+global_batch_size: 64
+balance_data: true
+rollout_num_gpus_per_engine: 4
+rollout_max_context_len: 131072
+sglang_context_length: 131072
+sglang_chunked_prefill_size: 12288
+sglang_router_port: 30000
+sglang_tool_call_parser: qwen3_coder
+sglang_reasoning_parser: qwen3
+sglang_mem_fraction_static: 0.85
+update_weights_interval: 1
+# intentionally inert on the arena NATS path (no consumer reads it for a custom
+# rollout function); kept for config parity with the AGISlime original
+partial_rollout: true
+gym_autoscale: false
+skip_eval_before_train: true
+distributed_timeout_minutes: 60
+tensor_model_parallel_size: 4
+sequence_parallel: true
+pipeline_model_parallel_size: 2
+context_parallel_size: 2
+expert_model_parallel_size: 1
+expert_tensor_parallel_size: 1
+recompute_granularity: full
+recompute_method: uniform
+recompute_num_layers: 1
+use_dynamic_batch_size: true
+max_tokens_per_gpu: 65536
+attention_dropout: 0.0
+hidden_dropout: 0.0
+accumulate_allreduce_grads_in_fp32: true
+attention_softmax_in_fp32: true
+attention_backend: flash
+advantage_estimator: grpo
+use_rollout_logprobs: true
+keep_old_actor: false
+use_kl_loss: true
+kl_coef: 0.0
+kl_loss_type: low_var_kl
+entropy_coef: 0.0
+eps_clip: 0.4
+eps_clip_high: 0.4
+eps_clip_c: 2.0
+optimizer: adam
+lr: 2e-6
+lr_decay_style: constant
+weight_decay: 0.1
+adam_beta1: 0.9
+adam_beta2: 0.98
+use_distributed_optimizer: true
+use_tensorboard: false
+use_wandb: false
+use_distributed_post: true
+enable_trajectory_tracing: false
+arena_sample_mode: full_trajectory
+log_passrate: true

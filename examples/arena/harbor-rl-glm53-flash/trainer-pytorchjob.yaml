@@ -97,6 +97,19 @@ spec:
                     - i-09913cb3a1edcc270
                     - i-08c9e00e2a0af830a
                     - i-04c8462a637bbf738
+                    # 2026-09-03 08:3x: kueue TAS pinned r3 pods to these (scheduler: Insufficient gpu/efa/memory)
+                    - i-0b682ed36335c009e
+                    - i-013fc7dd2474d906f
+                    - i-00d391ae8df01e11d
+                    - i-08b45d327ad2ebcd3
+                    - i-0776ac9db7053a6cf
+                    - i-0ffd7cdf3c949b891
+                    - i-0e2240450e1459839
+                    - i-0575f86280c002502
+                    - i-08cda37116a8f5b85
+                    - i-0e7902b4e3d9f2d0c
+                    - i-04f9a44ac50ae500d
+                    - i-0e64a05a2287ddd6f
           tolerations:
           - effect: NoSchedule
             key: nvidia.com/gpu
@@ -127,11 +140,12 @@ spec:
             args:
             - |
               mkdir -p /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME} && ulimit -n 1000000
-              # Persistent per-replica JIT caches (worker-N pod names are stable across
-              # relaunches of the same job name): the default in-pod cache dies with the
-              # pod and tilelang re-JITs the sparse-MLA bwd per distinct padded length.
-              # Per-replica dirs avoid cross-node concurrent writers on EFS.
-              export KCACHE=/mnt/scratch-s3files-rw/${USER}/kernel_cache/${EXPERIMENT_NAME}/worker-${REPLICA_IDX}
+              # Kernel JIT caches on LOCAL disk only. r2 (2026-09-03) put them on EFS for
+              # persistence and train step 0 died in Triton's autotuner with
+              # OSError [Errno 116] Stale file handle: 8 ranks on one node race on the
+              # same NFS cache files. Recompiles per pod start are the accepted cost
+              # (data_pad_size_multiplier bounds the TileLang bwd recompile count).
+              export KCACHE=/tmp/kernel_cache
               export TILELANG_CACHE_DIR=${KCACHE}/tilelang TRITON_CACHE_DIR=${KCACHE}/triton TORCHINDUCTOR_CACHE_DIR=${KCACHE}/inductor
               mkdir -p ${TILELANG_CACHE_DIR} ${TRITON_CACHE_DIR} ${TORCHINDUCTOR_CACHE_DIR}
               # In-pod host-memory sampler (60 s) -> memsample-<idx>.log: node meminfo,
@@ -226,10 +240,9 @@ spec:
               value: '1'
             - name: TORCHINDUCTOR_COMPILE_THREADS
               value: '1'
-            # TRITON_CACHE_DIR / TORCHINDUCTOR_CACHE_DIR (+ TILELANG_CACHE_DIR) are
-            # exported per replica in the container command above (persistent EFS
-            # path under kernel_cache/<EXPERIMENT_NAME>/worker-<idx>); env entries
-            # here cannot reference REPLICA_IDX (defined later in this list).
+            # TRITON_CACHE_DIR / TORCHINDUCTOR_CACHE_DIR / TILELANG_CACHE_DIR are
+            # exported in the container command above (local /tmp/kernel_cache; an
+            # EFS-backed cache caused Triton ESTALE crashes in r2).
             # ---- cluster shape: 12 replicas, 8 actor nodes ----
             - name: REPLICA
               value: '12'
@@ -238,12 +251,12 @@ spec:
             # run identity (ADR-0004): EXPERIMENT_NAME drives the checkpoint dir
             # and the wandb group; bump BOTH for a fresh run — an existing
             # checkpoint dir resumes silently.
-            # r2: run 2 (r1) saved no checkpoint (save_interval 20, died in step 0->1),
+            # r3: r1 and r2 saved no checkpoint (save_interval 20, both died in step 0),
             # so nothing resumes; a fresh name keeps its W&B group and ckpt dir separate.
             - name: EXPERIMENT_NAME
-              value: rl-glm53f-gbash-r2
+              value: rl-glm53f-gbash-r3
             - name: PROJECT_NAME
-              value: rl-glm53f-gbash-r2
+              value: rl-glm53f-gbash-r3
             - name: CFG_NAME
               value: /config/training/miles-config.yaml
             - name: JOBNAME

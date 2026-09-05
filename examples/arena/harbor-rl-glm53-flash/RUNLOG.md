@@ -1357,8 +1357,8 @@ the rename and the `kueue.x-k8s.io/priority-class: inference` label.
   `ARENA_MAX_TOKENS=32768` new tokens; these end the episode as `truncated`,
   not `failed`.
 
-**Pending (recorded in the summary entry's placeholder row, filled by a
-follow-up docs commit):** healthy-step count (the commit gate is >= 5, user
+**Read-out recorded 2026-09-05 06:21 PT in the "r7 read-out at 5 steps" section at
+the end of this file.** Pending at launch: healthy-step count (the commit gate is >= 5, user
 instruction 2026-09-05 02:45 PT); `kept_timeout` share at effort high; whether
 1800 s removed r6's 7-14% `failed` samples; the context-ceiling /
 `context_error` observation against the 131072 `rollout_max_context_len` /
@@ -1388,7 +1388,7 @@ procedure, `nats.yaml` header "27B RL run 2", the `miles-config.yaml`
 The README preflight claim that the tree carries the GLM merge is true on this
 branch from the PR #2786 merge commit onward.
 
-## 2026-09-05 — State of the world at the end of the commit series: r1..r7 summary, open questions, r7 placeholder
+## 2026-09-05 — State of the world at the end of the commit series: r1..r7 summary, open questions, r7 read-out
 
 Closing entry; r7 is running. The two tables collapse the entries above into
 one row per launch so a reader can find the entry that carries the detail.
@@ -1430,7 +1430,7 @@ saved), so those rows rely on the run-time record.
 | r4 | 09-03 05:50 | 09-03 20:29, torn down for r5 after 13 steps (last completed step perf 12, reward 0.19; `trainer-0.log` ends 3 min before r5's opens) | `rl-glm53f-gbash-r4` / `rl-glm53f` | 12 | same | d | same | `rl-glm53f-gbash-r4` (run id unrecorded) |
 | r5 | 09-03 20:32 (`trainer-0.log` opens; the offline argv parse of its config was 20:22) | 2026-09-05 00:12, killed by the user at step 40 (41 steps, reward 0.395) to free nodes for r7 | `rl-glm53f-gbash-r5` / `rl-glm53f` | 12 | same | d | `glm53-reasoning-20260903b` (0.22.0) x128 | `rl-glm53f-gbash-r5`, run `43f0vjwx` |
 | r6 | 09-04 01:10 submit, 01:37 admitted; `trainer-0.log` opens 01:21 | **in progress** (still running at 09-05 05:15 PT: step 33 done, reward 0.469) | `rl-glm53f-gbash-r6` / `rl-glm53f6` | 24 = 8 actor + 16 engine | rbs 64 x n 8 = GBS 512, num_rollout 130 | d | `glm53-reasoning-20260904a` x160 | `rl-glm53f-gbash-r6`, run `gweq9pme` |
-| r7 | 09-05 00:13 submit, 00:14 admitted, engines up + first update_weights 00:30. Three earlier Suspended submissions vanished without events or audit: 09-04 19:03 -> gone by 23:13, 23:14 -> ~23:27, 23:41 -> ~00:10 | **in progress** | `rl-glm53f-gbash-r7` / `rl-glm53f7` | 24 | same as r6 | d | `glm53-sgltimeout-20260904b` x160 | `rl-glm53f-gbash-r7` (run id unrecorded) |
+| r7 | 09-05 00:13 submit, 00:14 admitted, engines up + first update_weights 00:30. Three earlier Suspended submissions vanished without events or audit: 09-04 19:03 -> gone by 23:13, 23:14 -> ~23:27, 23:41 -> ~00:10 | **in progress**; 5 healthy steps done by 09-05 06:21 PT (read-out below) | `rl-glm53f-gbash-r7` / `rl-glm53f7` | 24 | same as r6 | d | `glm53-sgltimeout-20260904b` x160 | `rl-glm53f-gbash-r7` (run id unrecorded) |
 
 ### Runs: levers and outcome
 
@@ -1443,25 +1443,75 @@ saved), so those rows rely on the run-time record.
 | r4 | image d; `optimizer_cpu_offload` + `overlap_cpu_optimizer_d2h_h2d` + `use_precision_aware_optimizer`; `--arena-keep-timeout-trajectories` present but OFF | rollout 0 4890 s, reward 0.164, `Removal reasons: timeout=230/256 (kept_timeout=0)`; step 0 4273 s (cold JIT), loss -0.029; rollout 1 3734 s, reward 0.258, timeout=221; step 1 584 s with NO OOM (loss -0.091, ppo_kl 0.0016); offloaded Adam state 438-615 GiB pod-anon per actor node (max 34% of 1800Gi); GPU 36-40 GB/rank after step 0 (r3: ~109); steady state 12 rollouts + 12 steps in 13.7 h, warm step 373-449 s, rollouts 3478-4094 s (rollout-bound ~9x), reward 0.16-0.27 with no trend, timeouts removing 222-245/256 (18-35 trainable, ess_ratio 0.07-0.13), >= 22 reward-1 trajectories discarded per rollout; timeout mechanism measured: AgentTimeoutError at task.toml `timeout_sec` + 30-80 s | r4 optimizer offload |
 | r5 | `arena_keep_timeout_trajectories` true; gym image 20260903b: `ARENA_REASONING_EFFORT=low`, `<|user|><|user|>` splice fix, `--mode rollout --agent arena-terminus-2` | healthy through step 40: ~50 min/rollout, ~10 min/step, reward 0.30-0.40 (first 4 steps: rollouts 3874/3197/2592/2718 s, reward 0.273/0.328/0.367/0.398, ess 0.97, ppo_kl 0.011); low effort did NOT cut timeouts: kept_timeout 183-221/256, truncated 0.71-0.86 (engines KV-bound at ~100 running requests each; actors ~21% duty); final step 40 reward 0.39 | r5-r7 gym and scale-out |
 | r6 | 16 engines; rbs 64 / GBS 512 / num_rollout 130 (in-flight cap 128 groups, ~64 requests per engine); 160 gym workers; gym image 20260904a with `ARENA_AGENT_TIMEOUT_MULTIPLIER=2` and `ARENA_NATS_ACK_WAIT` 6000; fresh-node ECR pre-seed (alpine probe, gost egress sidecar, tokenizer-mount guard) in the gym start script | kueue priority `inference`=1000 found to be the cluster maximum; fresh-node Docker-Hub trap cost ~1000 dropped groups before the pre-seed fix; rollout 0 kept_timeout 228/512 (45%) vs r5's 72-86%, truncated 0.45, reward 0.40, mean response 33k tokens (2x r5), episode total ~58k; step 0 6749 s (JIT), step 1 1380 s at 140 TFLOPs, so training is faster than the ~50 min rollouts; residual ~8% of samples per rollout (33-74/512) `failed` on the hardcoded 600 s httpx read timeout; still running at 2026-09-05 05:15 PT (step 33 done, reward 0.469 on 512 samples) | r5-r7 gym and scale-out |
-| r7 | gym image 20260904b with `ARENA_SGLANG_REQUEST_TIMEOUT_SEC=1800`; `ARENA_REASONING_EFFORT=high`; kueue `priority-class: inference` label on the workload | admitted 00:14 PT, engines up and first update_weights 00:30 PT; steps 0-3 done by 05:15 PT: reward 0.33 / 0.39 / 0.39 / 0.40, truncated 0.69 / 0.58 / 0.64, `failed` 15 / 43 / 16 of 512 (r6: 33-74), `kept_timeout` 352 / 296 / 326 of 512, rollouts 5944 then 3302 s, train step 0 6784 s (cold JIT) then 2054 s; zero httpx timeouts in the gym logs (the 1800 s lever works); ~3-14% of calls hit `Context length exceeded` at ~99-101k prompt tokens (the conversation may reach `ARENA_ROLLOUT_CONTEXT_LIMIT` 131072 while each call asks for `ARENA_MAX_TOKENS` 32768 more) and end the episode `truncated`, not `failed`; startup burn of the first 128-group in-flight window published before the engines were up (~4% of a task-list pass, same in r6); SGLang startup tracebacks (`cpu_ids int('\n')`, `sock.connect`) are benign; **conclusion pending: see the placeholder below** | r5-r7 gym and scale-out; follow-up entry |
+| r7 | gym image 20260904b with `ARENA_SGLANG_REQUEST_TIMEOUT_SEC=1800`; `ARENA_REASONING_EFFORT=high`; kueue `priority-class: inference` label on the workload | admitted 00:14 PT, engines up and first update_weights 00:30 PT; steps 0-3 done by 05:15 PT: reward 0.33 / 0.39 / 0.39 / 0.40, truncated 0.69 / 0.58 / 0.64, `failed` 15 / 43 / 16 of 512 (r6: 33-74), `kept_timeout` 352 / 296 / 326 of 512, rollouts 5944 then 3302 s, train step 0 6784 s (cold JIT) then 2054 s; zero httpx timeouts in the gym logs (the 1800 s lever works); ~3-14% of calls hit `Context length exceeded` at ~99-101k prompt tokens (the conversation may reach `ARENA_ROLLOUT_CONTEXT_LIMIT` 131072 while each call asks for `ARENA_MAX_TOKENS` 32768 more) and end the episode `truncated`, not `failed`; startup burn of the first 128-group in-flight window published before the engines were up (~4% of a task-list pass, same in r6); SGLang startup tracebacks (`cpu_ids int('\n')`, `sock.connect`) are benign; **read-out at 5 steps: see the section below** | r5-r7 gym and scale-out; r7 read-out |
 
-### r7 conclusion: placeholder (fill in a follow-up docs commit)
+### r7 read-out at 5 steps (2026-09-05 06:21 PT)
 
-> **r7 at `ARENA_REASONING_EFFORT=high`: context-ceiling / `context_error` observation -- TO RECORD**
-> from `/mnt/scratch-s3files-rw/guparpit/logs/rl-glm53f-gbash-r7/trainer-0.log`: the per-rollout
-> `Removal reasons: timeout=.., context_error=.., length=.. (kept_timeout=N)` line, i.e. the
-> `context_error` count against the kept_timeout share, under the ceilings in force
-> (`rollout_max_context_len` = `sglang_context_length` = `ARENA_ROLLOUT_CONTEXT_LIMIT` = 131072;
-> `ARENA_MAX_TOKENS` = `rollout_max_response_len` = 32768). It is in no on-disk source yet;
-> ask the user before drafting.
+Gate cleared: r7 completed training steps 0-4 (perf 0..4 in
+`/mnt/scratch-s3files-rw/guparpit/logs/rl-glm53f-gbash-r7/trainer-0.log`) with all
+24 trainer pods and 160 gym pods Running throughout, no FT, OOM or engine event.
+Both r6 and r7 keep running side by side after this entry (no stop without the
+user's go); their end states go into a later entry. W&B run id for r7 still not
+read back (group `rl-glm53f-gbash-r7`).
 
-Also to record with it: (1) the gate: did r7 complete >= 5 healthy training
-steps (user instruction, 2026-09-05 02:45 PT)?; (2) kept_timeout share and
-truncated_ratio at effort `high` against r6's 45% / 0.45 at `low`; (3) whether
-the 1800 s request timeout removed r6's ~8% `failed` samples
-(`httpx.ReadTimeout`, surfaced as "Unknown Error in LLM interaction: " with an
-empty message); (4) reward trajectory and rollout / step times at 24 nodes;
-(5) the W&B run id; (6) end state and who stopped it.
+**Same-step comparison, steps 0-4** (512 samples per step; r6 = effort `low`,
+600 s call timeout; r7 = effort `high`, 1800 s call timeout; otherwise identical
+24-node shape).
+
+| step | reward r6 / r7 | truncated r6 / r7 | `failed` r6 / r7 | `kept_timeout` r6 / r7 | mean response tokens r6 / r7 | train step s r6 / r7 |
+|---|---|---|---|---|---|---|
+| 0 | 0.396 / 0.330 | 0.445 / 0.688 | 41 / 15 | 228 / 352 | 32.6k / 45.5k | 6749 / 6784 (cold TileLang JIT, both) |
+| 1 | 0.381 / 0.395 | 0.475 / 0.580 | 42 / 43 | 243 / 296 | 35.2k / 44.9k | 1380 / 2054 |
+| 2 | 0.412 / 0.391 | 0.502 / 0.639 | 33 / 16 | 257 / 326 | 33.9k / 48.3k | — / 1689 |
+| 3 | 0.354 / 0.398 | 0.545 / 0.736 | 37 / 13 | 279 / 376 | 33.7k / 48.8k | — / 1716 |
+| 4 | 0.377 / 0.357 | 0.475 / 0.676 | 55 / 21 | 243 / 346 | 34.5k / 48.7k | — / (running) |
+| mean 0-4 | 0.384 / 0.374 | 0.49 / 0.66 | 42 / 22 | 250 (49%) / 339 (66%) | 34.0k / 47.2k | |
+
+r6 for reference at steps 28-34 (its steady state while r7 ran): reward
+0.41-0.47, truncated 0.34-0.40, `failed` 81-118, `kept_timeout` 173-206, train
+step 1240-1560 s, rollout 2100-2950 s, train/ess_ratio 0.74-0.81. r7 rollouts:
+5944 s (cold start), 3302, 1893 (overlapped), 4068 s; train/ess_ratio 0.90-0.96.
+
+**Findings**
+
+1. **The 1800 s SGLang call timeout works.** Zero `httpx.ReadTimeout` ("Unknown
+   Error in LLM interaction: " with an empty message) in the sampled gym logs
+   since the engines came up. `failed` fell to 13-43 of 512 against r6's 33-55
+   at the same steps and 81-118 later; what remains are environment failures
+   (a tmux `send-keys` error, a handful of `AgentTimeoutError`s), not LLM calls.
+   This is the change to keep.
+2. **Effort `high` buys nothing at these budgets.** Reward over steps 0-4 is
+   0.374 vs 0.384 — a wash within step-to-step noise — while responses are 40%
+   longer (44.9-48.8k vs 32.6-35.2k tokens), truncation is 0.58-0.74 vs
+   0.45-0.54, the timed-out share of kept samples is 58-73% vs 45-54%, and the
+   warm train step is 1690-2054 s vs 1380 s (1.2-1.5x). The extra thinking is
+   spent running into the wall clock and the context ceiling, not into
+   verified solutions.
+3. **Context ceiling at `high`.** `Context length exceeded` at 99-101k prompt
+   tokens in the gym logs, rising over the run (per 40 sampled pods per hour:
+   42 at 01:20 PT, 34 at 02:20, 22 at 05:02, 58 at 06:21). Mechanism: the
+   conversation may grow to `ARENA_ROLLOUT_CONTEXT_LIMIT` = 131072 while every
+   call still asks for `ARENA_MAX_TOKENS` = 32768 new tokens, so any prompt past
+   98304 tokens overshoots `sglang_context_length`. The gym ends such an
+   episode as `truncated`, not `failed`, so it never appears in the trainer's
+   `Removal reasons:` line (no `context_error` key was ever logged in r7); it
+   is folded into `truncated_ratio` and into the kept-timeout share. Fix for
+   the next run, gym-side: set `ARENA_ROLLOUT_CONTEXT_LIMIT` to
+   131072 - 32768 = 98304, or make the worker cap `max_tokens` to the remaining
+   context (AREnATasks change).
+4. Cadence at 24 nodes with effort `high`: rollouts of 32-68 min overlap the
+   28-34 min train steps, so r7 lands a step every ~35-40 min — about r6's
+   wall clock per step, for ~1.4x the tokens.
+
+**Decision -> r8 (proposal, not launched).** Keep `ARENA_SGLANG_REQUEST_TIMEOUT_SEC=1800`
+and the r6 shape; return `ARENA_REASONING_EFFORT` to `low`; close the
+context-ceiling gap (`ARENA_ROLLOUT_CONTEXT_LIMIT` 98304 or a gym-side
+`max_tokens` cap). Rejected: staying at `high` with a larger agent-timeout
+multiplier (needs `ARENA_NATS_ACK_WAIT` raised in lockstep and makes each step
+slower still, for no reward signal so far); dropping `ARENA_MAX_TOKENS` below
+32768 (r1 showed GLM's reasoning truncating at 2048-token turns). Whether r7
+improves past step 4 is left to its continued run; this read-out is the
+5-step gate, not the run's end.
 
 ### Open questions and unverified claims
 
@@ -1480,5 +1530,6 @@ empty message); (4) reward trajectory and rollout / step times at 24 nodes;
 
 ### Where the story continues
 
-- The r7 conclusion is appended here in a follow-up docs commit that fills the placeholder above.
+- The r7 read-out at 5 steps is recorded above (2026-09-05 06:21 PT); r6 and r7 keep
+  running side by side and their end states go into a later entry.
 - The gym-side ledger for the same runs (image lineage per run, NATS-restart and consumer-reset recipes, the fresh-node Docker-Hub trap, the 0.21 -> 0.22 CLI contract and envelope-status drift) lives in AREnATasks `eval-runs/2026-09-02/glm53-flash-snorkel-harbor-rl.md` and ADR-0047; trainer-side RCAs stay in this file.

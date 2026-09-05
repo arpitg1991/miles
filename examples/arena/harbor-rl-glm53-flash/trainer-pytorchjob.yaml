@@ -109,7 +109,7 @@ spec:
             # Arena GLM build: FROM the glm53next upstream mirror with this
             # integration tree replacing /root/miles (examples/arena/Dockerfile,
             # which also bakes the EFA userspace + aws-ofi-nccl layer).
-            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902a
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902b
             imagePullPolicy: Always
             command: ["bash", "-c"]
             args:

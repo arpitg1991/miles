@@ -638,3 +638,99 @@ unset). Records: `arena-port-artifacts/reports/impl-launcher.md` (implementation
 - test_rollout_metrics.py (mtime 02:44 PT): the two extraction docstrings re-anchored to the fixed-up nats_rollout - the plugin metric is now `rollout/truncated_ratio_prefilter` (verify-redundancy double-log finding) and the cited ranges moved from ~1478-1485 / ~1672-1677 to ~1498-1505 / ~1694-1699. Logic unchanged.
 
 **Coverage gap carried forward.** verify-natsGrpo [minor]: none of the 102 test_nats_arena tests assert the group_index / index / rollout_id stamping in `_process_group` (only publish-side task metadata); closed by test_group_identity.py in the next milestone. Port-added CPU tests after this commit: 145 here + 3 (test_loss_mask_qwen3_5, already landed) = 148; 153 once test_group_identity lands.
+
+## 2026-09-01 ~01:50-02:59 PT — Adversarial verification wave and fix-up pass (153 CPU tests green)
+
+Commit: `test(arena): guard group identity; record verification fix-ups`.
+With every module and the 145 ported tests in place (01:51 PT), six
+verification reports were run in parallel against the port, each
+re-deriving the porters' claims by execution in the CPU venv
+(`/tmp/miles-venv`, torch 2.11.0+cpu, PYTHONPATH = repo + sglang + Megatron-LM)
+rather than trusting the impl reports: `verify-natsGrpo`,
+`verify-driverLauncher`, `verify-dataEval`, `verify-e2e`, `verify-redundancy`,
+`verify-regression`. Reports live in `arena-port-artifacts/reports/`.
+
+### What was executed
+
+- **verify-natsGrpo**: normalized diff of the hot path (267 lines, every hunk
+  sanctioned), wire constants checked live against `amzn_arena_contract`,
+  group-identity semantics executed through the real conversion path,
+  counterfactual `rollout_id = gid` reproduced (ValueError at step 1), the
+  vendored `dp_schedule` assert shown to fire at 8 groups < GBS 64. Details in
+  ADR-0003 "Verification".
+- **verify-driverLauncher**: driver is pure insertion over `train_async.py`
+  (0 deleted lines), hook bodies identical to the originals; HF export is
+  flushed before the eval trigger; YAML->argv token-identical to
+  `hydra_converter` on both AGISlime YAMLs (137 vs 121 and 144 vs 128 tokens,
+  empty multiset diff after the launcher-consumed keys); the `--prompt-data`
+  JSON survives `bash -c` -> ray `shlex.join` -> driver byte-for-byte; the
+  ARGV_PARITY table recomputed independently (106 vs 97); full argv passes
+  miles' strict argparse; the std-normalization test fix proven (original test
+  fails against original code with 0.8660238981).
+- **verify-dataEval**: 6 files byte-identical to AGISlime, 21-module import
+  sweep, `ArenaDataSourceWithBuffer` save/load round-trip, sidecar interop
+  both directions (identical sha256), `_MultiGymDatasetView` through the real
+  `RolloutManager.get_num_rollout_per_epoch`.
+- **verify-e2e** (02:15 PT): real NATS 2.14.6 JetStream (`nats:2 -js` in
+  docker) + a wire-contract-faithful fake financeagent gym worker (durable
+  `gym-worker-financeagent`, ack_wait 4500) + an in-process driver replicating
+  `RolloutManager` wiring; smoke args scaled to rollout_batch_size 2 /
+  n_samples 4 / GBS 8 / num_rollout 2. 27 gzip tasks published, 2 rollouts x 2
+  groups x 4 returned; salvage (truncated envelope, synthetic pad), stale-session
+  poison (reward 9.9) dropped, garbage payload acked without crash, GRPO rows
+  exact vs hand math, dedup/resume state round-trip. **49/50 checks**; the one
+  FAIL (`results all acked by trainer: ack_pending=4 delivered=28 stream_msgs=29`)
+  is a teardown artifact of the blocking `output_queue.put` with the queue full
+  at 20 groups, identical in AGISlime. Harness kept at
+  `arena-port-artifacts/e2e-harness/` (driver.py, fake_gym_worker.py, logs).
+- **verify-redundancy**: audit of every plugin module against miles-native
+  machinery (keep / already-handled / delete verdicts; findings below).
+- **verify-regression**: tests/fast/plugins/arena 145 passed 0 skipped;
+  tests/fast/utils 3213 passed / 16 skipped (= baseline); tests/fast/rollout +
+  tests/fast/ray 917 passed / 19 skipped (7m43s); launch_scripts 462 passed /
+  6 failed / 40 errors, all pre-existing `/root` PermissionErrors in non-arena
+  launchers, all 4 arena snapshot cases pass; stage-a-cpu `--list-only` 297
+  tests incl. the arena files; black clean; ruff 10 findings, all present in
+  the AGISlime originals (the port removed 3); 30-module import sweep under
+  both `MILES_USE_LEGACY_ROLLOUT_V1` settings, 0 failures.
+
+### Findings and what was done (fix-up pass 02:34-02:58 PT)
+
+| Report / severity | Finding | Fix (PT) |
+| --- | --- | --- |
+| regression / major | 4 test files used the banned semantic-default `register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])`; tests/ci/test 1 failed / 677 passed | call + import removed from test_argo_eval_trigger / test_plugins / test_weight_versions (02:34) and test_rollout_metrics (02:44); implicit registration |
+| driverLauncher / major | harbor-rl-27b shipped no `sglang-svc.yaml` and the README pointed at the non-27B variant (Service `rl-smoke-sglang` selecting `rl-smoke-trainer` -> zero endpoints) | `sglang-svc.yaml` copied verbatim (`rl-smoke27-sglang` -> `rl-smoke27-trainer`, 02:34); README repointed (02:35) |
+| redundancy / major | `rollout/truncated_ratio` logged twice per step (plugin pre-filter vs miles-native post-filter, same step) | plugin key renamed `rollout/truncated_ratio_prefilter` |
+| redundancy / major | eval drain's `commit=False` piggyback loses intermediate eval points: the miles driver makes no other wandb commits | `drain()` commits every `step_*.json` (`commit=True`, 02:42) |
+| redundancy / minor | sidecar `wandb_run_id` restore was dead: `init_wandb_primary` ignored and overwrote `args.wandb_run_id` | 6-line core change, `id` + `resume="allow"` when pre-set (02:36); recorded in ADR-0005 |
+| redundancy / minor | `wandb_extensions.register_arena_wandb_metrics` 100% redundant with `_init_wandb_common` (wandb glob is a prefix match crossing `/`) | `wandb_extensions.py` deleted, `_register_wandb_metrics` hook dropped (02:44) |
+| redundancy / minor | `S3_ARTIFACT_BASE` made the launcher emit an `s3://` `--save-hf`, which `save_hf_model` mangles into a pod-local `s3:/...` dir | launcher always emits the local `<ckpt_dir>/hf/rollout_{rollout_id}` form; ARGV_PARITY.md updated (02:38) |
+| driverLauncher / minor | Dockerfile omitted boto3 (declared in the setup.py arena extra, imported by s3_artifact / eval paths) | boto3 added to the pip line |
+| driverLauncher / note | `remove_trainer_alive` never called (also never called in AGISlime) | `_remove_trainer_alive` hook before `finish_tracking` (02:44) |
+| driverLauncher / note | `USE_MLFLOW_AMZN=true` would kill the trainer at argparse (flags registered nowhere) | launcher fails fast with a clear message instead of appending them |
+| e2e / minor | fast+slow-path group under use_rollout_logprobs leaves a None row in `rollout_log_probs` (TypeError at tensorization) | slow path zero-fills to response_length, ABORTED + remove_sample (ADR-0004); pinned by test_group_identity |
+| e2e / minor | blocking `output_queue.put` stalls the NATS event loop when the queue is full | no change: identical in AGISlime; benign in production (trainer drains every step, ack_wait 3600 / max_deliver 3 redelivers) |
+| dataEval / minor | eval K8s templates are not in the miles tree; `_find_template_path()` raised outside the guard | call moved inside the try (log-and-skip, 02:37); `AGISLIME_DIR` comment in trainer-pytorchjob.yaml states the `MILES_ARENA_DIR` requirement |
+| dataEval / note | data source ignored `--chat-template-path` | passthrough added in `data_source.py` (02:37) |
+| natsGrpo / minor | group-identity stamping had zero regression coverage | `tests/fast/plugins/arena/test_group_identity.py`, 5 tests (02:58) — this commit |
+| natsGrpo / note | loss weighting is per-trajectory (miles) not per-group (AGISlime intent) | needs job-owner sign-off; README "Known limitations", ADR-0004 |
+| natsGrpo / note | `slime-trainer` durable is not pinned by the AREnATasks parity test (impl report overstated) | kept unchanged: it preserves JetStream consumer state on live deployments |
+| natsGrpo / note, dataEval / note, e2e / note | `--gym-autoscale-auto-tune` cannot be switched off; buffer not persisted across restarts; resume dedup guard mostly vacuous (publisher runs epochs ahead) | all parity with AGISlime; documented in README "Known limitations" (02:37) |
+| redundancy / note | `partial_rollout: true` is inert on the arena path | comment added to the smoke YAML (02:37) |
+| redundancy / notes | drain should be a wandb shared-mode secondary writer; Argo trigger should ride miles' `CheckpointEvalFn` seam; `generate_rollout` should be a class-based RolloutFn to receive the authoritative weight_version | recorded as follow-ups in README |
+
+Deliberation: fixes were applied only where the port itself could act
+(plugin, launcher, tests, one small core seam); behaviour inherited from
+AGISlime that the port reproduces faithfully was documented in the README
+rather than changed.
+
+### Result
+
+- 145 ported + 5 group-identity + 3 qwen3_5 loss-mask = **153 CPU tests green**
+  (`tests/fast/plugins/arena` + `tests/fast/utils/test_loss_mask_qwen3_5.py`),
+  0 skipped; the 4 register_cpu_ci offenders listed by the tests/ci/test policy
+  guard are removed.
+- Reports (20 md, incl. the 6 verify-*) and the runnable e2e harness copied to
+  `/workplace/guparpit/miles/arena-port-artifacts/` at 02:59 PT.
+- Port declared CPU-verified for the harbor-rl-27b shape; GPU validation
+  follows with the example directories.

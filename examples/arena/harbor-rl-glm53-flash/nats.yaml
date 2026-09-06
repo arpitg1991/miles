@@ -72,7 +72,10 @@ spec:
       volumes:
       - name: jetstream
         emptyDir:
-          sizeLimit: 10Gi
+          # Headroom above the 6 GiB results-stream max_bytes bound (see
+          # stream_config.DEFAULT_RESULTS_MAX_BYTES). The stream bound is the
+          # real guard against a volume-full eviction; this is defense in depth.
+          sizeLimit: 20Gi
       - name: nats-config
         configMap:
           name: rl-glm53f8-nats-config

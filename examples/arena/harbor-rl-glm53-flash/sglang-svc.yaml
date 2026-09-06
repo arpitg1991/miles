@@ -3,14 +3,14 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: rl-glm53f7-sglang
+  name: rl-glm53f8-sglang
   namespace: arena-tasks
   labels:
-    app: rl-glm53f7
+    app: rl-glm53f8
 spec:
   type: ClusterIP
   selector:
-    training.kubeflow.org/job-name: rl-glm53f7-trainer
+    training.kubeflow.org/job-name: rl-glm53f8-trainer
     training.kubeflow.org/replica-index: "0"
   ports:
   - name: http

@@ -37,8 +37,8 @@ user: guparpit
 cluster: bom
 # EXPERIMENT_NAME in the PyTorchJob pod env drives CKPT_DIR; these names are
 # the config-side record. NEVER reuse a finished run's name (silent resume).
-experiment_name: rl-glm53f-gbash-r7
-project_name: rl-glm53f-gbash-r7
+experiment_name: rl-glm53f-gbash-r8
+project_name: rl-glm53f-gbash-r8
 agislime_dir: /root/miles
 # r6: 24 replicas = 8 actor nodes + 16 engine nodes (r1-r5: 12 = 8 + 4) (same convention as the parent:
 # replicas - num_trainers = rollout nodes; the launcher derives
@@ -286,6 +286,12 @@ arena_mask_clipped_final_turn: true
 # samples stay status TRUNCATED (truncated_ratio stays honest) and are
 # reported as kept_timeout=N in 'Removal reasons'.
 arena_keep_timeout_trajectories: true
+# r8 (REQUIRES image miles-glm53-20260905a + gym image glm53-ctxend-20260905a):
+# the gym now ENDS an episode whose next prompt would overflow the engine
+# context (agent_stop_reason=context_error) and still grades it. Keep those
+# samples exactly like kept timeouts: loss_mask untouched, status TRUNCATED
+# (truncated_ratio stays honest), reported as kept_context_error=N.
+arena_keep_context_error_trajectories: true
 log_passrate: false
 wandb_host: https://mega.wandb.agi.amazon.dev
 wandb_project: rl-snorkel27

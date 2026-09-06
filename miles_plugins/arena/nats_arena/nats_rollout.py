@@ -377,8 +377,18 @@ def _result_to_samples_full_trajectory(
             bool(getattr(args, "arena_keep_timeout_trajectories", False))
             and agent_stop_reason == "timeout"
         )
+        # --arena-keep-context-error-trajectories: same shape for
+        # "context_error". The arena Terminus-2 agent ends the episode when
+        # the engine rejects the NEXT turn's prompt as too long; the recorded
+        # turns all ended cleanly, the token stream is the complete episode
+        # up to that point and the verifier still ran. Status stays TRUNCATED.
+        context_salvageable = (
+            bool(getattr(args, "arena_keep_context_error_trajectories", False))
+            and agent_stop_reason == "context_error"
+        )
+        stop_salvageable = timeout_salvageable or context_salvageable
         # True when the agent stop alone makes the sample untrainable.
-        agent_blocks_training = agent_degenerate and not timeout_salvageable
+        agent_blocks_training = agent_degenerate and not stop_salvageable
         status = (
             Sample.Status.TRUNCATED if (any_step_truncated or agent_degenerate)
             else Sample.Status.COMPLETED
@@ -388,6 +398,7 @@ def _result_to_samples_full_trajectory(
         # summary log. Set alongside every ``remove_sample = True`` below.
         removal_reason = None
         kept_timeout = False
+        kept_context_error = False
         s = Sample()
         # --- Fast path: GenerateClient produced real token-level data ---
         # When the gym used ARENA_CLIENT_TYPE=generate, the last step in the
@@ -512,14 +523,17 @@ def _result_to_samples_full_trajectory(
             # with a clipped turn. Slow-path (messages-only) trajectories are
             # out of scope, exactly like the mask-clipped salvage.
             if (
-                timeout_salvageable
+                stop_salvageable
                 and status == Sample.Status.TRUNCATED
                 and not any_step_truncated
                 and not hard_overflow
                 and not bad_logprobs
                 and has_response
             ):
-                kept_timeout = True
+                if timeout_salvageable:
+                    kept_timeout = True
+                else:
+                    kept_context_error = True
                 # #turns == number of 1-runs in the response loss_mask (each
                 # assistant turn is one run, separated by tool/user 0s).
                 n_turns = sum(
@@ -527,15 +541,19 @@ def _result_to_samples_full_trajectory(
                     if m == 1 and (i == 0 or resp_loss_mask[i - 1] == 0)
                 )
                 logger.info(
-                    "Task %s: kept timeout trajectory (%d turns, %d response "
-                    "tokens); agent hit its wall-clock deadline but every "
-                    "turn ended cleanly.",
-                    task_id, n_turns, len(resp_loss_mask),
+                    "Task %s: kept %s trajectory (%d turns, %d response "
+                    "tokens); agent %s but every turn ended cleanly.",
+                    task_id,
+                    "timeout" if kept_timeout else "context_error",
+                    n_turns, len(resp_loss_mask),
+                    "hit its wall-clock deadline" if kept_timeout
+                    else "ran out of context window",
                 )
             if (
                 status == Sample.Status.TRUNCATED
                 and not final_clip_masked
                 and not kept_timeout
+                and not kept_context_error
             ) or bad_logprobs:
                 s.remove_sample = True
                 removal_reason = (
@@ -657,6 +675,8 @@ def _result_to_samples_full_trajectory(
             s.metadata["removal_reason"] = removal_reason
         if kept_timeout:
             s.metadata["kept_timeout"] = True
+        if kept_context_error:
+            s.metadata["kept_context_error"] = True
         # Attach group_metrics to ONLY the first sample of each group —
         # all samples in the group share the same metrics, and stamping
         # them on every sample would inflate the per-batch aggregate.
@@ -666,30 +686,34 @@ def _result_to_samples_full_trajectory(
     return samples
 
 
-def _removal_reason_counts(groups) -> tuple[dict[str, int], int]:
+def _removal_reason_counts(groups) -> tuple[dict[str, int], int, int]:
     """Aggregate why samples were removed from the loss, for the per-rollout
     "Removal reasons" summary log.
 
     Returns ``(reason -> count over samples with remove_sample=True,
-    number of samples kept by --arena-keep-timeout-trajectories)``. Reasons
+    number of samples kept by --arena-keep-timeout-trajectories,
+    number kept by --arena-keep-context-error-trajectories)``. Reasons
     come from ``Sample.metadata["removal_reason"]`` as stamped by
     ``_result_to_samples_full_trajectory``; gym-side pads (``mode="failed"``)
     count as ``failed``; anything else unattributed is ``other``.
     """
     removal_reasons: dict[str, int] = {}
     kept_timeout_count = 0
+    kept_context_error_count = 0
     for g in groups:
         for s in g:
             meta = s.metadata or {}
             if meta.get("kept_timeout"):
                 kept_timeout_count += 1
+            if meta.get("kept_context_error"):
+                kept_context_error_count += 1
             if not getattr(s, "remove_sample", False):
                 continue
             reason = meta.get("removal_reason") or (
                 "failed" if meta.get("mode") == "failed" else "other"
             )
             removal_reasons[reason] = removal_reasons.get(reason, 0) + 1
-    return removal_reasons, kept_timeout_count
+    return removal_reasons, kept_timeout_count, kept_context_error_count
 
 
 # ---------------------------------------------------------------------------
@@ -1665,14 +1689,17 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     # mode="failed". kept_timeout counts the (non-removed) samples salvaged
     # by --arena-keep-timeout-trajectories; timeout=N under the flag then
     # means "timeout AND another defect" (see precedence note there).
-    removal_reasons, kept_timeout_count = _removal_reason_counts(data)
+    removal_reasons, kept_timeout_count, kept_context_error_count = (
+        _removal_reason_counts(data)
+    )
     logger.info(
-        "Removal reasons: %s (kept_timeout=%d)",
+        "Removal reasons: %s (kept_timeout=%d, kept_context_error=%d)",
         ", ".join(
             f"{k}={v}"
             for k, v in sorted(removal_reasons.items(), key=lambda kv: (-kv[1], kv[0]))
         ) or "none",
         kept_timeout_count,
+        kept_context_error_count,
     )
 
     # ---- reward-collapse telemetry ----------------------------------------
@@ -1977,6 +2004,18 @@ def _add_arena_arguments(parser):
         "still removed (a clipped final turn can be salvaged by "
         "--arena-mask-clipped-final-turn). Default: remove them "
         "(the r5-lineage default).",
+    )
+    group.add_argument(
+        "--arena-keep-context-error-trajectories",
+        action="store_true",
+        default=False,
+        help="Keep token-level (GenerateClient) trajectories whose agent loop "
+        "stopped with agent_stop_reason=context_error (the arena Terminus-2 "
+        "agent ended the episode because the next turn's prompt exceeded the "
+        "engine context window) as training samples when that is the only "
+        "defect: loss_mask untouched, remove_sample stays False, status stays "
+        "TRUNCATED. Same precedence rules as "
+        "--arena-keep-timeout-trajectories. Default: remove them.",
     )
     group.add_argument("--gym-autoscale", action="store_true", default=False)
     group.add_argument(

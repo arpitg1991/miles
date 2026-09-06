@@ -1,4 +1,4 @@
-# rl-glm53f7 gym workers: run5-proven smoke asset renamed (rl-milesgb1 -> rl-glm53f7),
+# rl-glm53f8 gym workers: run5-proven smoke asset renamed (rl-milesgb1 -> rl-glm53f8),
 # replicas 8 -> 128 (r5 fleet size for rbs 32), ARENA_MODEL_PATH -> GLM-5.3-Flash-BF16
 # on fast scratch (workers tokenize against the policy model).
 # Deltas vs run 1: 96 replicas (up from 64) — run 2 enables the dynamic
@@ -23,22 +23,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: rl-glm53f7-gym-sgb
+  name: rl-glm53f8-gym-sgb
   namespace: arena-tasks
   labels:
-    app: rl-glm53f7-gym-worker
+    app: rl-glm53f8-gym-worker
     arena.gym: snorkel-general-bash-harbor
 spec:
   replicas: 160  # r6: publisher in-flight cap is 2 x rollout_batch_size = 128 groups; +slack
   selector:
     matchLabels:
-      app: rl-glm53f7-gym-worker
+      app: rl-glm53f8-gym-worker
   template:
     metadata:
       annotations:
         karpenter.sh/do-not-disrupt: "true"
       labels:
-        app: rl-glm53f7-gym-worker
+        app: rl-glm53f8-gym-worker
         arena.gym: snorkel-general-bash-harbor
     spec:
       serviceAccountName: arena-tasks-runner
@@ -82,7 +82,14 @@ spec:
         # r6 (2026-09-04): rebased on AREnATasks mainline c1a0439 (ARENA_AGENT_TIMEOUT_MULTIPLIER
         # in the eval path) + a one-line fix passing the multiplier on the training
         # path too (mainline only wired eval). Same reasoning-effort + splice fix as r5.
-        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-tasks-dev:glm53-sgltimeout-20260904b
+        # r8 (2026-09-05): AREnATasks guparpit/reasoning-effort + "context
+        # overflow ends the episode": ArenaTerminus2 catches
+        # ContextLengthExceededError, stamps agent_stop_reason=context_error
+        # into rollout.json and returns, so the verifier grades the work done
+        # so far and the trainer keeps it as TRUNCATED (was: trial failed,
+        # verifier skipped, trainer padded a failed= slot; r6 2945 / r7 711
+        # such episodes lost). TO BUILD before launch.
+        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-tasks-dev:glm53-ctxend-20260905a
         command: ["bash", "-c"]
         args:
         - |
@@ -138,10 +145,10 @@ spec:
           # scratch) was not readable yet. Gate on the tokenizer file.
           until [ -f "$ARENA_MODEL_PATH/tokenizer_config.json" ]; do echo "waiting for model mount $ARENA_MODEL_PATH"; sleep 5; done
           exec python3.12 -m amzn_arena_harbor.gym_worker \
-            --nats-url nats://rl-glm53f7-nats:4222 \
+            --nats-url nats://rl-glm53f8-nats:4222 \
             --gym snorkel-general-bash-harbor \
             --model policy \
-            --model-base-url http://rl-glm53f7-sglang:30000 \
+            --model-base-url http://rl-glm53f8-sglang:30000 \
             --mode rollout \
             --agent arena-terminus-2
         env:
@@ -157,14 +164,24 @@ spec:
         # longest task (1800 s) becomes 3600 s + env build + verifier, and a group
         # that outlives the deadline is cancelled with ZERO trajectories. Trainer
         # side NATS_TASK_DEADLINE_SECS default 12600 s still covers this.
+        # r8: 18000 (was 6000). Must cover multiplier x longest task (8 x 1800 =
+        # 14400 s) + env build + verifier (<= 900 s) + the 300 s deadline margin
+        # = ~15900 s; 18000 leaves slack. Trainer-side NATS_TASK_DEADLINE_SECS
+        # is raised to 21600 in lockstep (default 12600 would expire groups).
         - name: ARENA_NATS_ACK_WAIT
-          value: "6000"
+          value: "18000"
         # r6: scale each task's [agent] timeout_sec (900-1800 s) by 2x. r5 timed
         # out ~90% of trials at ~13 turns / 60-120 s per turn; with 16 engines
         # and 2x wall clock most episodes should reach a natural stop. Raise
         # ARENA_NATS_ACK_WAIT in lockstep if this goes above 2.
+        # r8 (2026-09-05): 8x (was 2x) -> 14400 s for 1800 s tasks, 7200 s for
+        # 900 s tasks. r6/r7 evidence: ~100% of TRUNCATED samples were Harbor
+        # wall-clock timeouts at 3600.0 s with every turn ending cleanly
+        # (trial exception files on the r7 gym pods), not length clips.
+        # Effort stays high (user decision). Harbor resolves
+        # min(task timeout, max_timeout_sec=None) x multiplier -> no cap.
         - name: ARENA_AGENT_TIMEOUT_MULTIPLIER
-          value: "2"
+          value: "8"
         # r7 (2026-09-05): per-call read timeout for /generate (image
         # glm53-sgltimeout-20260904b reads it; default 600 was hardcoded). r6 lost
         # 7-14% of samples per rollout to httpx.ReadTimeout on 32k-token turns.

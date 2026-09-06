@@ -265,7 +265,7 @@ def test_removal_reason_counts_aggregates_metadata():
             _sample(False),
         ],
     ]
-    reasons, kept = _removal_reason_counts(groups)
+    reasons, kept, _kept_ctx = _removal_reason_counts(groups)
     assert reasons == {
         "timeout": 2,
         "context_error": 1,
@@ -277,4 +277,4 @@ def test_removal_reason_counts_aggregates_metadata():
 
 
 def test_removal_reason_counts_empty():
-    assert _removal_reason_counts([]) == ({}, 0)
+    assert _removal_reason_counts([]) == ({}, 0, 0)

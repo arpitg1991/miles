@@ -1,4 +1,4 @@
-# rl-glm53f7: GLM-5.3-Flash miles trainer on prod-bom, 24x p6-b200.48xlarge (r6; r1-r5 ran 12x).
+# rl-glm53f8: GLM-5.3-Flash miles trainer on prod-bom, 24x p6-b200.48xlarge (r6; r1-r5 ran 12x).
 # Derived from examples/arena/harbor-rl-27b-snorkel/trainer-pytorchjob.yaml
 # (the r5-faithful EFA wiring) with these deltas:
 #   - 6 -> 12 replicas: workers 0-7 = Megatron actor (64 GPUs, TP8/PP4/EP16,
@@ -28,15 +28,15 @@
 # from the kubeflow replica index (0 = train: ray head + job submit;
 # 1..11 = worker: join the ray cluster and block).
 #
-#   kubectl create configmap rl-glm53f7-trainer-config -n arena-tasks \
+#   kubectl create configmap rl-glm53f8-trainer-config -n arena-tasks \
 #     --from-file=miles-config.yaml=miles-config.yaml
 apiVersion: kubeflow.org/v1
 kind: PyTorchJob
 metadata:
-  name: rl-glm53f7-trainer
+  name: rl-glm53f8-trainer
   namespace: arena-tasks
   labels:
-    app: rl-glm53f7
+    app: rl-glm53f8
     kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
     # explicit kueue priority: inference=1000 is the highest WorkloadPriorityClass
     # on the cluster (only other one is arena-backfill-low=-10); pods already get
@@ -53,7 +53,7 @@ spec:
     maxRestarts: 0
     nProcPerNode: 8
     rdzvBackend: c10d
-    rdzvId: rl-glm53f7-trainer
+    rdzvId: rl-glm53f8-trainer
   pytorchReplicaSpecs:
     Worker:
       replicas: 24
@@ -61,7 +61,7 @@ spec:
       template:
         metadata:
           labels:
-            app: rl-glm53f7
+            app: rl-glm53f8
           annotations:
             karpenter.sh/do-not-disrupt: "true"
         spec:
@@ -142,7 +142,10 @@ spec:
             # 20260903d = c + --arena-keep-timeout-trajectories (default OFF, not set
             # here) + the per-rollout 'Removal reasons:' summary line (integration
             # commit 32da04357). Built+pushed 2026-09-03 08:40 UTC, replicated to ap-south-1.
-            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260903d
+            # r8 (2026-09-05): adds --arena-keep-context-error-trajectories
+            # (nats_rollout.py); on older images the strict argparse kills the
+            # trainer at startup. TO BUILD before launch.
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260905a
             imagePullPolicy: Always
             command: ["bash", "-c"]
             args:
@@ -267,17 +270,22 @@ spec:
             # r6 (2026-09-04): r5 recipe + 16 engines + rollout_batch_size 64
             # (GBS 512) + 160 gym workers; num_rollout 130 (~10 task-list epochs).
             - name: EXPERIMENT_NAME
-              value: rl-glm53f-gbash-r7
+              value: rl-glm53f-gbash-r8
             - name: PROJECT_NAME
-              value: rl-glm53f-gbash-r7
+              value: rl-glm53f-gbash-r8
             - name: CFG_NAME
               value: /config/training/miles-config.yaml
             - name: JOBNAME
-              value: rl-glm53f7-trainer
+              value: rl-glm53f8-trainer
             - name: USER
               value: guparpit
             - name: NATS_URL
-              value: nats://rl-glm53f7-nats:4222
+              value: nats://rl-glm53f8-nats:4222
+            # r8: gym ARENA_NATS_ACK_WAIT is 18000 s (8x agent timeout); the
+            # trainer's DLQ sweep must outlive one full ack window plus slack
+            # or it expires groups that are still legitimately running.
+            - name: NATS_TASK_DEADLINE_SECS
+              value: "21600"
             - name: WANDB_BASE_URL
               value: https://mega.wandb.agi.amazon.dev
             - name: WANDB_API_KEY
@@ -346,7 +354,7 @@ spec:
               name: nvidia-caps
           volumes:
           - configMap:
-              name: rl-glm53f7-trainer-config
+              name: rl-glm53f8-trainer-config
             name: training-config
           # 256Gi keeps the ~186 GiB default Ray object store (ray status: 2.18 TiB
           # over 12 nodes) on /dev/shm and bounds tmpfs, which otherwise counts

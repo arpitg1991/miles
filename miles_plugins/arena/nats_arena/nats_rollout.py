@@ -35,6 +35,7 @@ from miles_plugins.arena.nats_arena.message_format import (
     serialize_task,
 )
 from miles_plugins.arena.nats_arena.mixture_controller import MixtureController
+from miles_plugins.arena.nats_arena.stream_config import results_stream_config
 
 # Lazy-imported in _maybe_build_autoscaler / _maybe_build_timing_tracker
 # so that import errors in these optional modules don't prevent
@@ -240,19 +241,33 @@ async def _ensure_nats(cfg, existing_nc=None, *, purge_on_init=True, is_reconnec
             cfg["tasks_stream"],
         )
 
-    # Results stream: single shared subject (all gyms publish here).
+    # Results stream: single shared subject (all gyms publish here). Bounded
+    # (max_age + max_bytes, discard=OLD) so a stalled trainer consumer never
+    # fills the JetStream volume — the eviction that lost glm53 r6.
+    results_cfg = results_stream_config(cfg["results_stream"], cfg["results_subject"])
     try:
         await js.stream_info(cfg["results_stream"])
+        stream_exists = True
+    except Exception:
+        stream_exists = False
+    if stream_exists:
+        # Apply the current bounds to a pre-existing stream so a run started
+        # before the bounds existed cannot fill the volume. update_stream only
+        # mutates max_age/max_bytes/discard here; retention and subjects are
+        # unchanged, so it never rejects.
+        try:
+            await js.update_stream(config=results_cfg)
+        except Exception:
+            logger.warning(
+                "Could not apply results-stream bounds via update_stream; "
+                "leaving the existing config in place.",
+                exc_info=True,
+            )
         if not is_reconnect and purge_on_init:
             await js.purge_stream(cfg["results_stream"])
             logger.info("Purged stale results stream: %s", cfg["results_stream"])
-    except Exception:
-        await js.add_stream(config=StreamConfig(
-            name=cfg["results_stream"],
-            subjects=[cfg["results_subject"]],
-            retention=RetentionPolicy.LIMITS,
-            max_msg_size=134_217_728,
-        ))
+    else:
+        await js.add_stream(config=results_cfg)
         logger.info(
             "%s results stream: %s",
             "Recreated (was missing after reconnect)" if is_reconnect else "Created",
@@ -983,6 +998,15 @@ class NATSRolloutWorker:
         # gym worker that touches it. Without this sweep, those tasks live
         # in `pending_expected` forever and the rollout never completes.
         pending_publish_time: dict[str, float] = {}
+        # Map unique tid -> (subject, serialized task bytes) for every in-flight
+        # task. On a NATS reconnect that lost JetStream state (stream and
+        # consumer recreated from scratch, e.g. after a volume-full eviction)
+        # the trainer re-publishes these to the recreated tasks stream so the
+        # gym workers re-run them under the same tid. Without this the tasks are
+        # silently lost and the rollout hangs a few groups short (glm53 r6 lost
+        # 2 of 64). Popped on completion and on DLQ expiry, alongside
+        # pending_expected.
+        pending_task_payload: dict[str, tuple[str, bytes]] = {}
         # Map unique tid -> raw instance_id (for resume consumed tracking).
         tid_to_instance_id: dict[str, str] = {}
         # Map unique tid -> dedup_key (instance_id+epoch) for resume guard.
@@ -1017,6 +1041,7 @@ class NATSRolloutWorker:
             """
             nonlocal _nc, js, psub, in_flight, pending_results, pending_expected
             nonlocal pending_publish_time, tid_to_instance_id, tid_to_dedup_key
+            nonlocal pending_task_payload
             backoff = 1.0
             attempt = 0
             had_pending = in_flight > 0 or bool(pending_results)
@@ -1046,26 +1071,71 @@ class NATSRolloutWorker:
                         cfg, existing_nc=_nc, is_reconnect=True,
                     )
 
-                    # If the durable consumer was recreated from scratch, in-flight
-                    # results are lost — reset and let data_source replay
-                    # un-consumed instances. If it was preserved, keep state so
-                    # we can still ack incoming results.
+                    # If the durable consumer was recreated from scratch, the
+                    # in-flight results are lost — re-publish the retained
+                    # in-flight tasks so the gym workers re-run them (falling
+                    # back to a reset + data_source replay when no payloads were
+                    # retained). If the consumer was preserved, keep state so we
+                    # can still ack incoming results.
                     if not had_results_consumer_before and had_pending:
-                        logger.warning(
-                            "NATS results consumer was lost — resetting %d "
-                            "in-flight tasks and %d pending results (data "
-                            "source will replay un-consumed instances).",
-                            in_flight, len(pending_results),
-                        )
-                        in_flight = 0
-                        pending_results = {}
-                        pending_expected = {}
-                        # Clear publish-time map too — when in-flight is reset,
-                        # the corresponding deadlines are irrelevant. New
-                        # publishes after reconnect will repopulate it.
-                        pending_publish_time = {}
-                        tid_to_instance_id = {}
-                        tid_to_dedup_key = {}
+                        if pending_task_payload:
+                            # JetStream lost its state (stream and consumer
+                            # recreated). Any results the gym workers published
+                            # during the outage are gone and the recreated tasks
+                            # stream is empty. Do NOT just reset and hope the
+                            # data source replays — that dropped 2 of 64 groups
+                            # in glm53 r6. Re-publish every retained in-flight
+                            # task to the recreated tasks stream so the gym
+                            # workers re-run it under the same tid; the
+                            # pending_expected entries stay valid so the results
+                            # still match.
+                            replayed = 0
+                            dropped = 0
+                            for tid, (subject, data) in list(
+                                pending_task_payload.items()
+                            ):
+                                try:
+                                    await js.publish(subject, data)
+                                except Exception:
+                                    # Could not re-publish — drop this task and
+                                    # let the data source replay the un-consumed
+                                    # instance instead of hanging on it forever.
+                                    pending_expected.pop(tid, None)
+                                    pending_results.pop(tid, None)
+                                    pending_publish_time.pop(tid, None)
+                                    pending_task_payload.pop(tid, None)
+                                    tid_to_instance_id.pop(tid, None)
+                                    tid_to_dedup_key.pop(tid, None)
+                                    dropped += 1
+                                    continue
+                                # Reset the deadline: the task starts over now.
+                                pending_publish_time[tid] = time.time()
+                                replayed += 1
+                            in_flight = len(pending_expected)
+                            logger.warning(
+                                "NATS results consumer was lost — re-published "
+                                "%d in-flight tasks to the recreated tasks "
+                                "stream (dropped %d that failed re-publish; "
+                                "in_flight now %d).",
+                                replayed, dropped, in_flight,
+                            )
+                        else:
+                            # No retained payloads to replay (e.g. resume from a
+                            # checkpoint with no in-flight payloads) — reset and
+                            # let the data source replay un-consumed instances.
+                            logger.warning(
+                                "NATS results consumer was lost and no in-flight "
+                                "payloads were retained — resetting %d in-flight "
+                                "tasks and %d pending results.",
+                                in_flight, len(pending_results),
+                            )
+                            in_flight = 0
+                            pending_results = {}
+                            pending_expected = {}
+                            pending_publish_time = {}
+                            pending_task_payload = {}
+                            tid_to_instance_id = {}
+                            tid_to_dedup_key = {}
                     else:
                         logger.info(
                             "NATS reconnected — preserved %d in-flight tasks "
@@ -1151,6 +1221,7 @@ class NATSRolloutWorker:
                         in_flight += 1
                         pending_expected[tid] = 1
                         pending_publish_time[tid] = time.time()
+                        pending_task_payload[tid] = (subject, data)
                         tid_to_instance_id[tid] = raw_id
                         tid_to_dedup_key[tid] = dedup_key
                         if self.timing_tracker is not None and gym_name:
@@ -1262,6 +1333,7 @@ class NATSRolloutWorker:
                         task_results = pending_results.pop(tid)
                         pending_expected.pop(tid, None)
                         pending_publish_time.pop(tid, None)
+                        pending_task_payload.pop(tid, None)
                         instance_id = tid_to_instance_id.pop(tid, tid)
                         dedup_key = tid_to_dedup_key.pop(tid, instance_id)
                         self._process_group(tid, task_results, instance_id=instance_id, dedup_key=dedup_key)
@@ -1309,6 +1381,7 @@ class NATSRolloutWorker:
                             pending_expected.pop(tid, None)
                             pending_results.pop(tid, None)
                             pending_publish_time.pop(tid, None)
+                            pending_task_payload.pop(tid, None)
                             tid_to_instance_id.pop(tid, None)
                             tid_to_dedup_key.pop(tid, None)
                             in_flight = max(0, in_flight - 1)

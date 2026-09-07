@@ -701,6 +701,16 @@ def _result_to_samples_full_trajectory(
     return samples
 
 
+def _publisher_max_in_flight(args) -> int:
+    """In-flight publisher cap: ``arena_inflight_multiplier`` x ``rollout_batch_size``.
+
+    Pure function of ``args`` so the cap is unit-testable without NATS. The
+    getattr default (2) matches the argparse default and keeps every existing
+    run byte-identical.
+    """
+    return int(getattr(args, "arena_inflight_multiplier", 2)) * int(args.rollout_batch_size)
+
+
 def _removal_reason_counts(groups) -> tuple[dict[str, int], int, int]:
     """Aggregate why samples were removed from the loss, for the per-rollout
     "Removal reasons" summary log.
@@ -807,6 +817,8 @@ class NATSRolloutWorker:
 
         self.n_per_prompt = args.n_samples_per_prompt
         self.concurrency = args.rollout_batch_size
+        self.inflight_multiplier = int(getattr(args, "arena_inflight_multiplier", 2))
+        self.max_in_flight = _publisher_max_in_flight(args)
 
         # Tokenizer is used by _result_to_samples_full_trajectory to tokenise
         # conversations locally when the gym did NOT use the GenerateClient
@@ -985,8 +997,11 @@ class NATSRolloutWorker:
         # trajectories keep flowing while long-tail multi-turn trajectories hold
         # their slots. With max_in_flight == gym capacity, a pod stalled between
         # turns (tool exec / grading) leaves SGLang KV idle (~50% observed);
-        # 2x headroom lets a second trajectory keep the engine fed.
-        max_in_flight = 2 * self.concurrency
+        # 2x headroom lets a second trajectory keep the engine fed. The factor is
+        # --arena-inflight-multiplier (default 2): on 32 engines 2x left KV at
+        # ~0.83 with an empty queue (r10, 2026-09-07); raise it when engines
+        # are under-fed.
+        max_in_flight = self.max_in_flight
         # Map task_id -> list of results (1 result per task in batch mode)
         pending_results: dict[str, list[dict]] = {}
         # Map task_id -> expected count (always 1 in batch mode)
@@ -1153,8 +1168,10 @@ class NATSRolloutWorker:
 
         logger.info(
             "NATS worker started: mode=%s, concurrency=%d, n_per_prompt=%d, "
-            "max_in_flight=%d (batch mode: 1 msg per prompt, gym forks n_samples)",
-            self.sample_mode, self.concurrency, self.n_per_prompt, max_in_flight,
+            "inflight_multiplier=%d, max_in_flight=%d "
+            "(batch mode: 1 msg per prompt, gym forks n_samples)",
+            self.sample_mode, self.concurrency, self.n_per_prompt,
+            self.inflight_multiplier, max_in_flight,
         )
 
         while self.running:
@@ -2030,6 +2047,15 @@ def _add_arena_arguments(parser):
         default=None,
         help="Arena sample conversion mode; only 'full_trajectory' is "
         "supported. Falls back to the ARENA_SAMPLE_MODE env var.",
+    )
+    group.add_argument(
+        "--arena-inflight-multiplier",
+        type=int,
+        default=2,
+        help="Publisher in-flight cap as a multiple of rollout_batch_size "
+        "(max_in_flight = multiplier x rollout_batch_size). 2 keeps the "
+        "r10-lineage oversubscription; raise it when SGLang engines sit "
+        "under-fed with an empty queue.",
     )
     group.add_argument(
         "--dynamic-sampling-max-examine-mult",

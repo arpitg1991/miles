@@ -162,8 +162,8 @@ spec:
             # trainer at startup. TO BUILD before launch.
             # r10 ran miles-glm53-20260905a. r11 needs a build that includes
             # --arena-inflight-multiplier (see header + r11/BUILD.md).
-            # TODO(r11): set after publish_dev_image.sh / docker push (r11/BUILD.md)
-            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-inflight-TBD
+            # r11 image: built 2026-09-07 from arpit-glm-53 b209d9b4 (adds --arena-inflight-multiplier) / docker push (r11/BUILD.md)
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260907a
             imagePullPolicy: Always
             command: ["bash", "-c"]
             args:

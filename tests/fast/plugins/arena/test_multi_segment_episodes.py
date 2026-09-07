@@ -13,6 +13,7 @@ Run: python -m pytest tests/fast/plugins/arena/test_multi_segment_episodes.py -v
 
 from __future__ import annotations
 
+import logging
 import queue
 import types as pytypes
 
@@ -22,8 +23,10 @@ from tests.fast.plugins.arena.test_group_identity import (
     _TRAIN_PARALLEL_CONFIG,
     _expected_group_normalized,
     _make_args,
+    _StubMaskGenerator,
 )
 
+import miles.utils.mask_utils as mask_utils
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
 from miles.utils.types import Sample
@@ -41,6 +44,7 @@ from miles_plugins.arena.nats_arena.nats_rollout import (
 register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 
 N = 4  # n_samples_per_prompt
+_LOGGER = "miles_plugins.arena.nats_arena.nats_rollout"
 
 # Cumulative per-segment loss masks. Response window = from the first 1 on.
 _SEG_A = [0, 0, 1, 0, 1, 1]  # window [1, 0, 1, 1]
@@ -258,6 +262,35 @@ def test_context_error_removes_all_segments_unless_kept():
     assert all("removal_reason" not in s.metadata for s in kept)
 
 
+def test_timeout_salvage_keeps_every_segment():
+    result = _result([_traj(_three_segments(), agent_stop_reason="timeout")])
+    removed = _result_to_samples_full_trajectory(result, tokenizer=None, args=_args("all"))
+    assert all(s.remove_sample is True for s in removed)
+    assert all(s.metadata["removal_reason"] == "timeout" for s in removed)
+
+    kept = _result_to_samples_full_trajectory(
+        result, tokenizer=None, args=_args("all", arena_keep_timeout_trajectories=True)
+    )
+    assert len(kept) == 3
+    assert all(s.status == Sample.Status.TRUNCATED for s in kept)
+    assert all(not s.remove_sample for s in kept)
+    assert all(s.metadata["kept_timeout"] is True for s in kept)
+    assert [s.loss_mask for s in kept] == [[1, 0, 1, 1], [1, 1, 1], [1, 1]]
+
+
+def test_slow_path_sample_is_segment_zero_of_one(monkeypatch):
+    # A messages-only trajectory carries the same segment stamp as a one-step
+    # fast-path episode, so a consumer can index metadata["segment"] everywhere.
+    monkeypatch.setattr(mask_utils, "MultiTurnLossMaskGenerator", _StubMaskGenerator)
+    (s,) = _result_to_samples_full_trajectory(
+        _result([{"reward": 1.0, "messages": [{"role": "user", "content": "x"}]}]),
+        tokenizer=None,
+        args=_args("all"),
+    )
+    assert s.response_length == 6  # stub mask: 10 tokens, 6-token response
+    assert (s.metadata["segment"], s.metadata["n_segments"]) == (0, 1)
+
+
 # ===========================================================================
 # 2. _process_group: pad / trim / stamp per EPISODE
 # ===========================================================================
@@ -284,6 +317,7 @@ def test_process_group_pads_and_trims_by_episode():
     assert pad.loss_mask == [0] * src.response_length
     assert pad.rollout_log_probs == [0.0] * pad.response_length
     assert pad.metadata["mode"] == "failed"
+    assert (pad.metadata["segment"], pad.metadata["n_segments"]) == (0, 1)
     assert pad.metadata["instance_id"] == "t" and pad.metadata["dedup_key"] == "t#e0"
     assert all(s.metadata["instance_id"] == "t" for s in flat)
 
@@ -305,7 +339,7 @@ def test_process_group_stamps_shared_rollout_id_and_unique_index_all_mode():
         # Walk episodes by (segment k restarts at 0) and check the stamp.
         e = -1
         for s in flat:
-            k = s.metadata.get("segment", 0)
+            k = s.metadata["segment"]
             if k == 0:
                 e += 1
             base = gid * N + e
@@ -379,6 +413,39 @@ def test_grpo_normalizes_per_episode_and_mask_sums_span_segments():
     )
 
 
+@pytest.mark.parametrize(
+    ("final_step", "mask_flag", "reason", "truncated_ratio"),
+    [
+        # The final segment is ONE clipped turn: nothing to salvage there, so it
+        # is removed alone while the earlier segments keep their masks.
+        (_step(_FINAL, stop_reason="length", tag=9), True, "length", 1.0),
+        # A rejected final generate: log_probs short on the final segment only.
+        ({**_step(_FINAL, tag=9), "log_probs": [-0.1] * (len(_FINAL) - 1)}, False, "bad_logprobs", 0.0),
+    ],
+    ids=["clipped_only_final", "bad_logprobs_final"],
+)
+def test_per_segment_removal_counts_the_episode_once(final_step, mask_flag, reason, truncated_ratio):
+    telemetry = {}
+    for mode in ("all", "final"):
+        worker = _make_worker(
+            _make_args(n_samples_per_prompt=1, arena_train_segments=mode, arena_mask_clipped_final_turn=mask_flag)
+        )
+        steps = [_segment(_SEG_A, tag=1), _segment(_SEG_B, tag=2), dict(final_step)]
+        worker._process_group("t.g0.", [_result([_traj(steps)])])
+        (flat,) = _drain(worker)
+        telemetry[mode] = _batch_telemetry([flat], [flat])
+        if mode == "all":
+            a, b, f = flat
+            assert [s.remove_sample for s in (a, b, f)] == [False, False, True]
+            assert f.metadata["removal_reason"] == reason
+            assert all("removal_reason" not in s.metadata for s in (a, b))
+            assert a.loss_mask == [1, 0, 1, 1] and b.loss_mask == [1, 1, 1]
+    # The episode is removed once, exactly like its single sample under ``final``.
+    assert telemetry["all"]["removed_frac"] == telemetry["final"]["removed_frac"] == 1.0
+    assert telemetry["all"]["truncated_ratio"] == telemetry["final"]["truncated_ratio"] == truncated_ratio
+    assert telemetry["all"]["total_episodes"] == telemetry["final"]["total_episodes"] == 1
+
+
 # ===========================================================================
 # 4. generate_rollout: partial-batch guard and per-episode telemetry
 # ===========================================================================
@@ -394,6 +461,7 @@ def _sample(
     status=Sample.Status.COMPLETED,
     remove: bool = False,
     mode: str = "full_trajectory",
+    **meta,
 ) -> Sample:
     s = Sample()
     s.group_index = group_index
@@ -404,9 +472,29 @@ def _sample(
     s.status = status
     s.remove_sample = remove
     s.tokens = [1] * (response_length + 1)
+    # A None-valued key is absent, like a segment that carries no removal_reason.
     s.metadata = {"mode": mode, "task_id": f"t{group_index}", "gym_name": "g"}
+    s.metadata.update({k: v for k, v in meta.items() if v is not None})
     s.weight_versions = ["3"]
     return s
+
+
+def _segments(rollout_id: int, n: int, **kwargs) -> list[Sample]:
+    """``n`` segments of one episode; a list-valued kwarg gives one value per segment."""
+    per_segment = {k: v for k, v in kwargs.items() if isinstance(v, list)}
+    shared = {k: v for k, v in kwargs.items() if k not in per_segment}
+    return [
+        _sample(
+            group_index=rollout_id,
+            index=rollout_id + k * _SEGMENT_INDEX_STRIDE,
+            rollout_id=rollout_id,
+            reward=1.0,
+            response_length=2,
+            **shared,
+            **{key: values[k] for key, values in per_segment.items()},
+        )
+        for k in range(n)
+    ]
 
 
 class _FakeWorker:
@@ -448,6 +536,28 @@ def test_partial_batch_guard_raises_in_all_mode(monkeypatch):
     monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker(groups, "final"))
     data = generate_rollout(_rollout_args("final"), 0, data_source=pytypes.SimpleNamespace())
     assert len(data) == 3
+
+
+def test_generate_rollout_removal_breakdown_is_per_episode(monkeypatch, caplog):
+    truncated = Sample.Status.TRUNCATED
+    groups = [
+        # Whole episode removed (flag off): "length" on both segments.
+        _segments(0, 2, status=truncated, remove=True, removal_reason="length"),
+        # Only the FINAL segment removed (one clipped turn under the mask flag).
+        _segments(1, 3, status=truncated, remove=[False, False, True], removal_reason=[None, None, "length"]),
+        # Gym-side pad.
+        [_sample(group_index=2, index=2, rollout_id=2, reward=0.0, response_length=2, remove=True, mode="failed")],
+        # Salvaged timeout episode: kept_timeout on every segment, none removed.
+        _segments(3, 2, status=truncated, kept_timeout=True),
+    ]
+    monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker(groups, "all"))
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        data = generate_rollout(_rollout_args("all"), 0, data_source=pytypes.SimpleNamespace())
+    assert len(data) == 4
+    lines = [r.getMessage() for r in caplog.records]
+    assert "Failed-sample distribution: failed=1/4 (0.250), removed_total=3/4 (0.750)" in lines
+    assert "Removal reasons: length=2, failed=1 (kept_timeout=1, kept_context_error=0)" in lines
+    assert "Segments: 8 samples over 4 episodes (compaction_segments_mean=2.00)" in lines
 
 
 def test_telemetry_counts_episodes_not_segments():

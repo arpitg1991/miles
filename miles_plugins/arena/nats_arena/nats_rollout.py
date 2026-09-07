@@ -382,7 +382,16 @@ def _finish_sample(
     # Per-turn SGLang weight versions for the off_policy_round metric: the
     # trajectory list on every segment, no per-segment slicing (ADR-0011).
     s.weight_versions = list(ctx.weight_versions)
-    s.metadata = {"task_id": ctx.task_id, "mode": "full_trajectory", "gym_name": ctx.gym_name}
+    # segment / n_segments land on EVERY sample (ADR-0011). The default is a
+    # one-sample episode, which is what the slow path emits; the fast path
+    # overwrites both for a multi-segment episode.
+    s.metadata = {
+        "task_id": ctx.task_id,
+        "mode": "full_trajectory",
+        "gym_name": ctx.gym_name,
+        "segment": 0,
+        "n_segments": 1,
+    }
     # Removal-reason bookkeeping for the per-rollout "Removal reasons"
     # summary (generate_rollout). agent_stop_reason is recorded for every
     # real sample; removal_reason only when remove_sample was set;
@@ -877,35 +886,48 @@ def _episode_key(s: Sample) -> tuple[int | None, int | None]:
     return (s.group_index, s.rollout_id if s.rollout_id is not None else s.index)
 
 
-def _episode_representatives(groups: list[list[Sample]]) -> list[Sample]:
-    """Return one Sample per episode (the first seen), in batch order.
+def _episodes(groups: list[list[Sample]]) -> list[list[Sample]]:
+    """Group the samples of ``groups`` into episodes, in batch order (ADR-0011).
 
     Under ``--arena-train-segments final`` every sample is its own episode, so
-    this is the flat sample list and every number derived from it is unchanged.
-    Under ``all`` the representative is the first segment, which also carries
-    the group's ``group_metrics`` when it is the first episode of its group.
+    every number derived from this is unchanged. Under ``all`` the segments of
+    one episode share a ``rollout_id`` and land in one list, first segment first.
     """
-    seen: set[tuple[int | None, int | None]] = set()
-    reps: list[Sample] = []
+    by_key: dict[tuple[int | None, int | None], list[Sample]] = {}
     for g in groups:
         for s in g:
-            key = _episode_key(s)
-            if key not in seen:
-                seen.add(key)
-                reps.append(s)
-    return reps
+            by_key.setdefault(_episode_key(s), []).append(s)
+    return list(by_key.values())
+
+
+def _episode_representatives(groups: list[list[Sample]]) -> list[Sample]:
+    """Return one Sample per episode: its first segment.
+
+    ``reward`` and ``weight_versions`` are identical on every segment, and the
+    first segment of a group's first episode carries ``group_metrics``, so
+    episode-level reductions of those read this sample. ``remove_sample``,
+    ``removal_reason``, ``status`` and the ``kept_*`` flags are per segment
+    (``hard_overflow``, ``bad_logprobs``, a final segment that is one clipped
+    turn): reduce them over ``_episodes`` or read ``_removal_representative``.
+    """
+    return [e[0] for e in _episodes(groups)]
+
+
+def _removal_representative(episode: list[Sample]) -> Sample:
+    """The segment that speaks for the episode in the "Removal reasons" counts.
+
+    A later segment can be dropped while the first one trains, so return the
+    first removed segment, else the first segment.
+    """
+    return next((s for s in episode if getattr(s, "remove_sample", False)), episode[0])
 
 
 def _episode_response_lengths(groups: list[list[Sample]]) -> list[int]:
     """Response tokens per episode: the sum over its segments."""
-    totals: dict[tuple[int | None, int | None], int] = {}
-    for g in groups:
-        for s in g:
-            rl = getattr(s, "response_length", None)
-            if isinstance(rl, int):
-                key = _episode_key(s)
-                totals[key] = totals.get(key, 0) + rl
-    return list(totals.values())
+    return [
+        sum(s.response_length for s in e if isinstance(getattr(s, "response_length", None), int))
+        for e in _episodes(groups)
+    ]
 
 
 def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> dict[str, float]:
@@ -913,12 +935,14 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
 
     ``data`` is the post-filter batch that trains; ``all_data`` the pre-filter
     population (see ``generate_rollout``). A multi-segment episode (ADR-0011)
-    is one unit everywhere: its reward, status and removal are counted once,
-    and its response length is the sum over its segments.
+    is one unit everywhere: its reward is read once, it counts as removed or
+    truncated when ANY segment is, and its response length is the sum over its
+    segments.
     ``compaction_segments_mean`` is the mean number of samples per episode
     (1.0 under ``--arena-train-segments final``).
     """
-    episodes = _episode_representatives(data)
+    data_episodes = _episodes(data)
+    episodes = [e[0] for e in data_episodes]
     total_episodes = len(episodes)
     total_samples = sum(len(g) for g in data)
     rewards = [s.reward for s in episodes if isinstance(s.reward, (int, float))]
@@ -936,10 +960,16 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
     #       top of the failed ones. This is the true "lost training signal"
     #       fraction; removed_frac >= failed_frac by construction.
     failed_count = sum(1 for s in episodes if (s.metadata or {}).get("mode") == "failed")
-    removed_count = sum(1 for s in episodes if getattr(s, "remove_sample", False))
-    all_episodes = _episode_representatives(all_data)
+    # remove_sample and status are per segment: an episode is removed when ANY
+    # segment is dropped (a final segment that is one clipped turn under
+    # --arena-mask-clipped-final-turn, a per-segment bad_logprobs or
+    # hard_overflow) and truncated when ANY segment is TRUNCATED. Under
+    # ``final`` the episode is its single sample, so the numbers match.
+    removed_count = sum(1 for e in data_episodes if any(getattr(s, "remove_sample", False) for s in e))
+    all_data_episodes = _episodes(all_data)
+    all_episodes = [e[0] for e in all_data_episodes]
     truncated_count = sum(
-        1 for s in all_episodes if getattr(s, "status", None) == Sample.Status.TRUNCATED
+        1 for e in all_data_episodes if any(getattr(s, "status", None) == Sample.Status.TRUNCATED for s in e)
     )
     all_data_total = len(all_episodes)
 
@@ -1818,15 +1848,18 @@ class NATSRolloutWorker:
             # entirely failed task result. (remove_sample alone can't be
             # attributed — truncation/bad-logprob drops also set it.)
             pad.status = Sample.Status.FAILED
-            # Match the metadata shape of real samples (task_id + gym_name) so
-            # downstream handling (metric attribution, OTel, dedup injection
-            # below) treats pads uniformly rather than special-casing missing
-            # keys. gym_name is copied from a real sibling (episodes is
-            # non-empty here — the all-failed case returned above).
+            # Match the metadata shape of real samples (task_id, gym_name,
+            # segment / n_segments) so downstream handling (metric attribution,
+            # OTel, dedup injection below) treats pads uniformly rather than
+            # special-casing missing keys. gym_name is copied from a real
+            # sibling (episodes is non-empty here — the all-failed case
+            # returned above). A pad is a one-sample episode (ADR-0011).
             pad.metadata = {
                 "mode": "failed",
                 "task_id": task_id,
                 "gym_name": (src.metadata or {}).get("gym_name", "unknown"),
+                "segment": 0,
+                "n_segments": 1,
             }
             episodes.append([pad])
         if len(episodes) > self.n_per_prompt:
@@ -2097,10 +2130,11 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     # mode="failed". kept_timeout counts the (non-removed) samples salvaged
     # by --arena-keep-timeout-trajectories; timeout=N under the flag then
     # means "timeout AND another defect" (see precedence note there).
-    # Counted per EPISODE (one representative each, ADR-0011) so the
-    # breakdown sums to removed_total above.
-    removal_reasons, kept_timeout_count, kept_context_error_count = (
-        _removal_reason_counts([_episode_representatives(data)])
+    # Counted per EPISODE (ADR-0011) so the breakdown sums to removed_total
+    # above: one sample per episode, the removed segment when there is one,
+    # because the first segment can train while a later one is dropped.
+    removal_reasons, kept_timeout_count, kept_context_error_count = _removal_reason_counts(
+        [[_removal_representative(e) for e in _episodes(data)]]
     )
     logger.info(
         "Removal reasons: %s (kept_timeout=%d, kept_context_error=%d)",
@@ -2217,6 +2251,7 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 compute_group_metrics_from_samples,
                 compute_off_policy_metrics,
             )
+
             # One representative per episode: group_metrics sits on the first
             # sample of a group (always a representative), and the off-policy /
             # binary-reward metrics must count an episode once (ADR-0011).

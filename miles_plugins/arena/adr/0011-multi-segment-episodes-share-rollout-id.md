@@ -90,20 +90,33 @@ callers keep the old behaviour). The default is byte-identical to today.
   `length` marks every segment TRUNCATED. `--arena-mask-clipped-final-turn`
   (ADR-0009) zeroes the trailing 1-run of the FINAL segment only; earlier
   segments contain no clipped tokens and stay trainable (they record
-  `final_clip_masked` without a change to their mask). With the flag off,
-  every segment is removed, today's whole-episode removal. `--arena-keep-timeout-trajectories`
-  (ADR-0010) and `--arena-keep-context-error-trajectories` are trajectory-level
-  and salvage every segment. `hard_overflow` and `bad_logprobs` are checked
-  per segment. `weight_versions` is the trajectory list on every segment.
-- **Telemetry counts episodes.** `generate_rollout` keys on
-  `(group_index, rollout_id if not None else index)`: `total_samples`,
-  `avg_reward`, `nonzero_count`, `failed_frac`, `removed_frac`,
-  `truncated_ratio` count one representative per episode;
-  `avg_response_length` sums `response_length` per episode; the new
-  `rollout/compaction_segments_mean` is the mean number of samples per
+  `final_clip_masked` without a change to their mask). A final segment
+  whose only turn is the clipped one has nothing to salvage: that segment
+  alone is removed with `removal_reason="length"` and the earlier segments
+  still train. With the flag off, every segment is removed, today's
+  whole-episode removal. `--arena-keep-timeout-trajectories` (ADR-0010) and
+  `--arena-keep-context-error-trajectories` are trajectory-level and salvage
+  every segment. `hard_overflow` and `bad_logprobs` are checked per segment,
+  so `remove_sample`, `removal_reason` and `status` can differ between the
+  segments of one episode. `weight_versions` is the trajectory list on every
+  segment.
+- **Telemetry counts episodes.** `generate_rollout` groups samples into
+  episodes by `(group_index, rollout_id if not None else index)`
+  (`_episodes`). `total_samples`, `avg_reward`, `nonzero_count` and
+  `failed_frac` read the first segment (`_episode_representatives`; reward,
+  `weight_versions` and `group_metrics` live there).
+  The per-segment flags reduce over the episode: `removed_frac` counts an
+  episode when ANY segment has `remove_sample`, `truncated_ratio` when ANY
+  segment is TRUNCATED, and the "Removal reasons" breakdown reads the
+  removed segment (`_removal_representative`), so a final segment dropped
+  under `--arena-mask-clipped-final-turn` or a per-segment `bad_logprobs`
+  is visible. `avg_response_length` sums `response_length` per episode; the
+  new `rollout/compaction_segments_mean` is the mean number of samples per
   episode. Under `final` every episode has one sample, so every number is
   unchanged. `s.metadata["segment"] = k` and `s.metadata["n_segments"] = n`
-  on every sample.
+  on every sample: `_finish_sample` stamps `0` and `1`, so a messages-only
+  (slow-path) sample and a pad episode read as segment 0 of 1, and the fast
+  path overwrites both for a multi-segment episode.
 
 ### Alternatives considered
 
@@ -141,8 +154,11 @@ callers keep the old behaviour). The default is byte-identical to today.
 - **Metrics.** Read `rollout/compaction_segments_mean` next to reward on the
   first r12 comparison; under `final` it is 1.0.
 - **Tests.** `tests/fast/plugins/arena/test_multi_segment_episodes.py` pins
-  both modes, the marker gate, the stamping, the shared reward through the
-  real conversion path, the truncation semantics, and the guard.
+  both modes, the marker gate, the stamping (fast path, slow path, pads),
+  the shared reward through the real conversion path, the truncation and
+  salvage semantics per segment, the guard, and the per-episode
+  `removed_frac` / "Removal reasons" line for an episode whose final segment
+  alone is dropped.
   `test_group_identity.py` is unchanged and still pins `rollout_id=None`
   under the default mode; its module docstring records this amendment.
 - **ADR-0003 status.** Its decision stands for the default mode and its

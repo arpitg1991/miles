@@ -1,0 +1,372 @@
+# rl-glm53f10: GLM-5.3-Flash miles trainer on prod-bom, 24x p6-b200.48xlarge (r6; r1-r5 ran 12x).
+# Derived from examples/arena/harbor-rl-27b-snorkel/trainer-pytorchjob.yaml
+# (the r5-faithful EFA wiring) with these deltas:
+#   - 6 -> 12 replicas: workers 0-7 = Megatron actor (64 GPUs, TP8/PP4/EP16,
+#     DP=2), workers 8-23 = SGLang engines (16 engines, TP8/EP8; r6 raised
+#     4 -> 16: r5 engines ran at KV 0.97 with 10-60 requests queued each)
+#   - image: the GLM-capable arena build (glm53next base: SGLang
+#     sglang-miles-glm53next@9a26e749 + Megatron-LM PR#89, EFA layer baked
+#     by examples/arena/Dockerfile)
+#   - WANDB_API_KEY from the wandb-env-arena Secret + WANDB_BASE_URL (the
+#     smoke-proven pattern)
+#   - NCCL_DEBUG / NCCL_DEBUG_SUBSYS for first-run bring-up (drop later)
+#   - restartPolicy Never + maxRestarts 0, matching every admitted arena run
+#     (smoke, snorkel run1-5). OnFailure+restarts was considered for a 12-node
+#     job but is UNPROVEN on this stack: recovery would need replica-0 to exit
+#     AND all 11 ray workers to exit when the old head's GCS dies; if any
+#     worker blocks, the restarted head waits forever in _wait_for_ray_nodes.
+#     Revisit after observing a clean worker-exit-on-GCS-loss on run 1.
+#   - the run5 stale node-exclusion affinity (i-09907cd660684a460) DROPPED —
+#     it was a point-in-time S3-CSI incident workaround (2026-08-27), not a
+#     durable constraint
+#   - upstream GLM recipe env (SGLANG_*, PYTHONFAULTHANDLER, inductor/triton
+#     knobs) added — see comments inline
+# NO platform PVC volumes/mounts are declared (kyverno forbids them);
+# /mnt/models-ro, /mnt/scratch-s3files-rw etc. are platform-injected.
+#
+# Every replica runs scripts/run_arena_harbor.py; the command picks the role
+# from the kubeflow replica index (0 = train: ray head + job submit;
+# 1..11 = worker: join the ray cluster and block).
+#
+#   kubectl create configmap rl-glm53f10-trainer-config -n arena-tasks \
+#     --from-file=miles-config.yaml=miles-config.yaml
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: rl-glm53f10-trainer
+  namespace: arena-tasks
+  labels:
+    app: rl-glm53f10
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+    # explicit kueue priority: inference=1000 is the highest WorkloadPriorityClass
+    # on the cluster (only other one is arena-backfill-low=-10); pods already get
+    # 1000 via priorityClassName high, this just makes it visible on the workload.
+    kueue.x-k8s.io/priority-class: inference
+spec:
+  elasticPolicy:
+    minReplicas: 24
+    maxReplicas: 24
+    # 0 restarts / Never (below): the known-good arena configuration. Restart
+    # semantics on this ray-based launcher are unvalidated (see header note);
+    # a failed run is relaunched manually and resumes from --load = --save
+    # (ADR-0004).
+    maxRestarts: 0
+    nProcPerNode: 8
+    rdzvBackend: c10d
+    rdzvId: rl-glm53f10-trainer
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: 40
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            app: rl-glm53f10
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
+        spec:
+          serviceAccountName: arena-tasks-runner
+          enableServiceLinks: false
+          priorityClassName: high
+          nodeSelector:
+            node-type: p6-gpu
+            node.kubernetes.io/instance-type: p6-b200.48xlarge
+          # The snorkel manifest carried a NotIn-hostname affinity excluding
+          # i-09907cd660684a460 (an S3-CSI mount-attach incident on
+          # 2026-08-27). Dropped: it was a point-in-time workaround, and at 12
+          # nodes an unnecessary exclusion costs real capacity. Re-add a
+          # NotIn-hostname block here only against a live, reproduced incident.
+          #
+          # i-00cb6ebceda36a4ef IS such an incident (2026-09-02, reproduced
+          # twice): kueue TAS assigns it while the scheduler cannot place
+          # there (occupied outside kueue's view); the pods-ready timeout
+          # then evicts and the operator turns that into a failed job. The
+          # convert job only ran once this exclusion was added. Remove when
+          # the node heals.
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                    - i-00cb6ebceda36a4ef
+                    # 2026-09-02 second incident, same signature: kueue TAS
+                    # assigned these three (each holds an unreaped Failed
+                    # arena-backfill pod, deletion-protected to its submitter;
+                    # 41 such pods fleet-wide) and the scheduler reports them
+                    # Insufficient — the 9 actor pods placed in ~3 min while
+                    # these three stalled the gang into the pods-ready
+                    # eviction. Remove when the backfill reaper catches up.
+                    - i-09913cb3a1edcc270
+                    - i-08c9e00e2a0af830a
+                    - i-04c8462a637bbf738
+                    # 2026-09-03 08:3x: kueue TAS pinned r3 pods to these (scheduler: Insufficient gpu/efa/memory)
+                    - i-0b682ed36335c009e
+                    - i-013fc7dd2474d906f
+                    - i-00d391ae8df01e11d
+                    - i-08b45d327ad2ebcd3
+                    - i-0776ac9db7053a6cf
+                    - i-0ffd7cdf3c949b891
+                    - i-0e2240450e1459839
+                    - i-0575f86280c002502
+                    - i-08cda37116a8f5b85
+                    - i-0e7902b4e3d9f2d0c
+                    - i-04f9a44ac50ae500d
+                    - i-0e64a05a2287ddd6f
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+          - effect: NoSchedule
+            key: vpc.amazonaws.com/efa
+            operator: Exists
+          containers:
+          - name: pytorch
+            # Arena GLM build: FROM the glm53next upstream mirror with this
+            # integration tree replacing /root/miles (examples/arena/Dockerfile,
+            # which also bakes the EFA userspace + aws-ofi-nccl layer).
+            # 20260902c MUST be built and pushed before this is applied (it did
+            # not exist as of 2026-09-03 05:20 UTC; newest is 20260902b):
+            #   cd /tmp/glm53-integration   # HEAD 5f8925db0 = the mask-clipped-final-turn commit
+            #   docker build -f examples/arena/Dockerfile \
+            #     --build-arg MILES_BASE_IMAGE=427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:glm53next-upstream-20260902 \
+            #     -t 427267593057.dkr.ecr.us-east-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902c .
+            #   docker push 427267593057.dkr.ecr.us-east-1.amazonaws.com/arena-slime-dev:miles-glm53-20260902c   # replicates to ap-south-1
+            #   aws ecr describe-images --profile arena-ecr-dev --region ap-south-1 --repository-name arena-slime-dev --image-ids imageTag=miles-glm53-20260902c
+            # It carries --arena-mask-clipped-final-turn (nats_rollout.py:1827,
+            # committed 2026-09-02 23:44 UTC, AFTER image b was built at 20:55),
+            # which miles-config.yaml now sets: on image b the strict argparse
+            # kills the trainer at startup.
+            # 20260903d = c + --arena-keep-timeout-trajectories (default OFF, not set
+            # here) + the per-rollout 'Removal reasons:' summary line (integration
+            # commit 32da04357). Built+pushed 2026-09-03 08:40 UTC, replicated to ap-south-1.
+            # r8 (2026-09-05): adds --arena-keep-context-error-trajectories
+            # (nats_rollout.py); on older images the strict argparse kills the
+            # trainer at startup. TO BUILD before launch.
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260905a
+            imagePullPolicy: Always
+            command: ["bash", "-c"]
+            args:
+            - |
+              mkdir -p /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME} && ulimit -n 1000000
+              # Kernel JIT caches on LOCAL disk only. r2 (2026-09-03) put them on EFS for
+              # persistence and train step 0 died in Triton's autotuner with
+              # OSError [Errno 116] Stale file handle: 8 ranks on one node race on the
+              # same NFS cache files. Recompiles per pod start are the accepted cost
+              # (data_pad_size_multiplier bounds the TileLang bwd recompile count).
+              export KCACHE=/tmp/kernel_cache
+              export TILELANG_CACHE_DIR=${KCACHE}/tilelang TRITON_CACHE_DIR=${KCACHE}/triton TORCHINDUCTOR_CACHE_DIR=${KCACHE}/inductor
+              mkdir -p ${TILELANG_CACHE_DIR} ${TRITON_CACHE_DIR} ${TORCHINDUCTOR_CACHE_DIR}
+              # In-pod host-memory sampler (60 s) -> memsample-<idx>.log: node meminfo,
+              # own cgroup (resolved via /proc/self/cgroup; privileged containers see the
+              # host cgroup root), /dev/shm, and the anon/file RSS split of every sglang
+              # scheduler / actor process. node_used - cgroup_used over time is the only
+              # way to attribute co-tenant vs own growth on the real run.
+              ( CG=/sys/fs/cgroup$(awk -F: '$1=="0"{print $3}' /proc/self/cgroup); [ -f "$CG/memory.current" ] || CG=/sys/fs/cgroup
+                while sleep 60; do
+                  echo "== $(date -u +%FT%TZ)"
+                  grep -E '^(MemTotal|MemAvailable|Shmem|AnonPages|Unevictable|SUnreclaim|Cached):' /proc/meminfo
+                  echo "cgroup $CG current=$(cat $CG/memory.current 2>&1) max=$(cat $CG/memory.max 2>&1)"
+                  grep -E '^(anon|file|shmem|kernel|slab) ' $CG/memory.stat 2>/dev/null
+                  df -k /dev/shm | tail -1
+                  for p in $(pgrep -f 'sglang::scheduler|MegatronTrainRayActor|SGLangEngine' 2>/dev/null); do
+                    echo "pid=$p $(grep -E '^(Name|VmRSS|RssAnon|RssFile|RssShmem):' /proc/$p/status 2>/dev/null | tr '\n\t' '  ')"
+                  done
+                done >> /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME}/memsample-${REPLICA_IDX}.log 2>&1 ) &
+              if [ "${REPLICA_IDX}" = "0" ]; then ROLE=train; else ROLE=worker; fi
+              exec python3 /root/miles/scripts/run_arena_harbor.py "$ROLE" > >(tee /mnt/scratch-s3files-rw/${USER}/logs/${EXPERIMENT_NAME}/trainer-${REPLICA_IDX}.log) 2>&1
+            env:
+            # legacy consumers in the ported eval path resolve tools/ (the
+            # DCP->HF converter) relative to this dir. This job configures no
+            # eval and needs nothing more (see the snorkel manifest for the
+            # MILES_ARENA_DIR caveat on eval-enabled jobs).
+            - name: AGISLIME_DIR
+              value: /root/miles
+            - name: CLUSTER
+              value: bom
+            - name: PYTHONUNBUFFERED
+              value: '1'
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+            # ---- EFA wiring (proven run5 recipe; requires the Dockerfile's
+            # aws-efa-installer layer for /opt/amazon/{ofi-nccl,efa}) ----
+            - name: LD_LIBRARY_PATH
+              value: /opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+            - name: FI_EFA_USE_DEVICE_RDMA
+              value: '1'
+            - name: FI_PROVIDER
+              value: efa
+            - name: FI_EFA_FORK_SAFE
+              value: '1'
+            - name: NCCL_TIMEOUT
+              value: '7200'
+            - name: NCCL_SOCKET_IFNAME
+              value: eth0
+            - name: GLOO_SOCKET_IFNAME
+              value: eth0
+            - name: NCCL_PROTO
+              value: simple
+            - name: NCCL_IB_DISABLE
+              value: '0'
+            - name: NCCL_NET_GDR_LEVEL
+              value: '2'
+            - name: NCCL_P2P_DISABLE
+              value: '0'
+            # NCCL_DEBUG=INFO / NCCL_DEBUG_SUBSYS DROPPED: the libfabric/efa provider
+            # was verified in runs 1-2 (aws-ofi-nccl 1.18.0 + Libfabric 2.4 on all
+            # ranks, log 31304-31308, 31624). INFO at 96 ranks inflated the driver
+            # log to 48k lines and Ray's dedup then hid per-rank counts. Re-add both
+            # (INFO / INIT,NET,GRAPH) only for NCCL debugging.
+            # ---- upstream GLM-5.3-Flash recipe env (PR #2786
+            # run_glm5_3_flash.py extra_env_vars; pod env is inherited by the
+            # ray workers each replica starts) ----
+            # engines start against the raw BF16 hf_checkpoint while training
+            # weights get pushed over update-weights; skip the strict load check
+            - name: SGLANG_SKIP_CHECKPOINT_LOAD_CHECK
+              value: '1'
+            # DSA/tilelang engine startup is slow; default health timeout trips
+            - name: SGLANG_HEALTH_CHECK_TIMEOUT
+              value: '120'
+            # ---- Ray memory monitor OFF on every raylet (run-2 root cause) ----
+            # The container had no cgroup memory limit, so ray 2.58's
+            # ThresholdMemoryMonitor fell back to host accounting (total =
+            # 2143217684480 B = node MemTotal, log 47828) and its 2.56+ by_time
+            # policy killed the SGLangEngine + 8 _HttpPosterActors on the engine
+            # node when NODE-WIDE usage crossed 95% (log 42541, 47827-47863) while
+            # the pod itself held ~633 GiB. refresh_ms=0 installs a
+            # NoopMemoryMonitor (multi_memory_monitor_factory.cc:54-70); the kernel
+            # OOM killer and the memory limit below remain as backstops. Pod env
+            # reaches the raylet because run_arena_harbor.py runs `ray start` via
+            # subprocess with the inherited environment (exec_command.py:22-24);
+            # ray-job runtime_env env_vars would NOT reach it. Same setting as
+            # miles' own GLM-5 launchers (p2p_weight_transfer/run.py:759,765,
+            # run-glm5-disagg-profile.sh:287,291, scripts/run_inkling.py:392).
+            # Raising RAY_memory_usage_threshold alone is documented to still fail
+            # near the edge (slime #1851 at 0.99).
+            - name: RAY_memory_monitor_refresh_ms
+              value: '0'
+            - name: PYTHONFAULTHANDLER
+              value: '1'
+            - name: TORCHINDUCTOR_COMPILE_THREADS
+              value: '1'
+            # TRITON_CACHE_DIR / TORCHINDUCTOR_CACHE_DIR / TILELANG_CACHE_DIR are
+            # exported in the container command above (local /tmp/kernel_cache; an
+            # EFS-backed cache caused Triton ESTALE crashes in r2).
+            # ---- cluster shape: 24 replicas, 8 actor nodes + 16 engine nodes (r6) ----
+            - name: REPLICA
+              value: '40'
+            - name: REPLICA_TRAINER
+              value: '8'
+            # run identity (ADR-0004): EXPERIMENT_NAME drives the checkpoint dir
+            # and the wandb group; bump BOTH for a fresh run — an existing
+            # checkpoint dir resumes silently.
+            # r5: r4 ran 13 steps (no checkpoint: save_interval 20) with 87-93%
+            # of trials removed as Harbor agent timeouts; r5 = r4 recipe + gym
+            # image glm53-reasoning-20260903b (ARENA_REASONING_EFFORT=low, GLM
+            # <|user|> splice fix) + arena_keep_timeout_trajectories. Fresh
+            # name -> fresh ckpt dir + W&B group.
+            # r6 (2026-09-04): r5 recipe + 16 engines + rollout_batch_size 64
+            # (GBS 512) + 160 gym workers; num_rollout 130 (~10 task-list epochs).
+            - name: EXPERIMENT_NAME
+              value: rl-glm53f-gbash-r10
+            - name: PROJECT_NAME
+              value: rl-glm53f-gbash-r10
+            - name: CFG_NAME
+              value: /config/training/miles-config.yaml
+            - name: JOBNAME
+              value: rl-glm53f10-trainer
+            - name: USER
+              value: guparpit
+            - name: NATS_URL
+              value: nats://rl-glm53f10-nats:4222
+            # r8: gym ARENA_NATS_ACK_WAIT is 18000 s (8x agent timeout); the
+            # trainer's DLQ sweep must outlive one full ack window plus slack
+            # or it expires groups that are still legitimately running.
+            - name: NATS_TASK_DEADLINE_SECS
+              value: "21600"
+            - name: WANDB_BASE_URL
+              value: https://mega.wandb.agi.amazon.dev
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wandb-env-arena
+                  key: WANDB_API_KEY
+            - name: ARENA_DEFAULT_GYM
+              value: snorkel-general-bash-harbor
+            - name: ARENA_CHECKPOINTS_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/checkpoints
+            - name: ARENA_DATA_DIR
+              value: /mnt/scratch-s3files-rw/guparpit/data
+            # consumed by the trainer-side lakefs SDK: the data source pulls
+            # manifest.jsonl from the KNOWN_GYMS lakeFS pin at startup (IAM via
+            # the arena-tasks-runner SA)
+            - name: LAKECTL_SERVER_ENDPOINT_URL
+              value: https://prod.artifact-vault.agi.amazon.dev
+            - name: LAKECTL_CREDENTIALS_PROVIDER_TYPE
+              value: aws_iam
+            - name: REPLICA_IDX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['training.kubeflow.org/replica-index']
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            resources:
+              limits:
+                # 1800Gi = 1932735283200 B, strictly below MemTotal 2143217684480 B:
+                # confines a real exhaustion to OUR cgroup (kernel OOM-kills inside the
+                # pod instead of the node) and, if Ray's monitor is ever re-enabled AND
+                # can see it, switches Ray to cgroup accounting
+                # (memory_monitor_utils.cc:31-44). NOTE: containerd gives privileged
+                # containers no cgroup namespace, so /sys/fs/cgroup is the host root and
+                # Ray may still read host totals -- RAY_memory_monitor_refresh_ms=0 is
+                # the fix, this is the backstop (memprobe variant -b measures it).
+                # kueue counts REQUESTS only (request stays 1200Gi): TAS fit unchanged.
+                # Precedent: acuadron-kimi-k3-0-{0,1} run 1900Gi limits on p6-b200. If a
+                # LimitRange rejects it (unreadable under our RBAC), read the Workload /
+                # pod events and fall back to no limit + refresh_ms=0.
+                memory: 1800Gi
+                nvidia.com/gpu: 8
+                vpc.amazonaws.com/efa: '8'
+              requests:
+                ephemeral-storage: 32Gi
+                # 1200Gi (was the platform-customary 1800Gi): kueue counts the REQUEST
+                # against node allocatable — at 1800Gi only 11/304 p6 nodes were
+                # assignable (287 excluded on memory) and the 12-pod gang could not
+                # admit. Actual per-node usage is far below 1200Gi (weights CPU
+                # backups + ray object store); the convert job ran fine at 1200Gi.
+                memory: 1200Gi
+                nvidia.com/gpu: 8
+                vpc.amazonaws.com/efa: '8'
+            securityContext:
+              privileged: true
+            volumeMounts:
+            - mountPath: /config/training
+              name: training-config
+            - mountPath: /dev/shm
+              name: dshm
+            - mountPath: /dev/infiniband
+              name: infiniband
+            - mountPath: /dev/nvidia-caps
+              name: nvidia-caps
+          volumes:
+          - configMap:
+              name: rl-glm53f10-trainer-config
+            name: training-config
+          # 256Gi keeps the ~186 GiB default Ray object store (ray status: 2.18 TiB
+          # over 12 nodes) on /dev/shm and bounds tmpfs, which otherwise counts
+          # against the 1800Gi limit without a ceiling. Exceeding the sizeLimit
+          # EVICTS the pod, so keep this above the object store size.
+          - emptyDir:
+              medium: Memory
+              sizeLimit: 256Gi
+            name: dshm
+          - hostPath:
+              path: /dev/infiniband
+            name: infiniband
+          - hostPath:
+              path: /dev/nvidia-caps
+            name: nvidia-caps

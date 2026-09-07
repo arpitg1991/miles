@@ -4,6 +4,7 @@
 **Date:** 2026-09-01
 
 **Builds on:** ADR-0001 (port scope and module mapping), ADR-0002 (NATS wire contract stays bit-identical)
+**Amended by:** ADR-0011 (`--arena-train-segments all` stamps the EPISODE id, never the group id, on `rollout_id`; the default `final` mode keeps this decision)
 
 ## Context
 

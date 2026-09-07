@@ -117,7 +117,9 @@ def extract_trajectories(result: dict[str, Any]) -> list[dict[str, Any]]:
     Each trajectory dict contains:
       - ``reward``: float (0.0-1.0)
       - ``messages``: list[dict]  (re-tokenized locally when no token-level data)
-      - ``steps``: list[dict]     (GenerateClient token_ids/loss_mask/log_probs)
+      - ``steps``: list[dict]     (GenerateClient token_ids/loss_mask/log_probs);
+        may hold several self-contained segments (ADR-0011); the final
+        segment is last and is the only step that carries ``stop_reason``
 
     Returns:
         List of trajectory dicts, or empty list on failure.

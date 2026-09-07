@@ -7,10 +7,13 @@ miles has no ``group_id`` and its ``rollout_id`` means something different
 port therefore stamps a shared ``group_index`` (keys miles' GRPO reward
 normalization segments), a unique ``index == gid * n_samples_per_prompt + i``
 (int64-packable, per-trajectory loss denominators), and deliberately leaves
-``rollout_id`` None. A regression to ``rollout_id=gid`` would crash the 27B
-job at step 1 with "all samples in rollout N must share one reward"; a dropped
-``index`` stamp would crash int64 packing — both reproduced during
-verification, neither caught by the wire-format suite.
+``rollout_id`` None. ADR-0011 amends this for ``--arena-train-segments all``:
+the EPISODE id (never the group id) is stamped on ``rollout_id`` so compaction
+segments of one episode share one reward; the default ``final`` mode keeps the
+assertions below byte-identical. A regression to ``rollout_id=gid`` would
+crash the 27B job at step 1 with "all samples in rollout N must share one
+reward"; a dropped ``index`` stamp would crash int64 packing — both reproduced
+during verification, neither caught by the wire-format suite.
 
 Also covers the slow-path (messages-only) rollout_log_probs zero-fill under
 ``use_rollout_logprobs``: a group mixing fast- and slow-path trajectories must

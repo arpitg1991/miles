@@ -36,3 +36,4 @@ in `../RUNLOG.md` and `examples/arena/<job>/RUNLOG.md`, not here.
 | [0008](0008-glm5-next-support-via-pr2786-merge.md) | GLM-5.3-Flash (glm5_next) support via the PR #2786 merge |
 | [0009](0009-mask-clipped-final-turn.md) | `--arena-mask-clipped-final-turn`: mask only the clipped final turn (opt-in salvage; inert on GLM, see ADR-0010) |
 | [0010](0010-keep-timeout-trajectories.md) | Keep Harbor agent-timeout trajectories as training samples, opt-in, only when the timeout is the sole defect (`--arena-keep-timeout-trajectories`, removal-reason log) |
+| [0011](0011-multi-segment-episodes-share-rollout-id.md) | Multi-segment episodes share one `rollout_id` behind `--arena-train-segments all` (amends ADR-0003) |

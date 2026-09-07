@@ -91,7 +91,10 @@ spec:
         # so far and the trainer keeps it as TRUNCATED (was: trial failed,
         # verifier skipped, trainer padded a failed= slot; r6 2945 / r7 711
         # such episodes lost). TO BUILD before launch.
-        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-tasks-dev:glm53-ctxnudge-20260906a
+        # r11 (2026-09-07): moved to arena-slime-dev. arena-tasks-dev keeps only the
+        # 50 most recent images (shared repo, dozens of task-image pushes/day), so
+        # our gym + preseed images were pruned within hours -- twice today.
+        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-ctxnudge-20260906a
         command: ["bash", "-c"]
         args:
         - |
@@ -137,7 +140,7 @@ spec:
           # containerd image store, which resolves digest refs by target
           # digest, so the local copy satisfies the docker.io reference.
           PROBE_DIGEST=sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
-          PROBE_ECR=427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-tasks-dev:alpine-probe-3.23.4
+          PROBE_ECR=427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:alpine-probe-3.23.4
           until docker pull -q "$PROBE_ECR@$PROBE_DIGEST"; do echo "probe image pull retry"; sleep 10; done
           docker tag "$PROBE_ECR@$PROBE_DIGEST" alpine:3.23.4
           docker run --rm "alpine:3.23.4@$PROBE_DIGEST" true && echo "probe image resolves locally"
@@ -149,7 +152,7 @@ spec:
           # succeeds (harbor/environments/docker/utils.py ensure_docker_image_built),
           # so seed the image exported from an r5 pod (identical sidecar context in
           # harbor 0.22.0 -> identical hash b1e6760734a9e6f6).
-          SIDECAR_ECR=427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-tasks-dev:egress-sidecar-b1e6760734a9e6f6
+          SIDECAR_ECR=427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:egress-sidecar-b1e6760734a9e6f6
           until docker pull -q "$SIDECAR_ECR"; do echo "sidecar image pull retry"; sleep 10; done
           docker tag "$SIDECAR_ECR" harbor-prebuilt:harbor-docker-egress-control-sidecar--b1e6760734a9e6f6
           # One r6 pod on a fresh node failed every trial with transformers'

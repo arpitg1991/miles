@@ -1609,3 +1609,33 @@ episode is reported as a clean `success`).
 - The r7 read-out at 5 steps is recorded above (2026-09-05 06:21 PT); r6 and r7 keep
   running side by side and their end states go into a later entry.
 - The gym-side ledger for the same runs (image lineage per run, NATS-restart and consumer-reset recipes, the fresh-node Docker-Hub trap, the 0.21 -> 0.22 CLI contract and envelope-status drift) lives in AREnATasks `eval-runs/2026-09-02/glm53-flash-snorkel-harbor-rl.md` and ADR-0047; trainer-side RCAs stay in this file.
+
+## 2026-09-08 01:58 UTC — r12 launch (`rl-glm53f12`): Vulcan compaction gym + every-segment trainer; queued behind capacity
+
+Identity `rl-glm53f-gbash-r12`. Manifests in `r12/` (copied from r11; deltas in
+each file header and `r12/BUILD.md`). Images built and replicated to ap-south-1
+on 2026-09-08: trainer `arena-slime-dev:miles-glm53-20260908a` (miles
+`arpit-glm-53` d28503cf: `--arena-train-segments all`, all-mode DP alignment
+pad, upstream sample metrics) and gym `arena-slime-dev:gym-glm53-vulcan-20260908a`
+(AREnATasks `arpit-glm-53` a337c2d: Vulcan agent with text-only context
+compaction, ADR-0048). Config deltas vs r11: gym `--agent vulcan`,
+`ARENA_COMPACTION_MAX=2`, `ARENA_CONTEXT_NUDGE_TOKENS` removed; trainer
+`arena_train_segments: all`. Shape, batch, timeouts and every other knob are r11.
+
+Applied in order: `rl-glm53f12-trainer-config` ConfigMap, `nats.yaml`,
+`sglang-svc.yaml`, `trainer-pytorchjob.yaml`. The gym Deployment
+(`gym-worker.yaml`, 288 pods) is held until kueue admits the trainer, so the
+pods do not idle while the job waits.
+
+Capacity at launch: ClusterQueue `gpu.p6-b200-48xlarge` nominal 2440 GPUs,
+2192 in use (r9 and r11 hold 320 each), 248 free; r12 needs 320. Every admitted
+workload in the queue runs at priority class `inference` (1000), and the queue
+preempts `LowerPriority` only, so r12 cannot preempt anything. The queue is
+BestEffortFIFO, so a pending r12 does not block smaller workloads. The
+PyTorchJob shows `Suspended` until admission. r9 (`rl-glm53f9`) is at rollout
+29 of 130 with reward flat at 0.36-0.48 (mean 0.41); a stop frees 320 GPUs.
+
+Also running at launch, not touched: r9 (trainer + 160 gym + nats), r11
+(trainer + 288 gym + nats), the r6 leftovers `rl-glm53f6-gym-sgb` (160 pods)
+and `rl-glm53f6-nats` (trainer deleted 2026-09-06), and the 2026-09-04
+`rl-glm53f-nats`.

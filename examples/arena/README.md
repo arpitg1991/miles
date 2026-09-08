@@ -56,11 +56,15 @@ the image does not know kills the trainer at start, so bump the tag with the key
 | b `miles-glm53-20260902b` | a | `patches/fla_kda_next_power_of_2.py` as an image layer | GLM run 2 |
 | c `miles-glm53-20260902c` | b | `--arena-mask-clipped-final-turn`; `hf_export` ENOTSUPP fix | GLM r2, r3 |
 | d `miles-glm53-20260903d` | c | `--arena-keep-timeout-trajectories`; per-rollout `Removal reasons:` summary | GLM r4, r5, r6, r7 |
+| `miles-glm53-20260908a` | d + r8 `--arena-keep-context-error-trajectories` (`miles-glm53-20260905a`, r8-r10) + r11 `--arena-inflight-multiplier` (`miles-glm53-20260907a`, `arpit-glm-53` b209d9b4) | `--arena-train-segments {final,all}` (plugin ADR-0011) and the all-mode DP alignment pad (zero-loss sibling rows, so `build_dp_schedule` can align singleton micro-batches); drops `rollout/compaction_segments_mean` for the upstream `rollout/num_training_samples` and `rollout/episode_raw_reward`. Built 2026-09-08 from `arpit-glm-53` d28503cf | GLM r12 (`arena_train_segments: all`) |
 
 ## Gym image lineage (`arena-tasks-dev:*`, built from AREnATasks with `brazil-build docker-push-arena <tag>`)
 
 The gym side is unchanged on the wire (ADR-0002: streams, subjects, durable and
 envelopes bit-identical to `amzn_arena_contract`); only the worker image moved.
+r11 moved the gym image to `arena-slime-dev`: the shared `arena-tasks-dev`
+repository keeps only the 50 most recent images and pruned the r9/r10 gym tags
+within hours. A row with a repository prefix lives in `arena-slime-dev`.
 
 | tag | AREnATasks source | adds | used by |
 |---|---|---|---|
@@ -68,6 +72,7 @@ envelopes bit-identical to `amzn_arena_contract`); only the worker image moved.
 | `glm53-reasoning-20260903b` | HEAD 35f7ba7 + the (then uncommitted) reasoning-effort patch; Harbor 0.22.0, amzn-arena-harbor 1.0.1061.0 | `ARENA_REASONING_EFFORT` rendered on the first turn (GLM-5.x template honours `low`/`high` only); `<|user|><|user|>` role-token splice fix; CLI contract `--mode rollout --agent arena-terminus-2`; timed-out groups now reported `truncated` (0.21 said `success`; the trainer salvages both) | GLM r5 (effort `low`) |
 | `glm53-reasoning-20260904a` | mainline c1a0439 + 0fb3e54 + bae6a6b | `ARENA_AGENT_TIMEOUT_MULTIPLIER` honoured on the rollout path (mainline wired eval only) | GLM r6 (multiplier 2, `ARENA_NATS_ACK_WAIT` 6000) |
 | `glm53-sgltimeout-20260904b` | bae6a6b + `ARENA_SGLANG_REQUEST_TIMEOUT_SEC` | configurable `/generate` httpx read timeout (default 600 s, previously hardcoded) | GLM r7 (1800 s, effort `high`) |
+| `arena-slime-dev:gym-glm53-vulcan-20260908a` | `arpit-glm-53` a337c2d; `brazil-build docker-arena`, then `docker tag amzn-arena-tasks:local` + `docker push` to us-east-1 `arena-slime-dev` (replicates to ap-south-1) | Vulcan agent with token-aware context compaction (AREnATasks ADR-0048): the policy writes a handoff note (pi prompts) before each compaction; the compacted history is text only (`[system, instruction, bridge]`, `compaction_tail_fraction` 0); each compaction starts a new rollout segment and the gym ships one step per segment; `ARENA_COMPACTION_*` knobs; CLI `--mode rollout --agent vulcan`. Vulcan does not read `ARENA_CONTEXT_NUDGE_TOKENS` | GLM r12 (`ARENA_COMPACTION_MAX` 2, effort `high`) |
 
 ## Shared conventions
 

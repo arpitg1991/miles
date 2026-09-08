@@ -1,0 +1,18 @@
+# SGLang router service (router runs on the Ray head, replica-index 0 —
+# pin_rollout_manager_to_head in miles-config.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: rl-glm53f13-sglang
+  namespace: arena-tasks
+  labels:
+    app: rl-glm53f13
+spec:
+  type: ClusterIP
+  selector:
+    training.kubeflow.org/job-name: rl-glm53f13-trainer
+    training.kubeflow.org/replica-index: "0"
+  ports:
+  - name: http
+    port: 30000
+    targetPort: 30000

@@ -1,0 +1,348 @@
+# snorkel-general-bash-harbor RL: GLM-5.3-Flash (321B total / 18B active) GRPO
+# on the Harbor NATS gym worker, prod-bom, 12x p6-b200.48xlarge — derived from
+# examples/arena/harbor-rl-27b-snorkel/snorkel-27b.yaml (arena wiring, batch
+# shape, GRPO block kept r5-faithful) with the model-bound blocks swapped in
+# from the upstream-validated GLM-5.3-Flash recipe
+# (radixark/miles PR #2786, scripts/run_glm5_3_flash.py, shape (8,4)):
+#   workers 0-7  = Megatron actor (64 GPUs: TP8+SP x PP4 [11/11/11/12 layers]
+#                  x CP1, EP16/ETP1, DP=2)
+#   workers 8-39 = SGLang engines (256 GPUs, 32 engines at TP8/EP8; r10, r6 ran 16)
+#
+# r12 deltas vs r11 (2026-09-08): arena_train_segments: all (miles arena
+# ADR-0011; REQUIRES image miles-glm53-20260908a, arpit-glm-53 d28503cf). The
+# gym moves to the Vulcan agent with context compaction (AREnATasks ADR-0048,
+# image gym-glm53-vulcan-20260908a, ARENA_COMPACTION_MAX=2; r13/gym-worker.yaml).
+# Each compaction starts a new rollout segment and the gym ships one step per
+# segment; `all` trains every segment as its own Sample with a shared
+# rollout_id and the episode reward. Everything else is r11: 40 replicas,
+# GBS 512, rollout_batch_size 64, n_samples_per_prompt 8,
+# arena_inflight_multiplier 4, save_interval 5, rollout_max_response_len
+# 32768, context lengths, radix cache and DSA settings.
+#
+# r11 deltas vs r10 (2026-09-07): rollout_max_response_len 8192 -> 32768
+# (back to r9; the 8192 per-turn cap cut thinking short), publisher in-flight
+# cap 2x -> 4x rollout_batch_size (arena_inflight_multiplier: 4; r10's 32
+# engines idled at KV ~0.83 with an empty queue), save_interval 20 -> 5 (r10
+# lost 3 steps x ~3 h to a node fabric fault with no checkpoint). Cluster
+# shape (40 replicas = 8 actor + 32 engine nodes), batch shape, context
+# lengths, radix cache and DSA settings are unchanged from r10.
+# The upstream recipe ran COLOCATED (--colocate --offload-train-target disk);
+# this job is DISAGGREGATED like every arena harbor-rl run, so the
+# colocate/offload flags are deliberately NOT carried over.
+#
+# Converted to a flat train argv by scripts/run_arena_harbor.py with
+# hydra_converter semantics (true -> bare flag, false/None -> dropped,
+# prompt-data-list -> --prompt-data moved last, 1e-6 -> 1e-06). The launcher
+# consumes user/cluster/experiment_name/project_name/agislime_dir/replicas/
+# num_trainers/model_arch — they never reach the trainer (miles argparse is
+# strict). Run identity (checkpoint dir, wandb group) comes from the
+# EXPERIMENT_NAME pod env (ADR-0004), and cluster shape from
+# REPLICA/REPLICA_TRAINER — the values here are the config-side record.
+#
+# Deltas vs the snorkel-27b.yaml parent (full table: README.md):
+#   - model_arch/hf_checkpoint/ref_load -> GLM-5.3-Flash-BF16 + its converted
+#     torch_dist checkpoint (convert-job.yaml writes it)
+#   - parallelism/perf/optimizer/sglang blocks -> upstream GLM recipe values
+#   - loss_mask_type: qwen3_5 REMOVED (see comment below)
+#   - attention_backend: flash REMOVED — GLM-5.3-Flash uses its own KDA/DSA
+#     spec (miles_plugins.models.glm5_next); the recipe sets no attention
+#     backend and forcing flash would fight the custom layers
+#   - sglang_enable_dp_attention REMOVED (qwen-specific; recipe runs dp_size 1)
+#   - sglang_tool_call_parser/sglang_reasoning_parser (qwen3_coder/qwen3)
+#     REMOVED — qwen-specific values would be wrong for GLM; the snorkel
+#     textual bash agent parses tool calls itself, so no parser is configured.
+#     UNVERIFIED for GLM output format — see README.md "Risks".
+user: guparpit
+cluster: bom
+# EXPERIMENT_NAME in the PyTorchJob pod env drives CKPT_DIR; these names are
+# the config-side record. NEVER reuse a finished run's name (silent resume).
+experiment_name: rl-glm53f-gbash-r14
+project_name: rl-glm53f-gbash-r14
+agislime_dir: /root/miles
+# r6: 24 replicas = 8 actor nodes + 16 engine nodes (r1-r5: 12 = 8 + 4) (same convention as the parent:
+# replicas - num_trainers = rollout nodes; the launcher derives
+# --actor-num-nodes 8 and --rollout-num-gpus 128 from these + the pod env)
+replicas: 40
+num_trainers: 8
+# -> scripts/models/glm5.3-flash.py (ships in the merged image tree)
+model_arch: glm5.3-flash
+# NOTE: /mnt/models-ro is a separate curated EFS volume (NFS), NOT a view of
+# fast scratch — the fetched model lives only on fast scratch, so both model
+# paths read the mountpoint-S3 fast-scratch mount directly.
+hf_checkpoint: /mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16
+# ref_load lives on EFS (scratch-s3files-rw), not fast scratch: the PP8
+# conversion produces 83 GB .distcp shards and mountpoint-S3 caps objects
+# at ~78 GiB (part-size x 10k parts) — cp fails with EFBIG. EFS has no
+# such cap and is the proven ref_load home (smoke + bowenxie qwen DCP).
+ref_load: /mnt/scratch-s3files-rw/guparpit/checkpoints/dcp/glm5.3-flash_torch_dist
+# r11: 20 -> 5. r10 lost 3 steps x ~3 h to a node fabric fault with no
+# checkpoint between them; a step is ~3 h, so 5 bounds the loss to ~15 h.
+save_interval: 5
+no_load_optim: true
+no_save_optim: true
+rollout_function_path: miles_plugins.arena.nats_arena.nats_rollout.generate_rollout
+data_source_path: miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWithBuffer
+# Dataset: the KNOWN_GYMS registry pin for snorkel-general-bash-harbor, all
+# 2922 validated tasks (manifest commit b4aeedec…) — unchanged from the
+# snorkel-27b parent; see its README for provenance and the dev-set caveat.
+prompt-data-list: '[{"path":"lakefs://arena-inspect/dev/internal/snorkel-general-bash-harbor/ecr-20260823/manifest.jsonl","gym_name":"snorkel-general-bash-harbor","weight":1.0}]'
+sglang_disable_overlap_schedule: true
+# sglang router binds on replica-index 0, where the rl-glm53f-sglang Service
+# points (smoke-proven pattern)
+pin_rollout_manager_to_head: true
+input_key: messages
+metadata_key: metadata
+apply_chat_template: false
+# loss_mask_type is INTENTIONALLY OMITTED — but note: unset does NOT mean
+# pass-through. The parser default is 'qwen' (miles/utils/arguments.py,
+# choices qwen/qwen3/qwen3_5/distill_qwen — no GLM type exists), and
+# nats_rollout.py feeds it into MultiTurnLossMaskGenerator whenever the
+# tokenizer fallback fires (any trajectory whose last step lacks
+# has_generate_tokens: messages-only / openai-client / old-gym trajectories).
+# What actually makes the omission safe HERE is `use_rollout_logprobs: true`
+# (below): every fallback sample gets zero-filled rollout_log_probs + status
+# ABORTED + remove_sample=True (nats_rollout.py), so it contributes zero
+# gradient, and a get_loss_mask exception is caught and padded at the group
+# converter. use_rollout_logprobs is therefore LOAD-BEARING for this
+# omission — do NOT disable it (or copy this yaml without it) unless a GLM
+# mask type is added first: the qwen heuristic silently produces masks on
+# GLM's template with zero warning.
+rollout_shuffle: true
+rollout_skip_special_tokens: true
+# r6: ~10 passes over the 2922-task list. Dynamic sampling publishes ~3.5x
+# the kept groups (r5: 111-127 published per 32 kept), so at batch 64 each
+# rollout draws ~224 prompts -> ~13 rollouts per pass -> 130 for 10 passes.
+# Batch 32 -> 64 also lifts the publisher's in-flight cap (2x batch) from 64
+# to 128 groups so the 16 engines see ~64 requests each instead of ~130.
+num_rollout: 130
+rollout_batch_size: 64
+n_samples_per_prompt: 8
+# 2026-09-02 user-directed, with the gym's ARENA_MAX_TOKENS=32768 /
+# ARENA_ROLLOUT_CONTEXT_LIMIT=131072 (was 2048/32768, r5 parity): GLM at
+# reasoning=max truncated every first-rollout episode. Long-sample watch
+# items: samples up to ~131k tokens overflow the 8192 max_tokens_per_gpu
+# microbatch budget alone (allowed, memory headroom absorbs it) and fatten
+# NATS result messages toward the 8 MiB max_payload.
+# r11: back to 32768 (r9). r10 tried 8192 to shorten turns; keep the gym's
+# ARENA_MAX_TOKENS in lockstep (gym-worker.yaml).
+rollout_max_response_len: 32768
+rollout_temperature: 1
+global_batch_size: 512
+balance_data: true
+# ---- sglang block: upstream GLM-5.3-Flash recipe (PR #2786) ----
+# 4 engines at 8 GPUs each (vs the parent's 8 engines at 4 GPUs): GLM needs a
+# full node per engine (bf16 weights ~643 GB -> ~80 GB/GPU at TP8).
+rollout_num_gpus_per_engine: 8
+# DERIVED, kept only for recipe parity: miles/backends/sglang_utils/
+# arguments.py unconditionally overwrites sglang_tp_size with
+# rollout_num_gpus_per_engine — editing this key alone is silently ignored.
+sglang_tp_size: 8
+sglang_ep_size: 8
+sglang_dp_size: 1
+rollout_max_context_len: 131072
+sglang_context_length: 131072
+sglang_chunked_prefill_size: 8192
+sglang_disable_radix_cache: true
+# tilelang/tilelang is effectively forced: the model config's index_kpool=4
+# restricts DSA backends to fa3/tilelang/trtllm, and on B200 with bf16 KV
+# tilelang is the only validated prefill backend besides trtllm.
+sglang_dsa_prefill_backend: tilelang
+sglang_dsa_decode_backend: tilelang
+# REQUIRED, not cosmetic: on SM100 (B200) the DSA family auto-defaults
+# kv-cache dtype to fp8_e4m3, and sglang's tilelang+fp8 check then raises
+# ValueError. Do not "simplify" by removing this key.
+sglang_kv_cache_dtype: bfloat16
+sglang_mem_fraction_static: 0.7
+sglang_router_port: 30000
+# router health knobs from the GLM recipe: DSA engine startup is slow, give
+# the router 40 x 15 s before declaring an engine dead
+router_health_success_threshold: 1
+router_health_check_interval_secs: 15
+router_health_failure_threshold: 40
+update_weights_interval: 1
+# intentionally inert on the arena NATS path (no consumer reads it for a
+# custom rollout function); kept for config parity with the parent
+partial_rollout: true
+gym_autoscale: false
+skip_eval_before_train: true
+distributed_timeout_minutes: 60
+rollout_health_check_interval: 300
+# 900 (was 300): with use_fault_tolerance ON the monitor's health probe competes
+# with ~100 running + ~30 queued 30k-token requests per engine (KV usage 0.97 in
+# run 2); a 300 s timeout risks killing a HEALTHY engine and dropping its in-flight
+# trajectories. 900 s still detects a truly dead engine within one rollout.
+rollout_health_check_timeout: 900
+# Without this the two health knobs above are INERT (rollout_manager.py:115-123)
+# and one dead engine kills the run: run 2 served 32 min on 3 engines and then
+# died at 01:05:44 when update_weights called the dead actor (log 47802-47827;
+# SGLangEngine actors have no max_restarts). With FT the RolloutHealthMonitor
+# stops the dead engine and recover_updatable_engines rebuilds it at the next
+# update_weights (rollout_manager.py:343-354, server_group.py:215-245;
+# ft_components defaults to [rollout]). UNVALIDATED on the arena NATS path:
+# kill one engine's sglang in the 5-node smoke first; a 300 s health_generate
+# under 100-deep queues could false-kill a healthy engine (then raise
+# rollout_health_check_timeout to 600).
+use_fault_tolerance: true
+# ---- parallelism: upstream GLM recipe, shape (8,4) scaled to 64 GPUs ----
+# TP8+SP x PP4 x CP1 = 32 GPUs per replica-group, DP=2 on 64 actor GPUs.
+# 45 layers split 11/(11/11)/12 across the 4 pipeline stages (MTP layer 45 is
+# dropped for training).
+tensor_model_parallel_size: 8
+sequence_parallel: true
+pipeline_model_parallel_size: 4
+decoder_first_pipeline_num_layers: 11
+decoder_last_pipeline_num_layers: 12
+context_parallel_size: 1
+expert_model_parallel_size: 16
+expert_tensor_parallel_size: 1
+# ---- perf block: upstream GLM recipe ----
+recompute_granularity: full
+recompute_method: uniform
+recompute_num_layers: 1
+# Reconciliation with the parent's dynamic-batch mechanism: the parent ran
+# use_dynamic_batch_size + max_tokens_per_gpu 65536; the GLM recipe ran plain
+# micro_batch_size 1 + max_tokens_per_gpu 8192. Recipe values win for the
+# model-bound token budget (8192 — 321B at full recompute cannot take 65536);
+# dynamic batching (the arena packing mechanism) is kept, and micro_batch_size
+# 1 is the recipe-faithful fallback (ignored while dynamic batching is on).
+micro_batch_size: 1
+use_dynamic_batch_size: true
+max_tokens_per_gpu: 8192
+# Pads each thd micro-batch token stream to a multiple of TP*512 = 4096 tokens
+# (default 128 -> 1024; miles/backends/training_utils/data.py:228-232).
+# tilelang_sparse_mla_bwd takes S/S_kv as static ints while the fwd uses
+# T.dynamic, so the DSA backward triplet re-JITs for every distinct padded
+# length (~3300 compile events across 64 ranks in run 2, ~12 s each, stalling
+# all PP stages); 4096-token granularity cuts distinct lengths ~37 -> ~10 for
+# ~+6.5% pad tokens. Pad tokens form their own cu_seqlens segment -- verify
+# loss parity in the smoke.
+data_pad_size_multiplier: 512
+# ---- misc: upstream GLM recipe ----
+attention_dropout: 0.0
+hidden_dropout: 0.0
+accumulate_allreduce_grads_in_fp32: true
+attention_softmax_in_fp32: true
+update_weight_buffer_size: 1073741824
+train_memory_margin_bytes: 3221225472
+qkv_format: thd
+# selects the megatron<->sglang weight mapping (miles_plugins.models.glm5_next)
+# in the weight updater and the HF export path; the HF config class name alone
+# does not resolve it — the recipe passes this explicitly
+model_name: glm5_next
+# check_weight_update_equal is OFF. Its cost is NOT a per-update compare but a
+# permanent ~73 GiB anonymous CPU copy of every TP rank's parameter shard
+# (sglang weight_checker.py:114-121 `param.data.detach().cpu()`, issued once at
+# startup by miles/ray/placement_group.py:213-217 and never released): 8 ranks x
+# ~79 GiB = ~632 GiB of the 1934 GiB Ray counted on the engine node at the
+# run-2 OOM kill (/tmp/glm53-run2-t0.log:47868-47876). Step-0 megatron->sglang
+# equality was already verified in run 2 (log 14798-14800). Re-enable only in a
+# single-engine smoke (false -> the launcher drops the flag; the skip list is
+# meaningless without it, so it is removed too).
+check_weight_update_equal: false
+# ---- algorithm/GRPO block: r5-faithful (parent values; the recipe's
+# eps 0.2/0.28 deliberately NOT taken) ----
+advantage_estimator: grpo
+# LOAD-BEARING for the loss_mask_type omission above: with rollout logprobs
+# on, tokenizer-fallback samples are removed from training instead of being
+# masked by the qwen heuristic. Do not disable without adding a GLM mask type.
+use_rollout_logprobs: true
+keep_old_actor: false
+# use_kl_loss/kl_loss_type DROPPED (was r5-parity): with kl_loss_coef 0.0 the
+# gradient is identical, but use_kl_loss forced with_ref=True -> ref checkpoint
+# load, a second pinned bf16 CPU backup per actor rank, and a full ref forward
+# over the whole GBS every step = 2388 s of the 7722 s train step 0 (log 47796,
+# 31% of the step). Upstream run_glm5_3_flash.py runs no ref pass. Only the
+# train/kl_loss diagnostic is lost; kl coefs stay pinned at 0.0 explicitly.
+kl_coef: 0.0
+kl_loss_coef: 0.0
+entropy_coef: 0.0
+eps_clip: 0.4
+eps_clip_high: 0.4
+eps_clip_c: 2.0
+# ---- optimizer: upstream GLM recipe (lr 15e-7 -> 1e-6) ----
+optimizer: adam
+lr: 1.5e-6  # r14: only delta vs r13 (lr 1e-6)
+lr_decay_style: constant
+weight_decay: 0.1
+adam_beta1: 0.9
+adam_beta2: 0.98
+use_distributed_optimizer: true
+# ---- optimizer CPU offload (added after r3, 2026-09-03) ----
+# r3 train step 0 fit (peak ~109 GB allocated/rank after the step) but step 1
+# CUDA-OOMed in the fla KDA backward on a ~37k-token sample ("177 GiB in use,
+# 144 GiB allocated, 1 GiB free"): step 1 carries the Adam states (fp32 master +
+# m + v, ~33 GB/rank even sharded over DP=2) that did not exist during step 0,
+# and the KDA layers run all 64 heads on every TP rank, so long-sequence
+# backward transients are large. Offloading the optimizer to CPU frees that
+# headroom; this is the trio every upstream large-MoE recipe in miles uses
+# (scripts/run_deepseek_v32.py, amd/run_glm5_2_744b_a40b.py). Megatron requires
+# precision-aware with cpu-offload; miles asserts the reverse implication too.
+# Host cost: ~66 GB fp32 state per rank -> ~530 GB per actor node (fits the
+# 1800Gi limit; engines nodes unaffected).
+optimizer_cpu_offload: true
+overlap_cpu_optimizer_d2h_h2d: true
+use_precision_aware_optimizer: true
+# ---- tracking ----
+use_tensorboard: false
+use_wandb: true
+use_distributed_post: true
+# enable_trajectory_tracing REMOVED (parent carried `false`): NO miles flag
+# with that name is registered anywhere — it is a deploy.sh-era AGISlime env
+# key. `false` was inert (the converter drops false booleans) but flipping it
+# to true would emit an unknown flag and kill the trainer at argparse.
+arena_sample_mode: full_trajectory
+# REQUIRES image miles-glm53-20260902c: the flag (nats_rollout.py:1827) was
+# committed 2026-09-02 23:44 UTC, AFTER image b was built -- on image b the
+# strict argparse kills the trainer at startup. Run 2: truncated_ratio 0.898,
+# ess_ratio 0.099 (log 31133, 47792): ~90% of samples carried no loss because
+# a clipped final turn removed the whole sample (r5-lineage policy). Now only
+# the clipped final turn's loss-mask is zeroed and earlier turns stay
+# trainable (nats_rollout.py:447-470); degenerate stops, hard overflows and
+# zero-filled logprobs keep the removal behaviour. Watch
+# train_rollout_logprob_abs_diff and rollout/truncated_ratio (status stays
+# TRUNCATED, so the metric remains honest).
+arena_mask_clipped_final_turn: true
+# r5 (REQUIRES image miles-glm53-20260903d): keep Harbor wall-clock-timeout
+# trajectories. r4 removed 222-245/256 samples per step as agent timeouts
+# although every recorded turn ended cleanly and the verifier ran -- e.g.
+# rollout 9 had 51 reward-1 samples but only 29 survived removal. Kept
+# samples stay status TRUNCATED (truncated_ratio stays honest) and are
+# reported as kept_timeout=N in 'Removal reasons'.
+arena_keep_timeout_trajectories: true
+# r8 (REQUIRES image miles-glm53-20260905a + gym image glm53-ctxend-20260905a):
+# the gym now ENDS an episode whose next prompt would overflow the engine
+# context (agent_stop_reason=context_error) and still grades it. Keep those
+# samples exactly like kept timeouts: loss_mask untouched, status TRUNCATED
+# (truncated_ratio stays honest), reported as kept_context_error=N.
+arena_keep_context_error_trajectories: true
+# r11 (REQUIRES an image built from the arena-inflight-multiplier commit; on
+# older images the strict argparse kills the trainer at startup): publisher
+# in-flight cap = 4 x rollout_batch_size = 256 groups (nats_rollout.py
+# _publisher_max_in_flight). r10 on 32 engines with the default 2x (128
+# groups) sat at KV ~0.83 with an empty queue; 4x keeps the engines fed.
+# Size the gym Deployment replicas above this cap (gym-worker.yaml: 288).
+arena_inflight_multiplier: 4
+# r12 (REQUIRES image miles-glm53-20260908a, arpit-glm-53 d28503cf; on an
+# older image the strict argparse kills the trainer at startup on this key):
+# train every segment of an episode (miles arena ADR-0011). The Vulcan gym
+# (AREnATasks ADR-0048) starts a new rollout segment at each context
+# compaction and ships one step per segment. `final` (the default) trains the
+# last segment only. `all` trains every segment as its own Sample with a
+# shared rollout_id and the episode reward. global_batch_size still counts
+# episodes (512); the row count per step is data dependent, so the trainer
+# pads it with zero-loss sibling rows to a multiple of the DP alignment (DP=2
+# here: 64 actor GPUs / (TP8 x PP4)) because build_dp_schedule cannot split
+# a singleton micro-batch. Read rollout/num_training_samples (rows per step)
+# and rollout/episode_raw_reward (one value per episode, not per row). The
+# interim rollout/compaction_segments_mean (34db7fc6, never in a run image)
+# is gone.
+arena_train_segments: all
+log_passrate: false
+wandb_host: https://mega.wandb.agi.amazon.dev
+wandb_project: rl-snorkel27
+wandb_team: arena
+wandb_always_use_train_step: false
+# wandb group = EXPERIMENT_NAME (rl-glm53f-gbash-r1), appended by the launcher
+# Zero-variance groups carry no GRPO gradient; drop them and fetch extras
+# (examine cap 4x target via --dynamic-sampling-max-examine-mult default).
+dynamic_sampling_filter_path: miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std

@@ -937,14 +937,12 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
     population (see ``generate_rollout``). A multi-segment episode (ADR-0011)
     is one unit everywhere: its reward is read once, it counts as removed or
     truncated when ANY segment is, and its response length is the sum over its
-    segments.
-    ``compaction_segments_mean`` is the mean number of samples per episode
-    (1.0 under ``--arena-train-segments final``).
+    segments. Sample-level counts (``rollout/num_training_samples``) come from
+    miles ``log_rollout_data``, not from here.
     """
     data_episodes = _episodes(data)
     episodes = [e[0] for e in data_episodes]
     total_episodes = len(episodes)
-    total_samples = sum(len(g) for g in data)
     rewards = [s.reward for s in episodes if isinstance(s.reward, (int, float))]
     nonzero_groups = sum(1 for g in data if any(isinstance(s.reward, (int, float)) and s.reward > 0 for s in g))
 
@@ -1026,7 +1024,6 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
 
     return {
         "total_episodes": total_episodes,
-        "total_samples": total_samples,
         "avg_reward": sum(rewards) / max(total_episodes, 1),
         "nonzero_count": sum(1 for r in rewards if r > 0),
         "max_reward": max(rewards) if rewards else 0.0,
@@ -1038,7 +1035,6 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
         "failed_frac": failed_count / max(total_episodes, 1),
         "removed_frac": removed_count / max(total_episodes, 1),
         "truncated_ratio": truncated_count / max(all_data_total, 1),
-        "compaction_segments_mean": total_samples / max(total_episodes, 1),
         "reward_nonzero_frac": all_data_nonzero_count / max(all_data_total, 1),
         "zero_reward_groups_frac": zero_reward_groups / max(len(all_data), 1),
         "mean_group_std": sum(group_stds) / max(len(group_stds), 1),
@@ -1947,6 +1943,93 @@ class NATSRolloutWorker:
         return self.output_queue.qsize()
 
 
+def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
+    """Pad the ``all``-mode batch so ``build_dp_schedule`` can align it.
+
+    ``build_dp_schedule`` needs the micro-batch count of a step to be a multiple
+    of ``dp_size * mb_group``. The dynamic path grows the count by splitting
+    multi-sample micro-batches (``expand_bins_by_splitting``), but a row that
+    alone exceeds ``max_tokens_per_gpu`` is a singleton it cannot split. The
+    static path never splits. ``generate_rollout`` delivers exactly
+    ``global_batch_size`` episodes, but the row count is the sum of their
+    segments. An odd row count on ``dp_size == 2`` therefore asserts on the
+    rollout side: ``RolloutManager.generate`` -> ``split_train_data_by_dp`` ->
+    ``split_train_data_by_dp_scheduled_raw`` -> ``build_dp_schedule``. Under
+    ``delay_split_train_data_by_dp`` or ``indep_dp`` (``train_parallel_config``
+    is ``{}``) the legacy ``split_train_data_by_dp_raw`` runs instead. There
+    ``--balance-data`` asserts ``rows % dp_size == 0``
+    (``get_seqlen_balanced_partitions(equal_size=True)``); ``unit`` is a
+    multiple of ``dp_size``, so the pad covers that path too.
+
+    Each pad is a zero-loss sibling segment of the shortest kept row: same
+    ``tokens``, ``reward``, ``group_index`` and ``rollout_id``, all-zero
+    ``loss_mask``. ``_normalize_rewards_by_rollout`` sees one more row with the
+    episode reward and ``_compute_rollout_mask_sums`` adds zero, so the
+    episode's advantage and loss weight are unchanged. ``remove_sample`` stays
+    False so the per-episode ``removed_frac`` does not flag the episode; the
+    pad is visible as ``metadata["mode"] == "dp_pad"``.
+
+    Args:
+        data: The post-filter groups. Pads are appended to the source's group.
+        args: Trainer args; reads the actor parallel sizes and the batch mode.
+
+    Returns:
+        The number of rows added (0 when the batch is already aligned).
+    """
+    # ponytail: mirrors build_dp_schedule's align_to. vpp_size reads the arg that
+    # Megatron validate_args sets; mb_group mirrors parallel.py _compute_vpp_fields
+    # (pipeline_model_parallel_size when vpp > 1). tp/pp default to 1 because
+    # FSDPArgs defines context_parallel_size only, and FSDP dp is world // cp.
+    # The upgrade path is an upstream fix in build_dp_schedule (pad or let a
+    # rank take zero micro-batches); this helper then becomes a no-op and can go.
+    rows = sum(len(g) for g in data)
+    tp_size = getattr(args, "tensor_model_parallel_size", 1)
+    pp_size = getattr(args, "pipeline_model_parallel_size", 1)
+    model_parallel = tp_size * pp_size * args.context_parallel_size
+    dp_size = (args.actor_num_nodes * args.actor_num_gpus_per_node) // model_parallel
+    vpp_size = getattr(args, "virtual_pipeline_model_parallel_size", None) or 1
+    align_to = dp_size * (pp_size if vpp_size > 1 else 1)
+    unit = align_to if args.use_dynamic_batch_size else align_to * args.micro_batch_size
+    pads = (-rows) % unit
+    if pads == 0:
+        return 0
+
+    flat = [s for g in data for s in g]
+    src = min([s for s in flat if not s.remove_sample] or flat, key=lambda s: len(s.tokens))
+    group = next(g for g in data if any(s is src for s in g))
+    episode = [s for s in group if _episode_key(s) == _episode_key(src)]
+    base = min(s.index for s in episode)
+    for k in range(pads):
+        pad = Sample()
+        pad.tokens = list(src.tokens)
+        pad.response_length = src.response_length
+        pad.loss_mask = [0] * src.response_length
+        # Mirror the source: the actor slices EVERY sample's rollout_log_probs
+        # when samples[0] carries them (see the failed-pad comment in _process_group).
+        if src.rollout_log_probs is not None:
+            pad.rollout_log_probs = [0.0] * src.response_length
+        pad.reward = src.reward
+        pad.group_index = src.group_index
+        pad.rollout_id = src.rollout_id
+        pad.index = base + (len(episode) + k) * _SEGMENT_INDEX_STRIDE
+        # COMPLETED, never the source status: a zero-loss row trains nothing, and a
+        # copied TRUNCATED inflates rollout/truncated_ratio and train_data["truncated"].
+        pad.status = Sample.Status.COMPLETED
+        pad.weight_versions = list(src.weight_versions)
+        pad.remove_sample = False
+        pad.metadata = {**(src.metadata or {}), "mode": "dp_pad", "segment": len(episode) + k}
+        group.append(pad)
+    logger.warning(
+        "DP alignment: %d rows + %d zero-loss pad(s) -> multiple of %d; "
+        "build_dp_schedule cannot split singleton micro-batches (rows over max_tokens_per_gpu) "
+        "and the static path never splits",
+        rows,
+        pads,
+        unit,
+    )
+    return pads
+
+
 # ---------------------------------------------------------------------------
 # Main rollout function
 # ---------------------------------------------------------------------------
@@ -2103,6 +2186,9 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 f"arena: {n_episodes} episodes < global_batch_size {args.global_batch_size}; "
                 "compact mode does not trim and the legacy iterator would count samples"
             )
+        # The row count is the sum of segments, so its DP alignment is
+        # data-dependent; pad here rather than assert in build_dp_schedule.
+        _pad_rows_to_dp_alignment(data, args)
 
     # Every count below is per EPISODE (ADR-0011): a multi-segment episode under
     # --arena-train-segments all is one unit, so the numbers match ``final``.
@@ -2145,11 +2231,6 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
         kept_timeout_count,
         kept_context_error_count,
     )
-    if tm["compaction_segments_mean"] != 1.0:
-        logger.info(
-            "Segments: %d samples over %d episodes (compaction_segments_mean=%.2f)",
-            tm["total_samples"], total_episodes, tm["compaction_segments_mean"],
-        )
     # -----------------------------------------------------------------------
 
     gym_counts: dict[str, int] = {}
@@ -2235,9 +2316,9 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 # Pre-filter population (all_data); miles-native log_rollout_data
                 # logs the post-filter rollout/truncated_ratio at the same step.
                 "rollout/truncated_ratio_prefilter": truncated_ratio,
-                # Mean samples per episode; 1.0 unless --arena-train-segments all
-                # expanded compaction segments (ADR-0011).
-                "rollout/compaction_segments_mean": tm["compaction_segments_mean"],
+                # Segment counts: miles log_rollout_data logs
+                # rollout/num_training_samples and rollout/episode_raw_reward
+                # for this batch (ADR-0011), so nothing to add here.
                 # dynamic-sampling (DAPO) telemetry
                 "rollout/dyn_sampling_dropped": dropped,
                 "rollout/dyn_sampling_drop_frac": (

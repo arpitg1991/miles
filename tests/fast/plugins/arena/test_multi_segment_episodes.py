@@ -29,12 +29,14 @@ from tests.fast.plugins.arena.test_group_identity import (
 import miles.utils.mask_utils as mask_utils
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
+from miles.utils.dp_schedule import build_dp_schedule
 from miles.utils.types import Sample
 from miles_plugins.arena.nats_arena import nats_rollout
 from miles_plugins.arena.nats_arena.nats_rollout import (
     _SEGMENT_INDEX_STRIDE,
     NATSRolloutWorker,
     _batch_telemetry,
+    _pad_rows_to_dp_alignment,
     _result_to_episodes_full_trajectory,
     _result_to_samples_full_trajectory,
     _training_steps,
@@ -511,15 +513,26 @@ class _FakeWorker:
         return self.output_queue.qsize()
 
 
-def _rollout_args(mode: str, gbs: int = 4) -> pytypes.SimpleNamespace:
-    return pytypes.SimpleNamespace(
+def _rollout_args(mode: str, gbs: int = 4, **overrides) -> pytypes.SimpleNamespace:
+    # One GPU, no model parallelism -> dp_size 1: the alignment pad is a no-op
+    # unless a test overrides the parallel sizes.
+    fields = dict(
         rollout_global_dataset=True,
         global_batch_size=gbs,
         n_samples_per_prompt=1,
         dynamic_sampling_filter_path=None,
         use_wandb=False,
         arena_train_segments=mode,
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=1,
+        tensor_model_parallel_size=1,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+        use_dynamic_batch_size=True,
+        micro_batch_size=None,
     )
+    fields.update(overrides)
+    return pytypes.SimpleNamespace(**fields)
 
 
 def test_partial_batch_guard_raises_in_all_mode(monkeypatch):
@@ -557,7 +570,6 @@ def test_generate_rollout_removal_breakdown_is_per_episode(monkeypatch, caplog):
     lines = [r.getMessage() for r in caplog.records]
     assert "Failed-sample distribution: failed=1/4 (0.250), removed_total=3/4 (0.750)" in lines
     assert "Removal reasons: length=2, failed=1 (kept_timeout=1, kept_context_error=0)" in lines
-    assert "Segments: 8 samples over 4 episodes (compaction_segments_mean=2.00)" in lines
 
 
 def test_telemetry_counts_episodes_not_segments():
@@ -590,8 +602,6 @@ def test_telemetry_counts_episodes_not_segments():
         assert split[key] == whole[key], key
     assert split["total_episodes"] == 1
     assert split["avg_response_length"] == 7  # summed over the episode's segments
-    assert split["compaction_segments_mean"] == 2.0
-    assert whole["compaction_segments_mean"] == 1.0
 
     # Mixed group: a 2-segment reward-1 episode and a 1-segment reward-0 pad
     # episode -> avg_reward 0.5 (per episode), NOT 2/3 (per sample).
@@ -606,11 +616,174 @@ def test_telemetry_counts_episodes_not_segments():
         mode="failed",
     )
     mixed = _batch_telemetry([[seg0, seg1, pad]], [[seg0, seg1, pad]])
-    assert mixed["total_episodes"] == 2 and mixed["total_samples"] == 3
+    assert mixed["total_episodes"] == 2
     assert mixed["avg_reward"] == pytest.approx(0.5)
     assert mixed["reward_nonzero_frac"] == pytest.approx(0.5)
     assert mixed["failed_frac"] == pytest.approx(0.5)
     assert mixed["removed_frac"] == pytest.approx(0.5)
     assert mixed["truncated_ratio"] == pytest.approx(0.5)
-    assert mixed["compaction_segments_mean"] == pytest.approx(1.5)
     assert mixed["mean_group_std"] == pytest.approx(0.5)  # std over episode rewards [1, 0]
+
+
+# ===========================================================================
+# 5. DP alignment pad: build_dp_schedule cannot split singleton micro-batches
+# ===========================================================================
+
+# The r12 recipe shape: 8 GPUs, TP4 -> dp_size 2 (miles PR #2741 runs the same).
+_DP2_TRAIN_PARALLEL_CONFIG = {
+    "dp_size": 2,
+    "cp_size": 1,
+    "vpp_size": None,
+    "microbatch_group_size_per_vp_stage": None,
+}
+
+
+def _dp2_args(**overrides) -> pytypes.SimpleNamespace:
+    return _make_args(
+        arena_train_segments="all",
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=8,
+        tensor_model_parallel_size=4,
+        pipeline_model_parallel_size=1,
+        context_parallel_size=1,
+        **overrides,
+    )
+
+
+def _nine_rows() -> list[list[Sample]]:
+    """8 episodes, one of two segments -> 9 rows; every row holds 2+ tokens.
+
+    Episode 3 is the shortest KEPT row (reward 0). Episode 1 is as short, comes
+    first in batch order, and is removed, so it must not become the pad source.
+    """
+    groups = [[_sample(group_index=i, index=i, rollout_id=i, reward=1.0, response_length=4 + i)] for i in range(7)]
+    groups[1] = [_sample(group_index=1, index=1, rollout_id=1, reward=1.0, response_length=1, remove=True)]
+    groups[3] = [_sample(group_index=3, index=3, rollout_id=3, reward=0.0, response_length=1, segment=0, n_segments=1)]
+    groups.append(_segments(7, 2))
+    return groups
+
+
+def _schedule(args: pytypes.SimpleNamespace, groups: list[list[Sample]]):
+    rows = [s for g in groups for s in g]
+    return build_dp_schedule(
+        args,
+        _DP2_TRAIN_PARALLEL_CONFIG,
+        [len(s.tokens) for s in rows],
+        global_batch_size=8,
+        rollout_indices=[s.rollout_id for s in rows],
+    )
+
+
+def test_pad_rows_to_dp_alignment_pads_odd_rows_with_shortest_kept_sibling(caplog):
+    groups = _nine_rows()
+    src = groups[3][0]
+    src.rollout_log_probs = [-0.1] * src.response_length
+    src.status = Sample.Status.TRUNCATED
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        assert _pad_rows_to_dp_alignment(groups, _dp2_args()) == 1
+    rows = [s for g in groups for s in g]
+    assert len(rows) == 10
+    pad = groups[3][-1]  # appended to the source's group
+    assert pad is not src
+    assert pad.metadata["mode"] == "dp_pad"
+    assert (pad.rollout_id, pad.group_index, pad.reward) == (3, 3, 0.0)
+    assert pad.tokens == src.tokens and pad.response_length == src.response_length
+    assert pad.loss_mask == [0] * src.response_length
+    assert pad.rollout_log_probs == [0.0] * src.response_length
+    assert pad.remove_sample is False
+    # A zero-loss row never trains: COMPLETED keeps miles' per-sample truncated count at the source alone.
+    assert pad.status is Sample.Status.COMPLETED
+    assert sum(s.status is Sample.Status.TRUNCATED for s in rows) == 1
+    assert pad.weight_versions == src.weight_versions
+    assert pad.index == 3 + _SEGMENT_INDEX_STRIDE
+    assert len({s.index for s in rows}) == len(rows)
+    # segment counts from len(episode); n_segments is a copy (nothing validates segment < n_segments).
+    assert (pad.metadata["segment"], pad.metadata["n_segments"]) == (1, 1)
+    assert pad.metadata["task_id"] == src.metadata["task_id"]
+    # The pad joins its episode: 8 episodes, one removed (episode 1), none flagged by the pad.
+    tm = _batch_telemetry(groups, groups)
+    assert tm["total_episodes"] == 8
+    assert tm["removed_frac"] == pytest.approx(1 / 8)  # episode 1
+    assert tm["truncated_ratio"] == pytest.approx(1 / 8)  # episode 3; the pad adds no second count
+    assert tm["avg_reward"] == pytest.approx(7 / 8)
+    (record,) = caplog.records
+    assert record.levelno == logging.WARNING
+    assert "9 rows + 1 zero-loss pad(s) -> multiple of 2" in record.getMessage()
+
+
+def test_pad_rows_to_dp_alignment_even_rows_is_a_noop(caplog):
+    groups = [[_sample(group_index=i, index=i, rollout_id=i, reward=1.0, response_length=2)] for i in range(8)]
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER):
+        assert _pad_rows_to_dp_alignment(groups, _dp2_args()) == 0
+    assert sum(len(g) for g in groups) == 8
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("gpus_per_node, cp", [(2, 1), (4, 2)])
+def test_pad_rows_to_dp_alignment_fsdp_args_pad_to_world_over_cp(gpus_per_node, cp):
+    # FSDPArgs (miles/backends/fsdp_utils/arguments.py) defines context_parallel_size
+    # only, so the helper must not read tensor/pipeline sizes; dp_size == world // cp.
+    args = _make_args(
+        arena_train_segments="all", actor_num_nodes=1, actor_num_gpus_per_node=gpus_per_node, context_parallel_size=cp
+    )
+    assert not hasattr(args, "tensor_model_parallel_size")
+    assert not hasattr(args, "pipeline_model_parallel_size")
+    groups = _nine_rows()
+    assert _pad_rows_to_dp_alignment(groups, args) == 1  # dp_size 2: 9 rows -> 10
+    assert sum(len(g) for g in groups) == 10
+
+
+def test_pad_rows_to_dp_alignment_static_path_pads_to_micro_batch_multiple():
+    args = _dp2_args(use_dynamic_batch_size=False, micro_batch_size=2)
+    groups = _nine_rows()
+    with pytest.raises(AssertionError, match="static path"):
+        _schedule(args, groups)
+    # unit = dp_size * micro_batch_size = 4 -> 9 rows need 3 pads.
+    assert _pad_rows_to_dp_alignment(groups, args) == 3
+    rows = [s for g in groups for s in g]
+    assert len(rows) == 12
+    pads = [s for s in rows if s.metadata["mode"] == "dp_pad"]
+    # Every pad is a sibling of episode 3 and takes the next stride.
+    assert [p.rollout_id for p in pads] == [3, 3, 3]
+    assert [p.index for p in pads] == [3 + k * _SEGMENT_INDEX_STRIDE for k in (1, 2, 3)]
+    assert [p.metadata["segment"] for p in pads] == [1, 2, 3]
+    assert len({s.index for s in rows}) == 12
+    _, _, num_microbatches, num_rollouts = _schedule(args, groups)
+    assert (num_microbatches, num_rollouts) == ([3], [8])
+
+
+def test_build_dp_schedule_needs_the_pad_when_every_row_is_oversized():
+    # Every row exceeds max_tokens_per_gpu, so first-fit yields 9 singleton
+    # micro-batches and expand_bins_by_splitting has nothing to split.
+    args = _dp2_args(max_tokens_per_gpu=1)
+    groups = _nine_rows()
+    with pytest.raises(AssertionError, match="dynamic path: could only produce 9 micro-batches"):
+        _schedule(args, groups)
+    assert _pad_rows_to_dp_alignment(groups, args) == 1
+    partitions, micro_batch_indices, num_microbatches, num_rollouts = _schedule(args, groups)
+    assert num_rollouts == [8]
+    assert num_microbatches == [5]
+    assert sorted(i for p in partitions for i in p) == list(range(10))
+    assert all(len(mb) == 1 for rank in micro_batch_indices for mb in rank)
+
+
+def test_generate_rollout_pads_all_mode_only(monkeypatch):
+    # 4 episodes, one of two segments -> 5 rows on dp_size 2.
+    def groups(mode: str) -> list[list[Sample]]:
+        rid = (lambda i: i) if mode == "all" else (lambda i: None)
+        out = [[_sample(group_index=i, index=i, rollout_id=rid(i), reward=1.0, response_length=2)] for i in range(3)]
+        out.append(
+            _segments(3, 2)
+            if mode == "all"
+            else [_sample(group_index=3, index=3, rollout_id=None, reward=1.0, response_length=2)]
+        )
+        return out
+
+    for mode, expected_rows in (("all", 6), ("final", 4)):
+        monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds, m=mode: _FakeWorker(groups(m), m))
+        data = generate_rollout(
+            _rollout_args(mode, actor_num_gpus_per_node=2), 0, data_source=pytypes.SimpleNamespace()
+        )
+        rows = [s for g in data for s in g]
+        assert len(rows) == expected_rows, mode
+        assert sum(s.metadata["mode"] == "dp_pad" for s in rows) == (1 if mode == "all" else 0)

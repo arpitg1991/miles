@@ -49,6 +49,23 @@ segments; the gym side of this contract)
   meaning: compact siblings of ONE rollout execution that share one reward.
   Every segment of one episode has one verifier reward.
 
+### Precedent
+
+miles upstream already runs this design for its own rollout functions. PR
+#1927 (`11cc2326`, variable global batch size) made `global_batch_size` count
+rollouts. `rollout_id` marks compact siblings. `_compute_rollout_mask_sums`
+sums the loss mask per rollout, and `build_dp_schedule` keeps one rollout's
+samples in one training step. PR #2368 (`95ecc712`) stamps one `rollout_id`
+per leaf. PR #2710 (`f2b7c792`) added `_compute_training_sample_metrics` to
+`miles/ray/rollout/metrics.py`: `rollout/num_training_samples` and
+`rollout/episode_raw_reward`, keyed by `(group_index, rollout_id)`. miles logs
+them for every rollout function through `rollout_manager.generate` ->
+`log_rollout_data`. PR #2741 (`bfe13117`,
+`examples/experimental/terminus-compaction`) ships one `Sample` per kept
+leaf. Siblings share a rollout ID and the terminal reward. A shared
+completion is masked on every owner but the first. This ADR ports that design
+onto the NATS path. It adds no core edit.
+
 ## Decision
 
 Add `--arena-train-segments {final,all}` (`type=str`, `default="final"`,
@@ -85,6 +102,63 @@ callers keep the old behaviour). The default is byte-identical to today.
   `generate_rollout` (`RuntimeError` naming the episode count when
   `len({episode keys}) < global_batch_size`), instead of `postprocess`'s
   `Not enough samples`. Same severity, different line.
+- **DP alignment pad.** `build_dp_schedule` needs the micro-batch count of a
+  step to be a multiple of `align_to = dp_size * (mb_group if vpp_size > 1
+  else 1)`. The dynamic path grows the count with `expand_bins_by_splitting`
+  (`miles/utils/seqlen_balancing.py`), which splits multi-sample bins only. A
+  row that alone exceeds `max_tokens_per_gpu` is a singleton bin it cannot
+  split. The static path never splits. Under `final` the row count is
+  `global_batch_size`, aligned by config. Under `all` the row count is the sum
+  of segments. An odd count on `dp_size == 2` therefore asserts on the rollout
+  side, in `RolloutManager.generate` -> `split_train_data_by_dp` ->
+  `split_train_data_by_dp_scheduled_raw` -> `build_dp_schedule`. The message
+  reads `dynamic path: could only produce N micro-batches after maximal
+  splitting`. Under `delay_split_train_data_by_dp` or `indep_dp`
+  (`train_parallel_config` is `{}`) the legacy `split_train_data_by_dp_raw`
+  runs instead. There `--balance-data` asserts `rows % dp_size == 0`
+  (`get_seqlen_balanced_partitions(equal_size=True)`); `unit` is a multiple of
+  `dp_size`, so the pad covers that path too. Upstream tests
+  (`tests/fast/utils/test_dp_schedule.py`) cover multi-sample bins and an even
+  oversized count only. The upstream Terminus recipe (PR #2741: TP4 on 8 GPUs,
+  `dp_size` 2, `--max-tokens-per-gpu 16384` against 32k-token rows) has the
+  same exposure. `generate_rollout` therefore calls
+  `_pad_rows_to_dp_alignment(data, args)` right after the episode-count guard.
+  `dp_size = actor_num_nodes * actor_num_gpus_per_node // (tp * pp *
+  context_parallel_size)`, with `tp` and `pp` read through `getattr(args, ...,
+  1)`. FSDPArgs (`miles/backends/fsdp_utils/arguments.py`) defines
+  `context_parallel_size` only, and FSDP `dp` is `world // cp`. `vpp_size`
+  reads `args.virtual_pipeline_model_parallel_size` (set by Megatron
+  `validate_args`); `mb_group` mirrors `_compute_vpp_fields`, which returns
+  `pipeline_model_parallel_size` when vpp > 1. `unit = align_to` on the
+  dynamic path and `align_to * micro_batch_size` on the static path;
+  `pads = (-rows) % unit`. Each pad is a zero-loss sibling segment of the
+  SHORTEST kept row (fewest tokens, `remove_sample` False). It copies `tokens`,
+  `response_length`, `reward`, `group_index`, `rollout_id` and
+  `weight_versions`. It sets `status = COMPLETED`, `loss_mask = [0] *
+  response_length`, and `rollout_log_probs = [0.0] * response_length` when the
+  source carries log-probs. It takes `index = base + len(episode) *
+  _SEGMENT_INDEX_STRIDE`. The pad joins the source's group, so a second pad
+  from the same episode takes the next stride and `index` stays unique.
+  `metadata` is a copy with `mode = "dp_pad"` and `segment = len(episode)`.
+  `n_segments` keeps the copied value; no code in miles or the plugin
+  validates `segment < n_segments` (both keys are informational).
+  `remove_sample` stays False: `removed_frac` flags an episode when ANY
+  segment is removed, and a pad is not lost training signal. The pad adds one
+  row with the episode reward to `_normalize_rewards_by_rollout` and zero to
+  `_compute_rollout_mask_sums`. The episode's advantage and loss weight
+  therefore do not change. The pad status is `COMPLETED` by design: a
+  zero-loss row never trains, and a copied `TRUNCATED` inflates the per-sample
+  `rollout/truncated_ratio` and `train_data["truncated"]`. Known drift: the
+  pad adds the shortest row's tokens to the response-length sums
+  (`avg_response_length`, upstream `rollout/episode_total_response_length/mean`).
+  That drift is bounded by `unit - 1` rows per batch. Under `--log-passrate`,
+  `_compute_passrate_from_samples` (`miles/ray/rollout/metrics.py`) keeps only
+  groups with exactly `n_samples_per_prompt` rows. A padded group holds
+  `n_samples_per_prompt + 1` rows or more, so the metric drops it as incomplete
+  and logs a warning. The metric drops a group with a multi-segment episode the
+  same way. One `DP alignment:` warning names rows, pads and unit. The upgrade
+  path is an upstream fix in `build_dp_schedule` (pad there, or let a rank take
+  zero micro-batches). The helper then pads nothing and can go.
 - **Truncation stays an episode property.** Only the final step can carry
   `stop_reason="length"` (archived segments have no `stop_reason`). A final
   `length` marks every segment TRUNCATED. `--arena-mask-clipped-final-turn`
@@ -102,7 +176,7 @@ callers keep the old behaviour). The default is byte-identical to today.
   segment.
 - **Telemetry counts episodes.** `generate_rollout` groups samples into
   episodes by `(group_index, rollout_id if not None else index)`
-  (`_episodes`). `total_samples`, `avg_reward`, `nonzero_count` and
+  (`_episodes`). `avg_reward`, `nonzero_count` and
   `failed_frac` read the first segment (`_episode_representatives`; reward,
   `weight_versions` and `group_metrics` live there).
   The per-segment flags reduce over the episode: `removed_frac` counts an
@@ -110,10 +184,11 @@ callers keep the old behaviour). The default is byte-identical to today.
   segment is TRUNCATED, and the "Removal reasons" breakdown reads the
   removed segment (`_removal_representative`), so a final segment dropped
   under `--arena-mask-clipped-final-turn` or a per-segment `bad_logprobs`
-  is visible. `avg_response_length` sums `response_length` per episode; the
-  new `rollout/compaction_segments_mean` is the mean number of samples per
-  episode. Under `final` every episode has one sample, so every number is
-  unchanged. `s.metadata["segment"] = k` and `s.metadata["n_segments"] = n`
+  is visible. `avg_response_length` sums `response_length` per episode. The
+  plugin logs no sample count of its own: miles `log_rollout_data` already
+  logs `rollout/num_training_samples` and `rollout/episode_raw_reward` for
+  this batch (PR #2710). Under `final` every episode has one sample, so every
+  number is unchanged. `s.metadata["segment"] = k` and `s.metadata["n_segments"] = n`
   on every sample: `_finish_sample` stamps `0` and `1`, so a messages-only
   (slow-path) sample and a pad episode read as segment 0 of 1, and the fast
   path overwrites both for a multi-segment episode.
@@ -151,14 +226,39 @@ callers keep the old behaviour). The default is byte-identical to today.
 - **Failure mode moves.** In `all` mode a partial batch fails in
   `generate_rollout`'s guard or `build_dp_schedule`, not in
   `postprocess_rollout_data`. Loud in both cases.
-- **Metrics.** Read `rollout/compaction_segments_mean` next to reward on the
-  first r12 comparison; under `final` it is 1.0.
+- **Metrics.** miles `log_rollout_data` (`miles/ray/rollout/metrics.py`;
+  `_compute_metrics_from_samples` output gets the `rollout/` prefix through
+  `dict_add_prefix`) logs for this path: `rollout/num_training_samples` (every
+  row, pads included) and `rollout/episode_raw_reward` (mean over episodes
+  keyed by `(group_index, rollout_id)`), plus
+  `rollout/episode_response_length/{mean,...}` and
+  `rollout/episode_total_response_length/mean` summed per episode. Read
+  `rollout/num_training_samples / global_batch_size` as the mean segments per
+  episode on the first r12 comparison; under `final` it is 1.0. The plugin
+  emits no segment metric of its own. A pad shows up in the `DP alignment:`
+  warning line and as `metadata["mode"] == "dp_pad"`.
 - **Tests.** `tests/fast/plugins/arena/test_multi_segment_episodes.py` pins
-  both modes, the marker gate, the stamping (fast path, slow path, pads),
-  the shared reward through the real conversion path, the truncation and
-  salvage semantics per segment, the guard, and the per-episode
-  `removed_frac` / "Removal reasons" line for an episode whose final segment
-  alone is dropped.
+  one behaviour per test:
+  - both modes and the marker gate;
+  - the stamping on the fast path, the slow path and the gym-side pads;
+  - the shared reward through the real conversion path;
+  - the truncation and salvage semantics per segment;
+  - the partial-batch guard;
+  - the per-episode `removed_frac` and "Removal reasons" line for an episode
+    whose final segment alone is dropped;
+  - the DP alignment pad: 9 rows on `dp_size` 2 pad to 10 with a zero-loss
+    sibling of the shortest kept row (shared `rollout_id`, `group_index` and
+    reward, unique `index`, `remove_sample` False, `mode == "dp_pad"`);
+  - a `TRUNCATED` source yields a `COMPLETED` pad, so the per-sample truncated
+    count and the per-episode `truncated_ratio` do not grow;
+  - FSDP-shaped args (no `tensor_model_parallel_size` or
+    `pipeline_model_parallel_size`) pad to `dp_size = world // cp`;
+  - an even row count adds nothing and logs nothing;
+  - the static path pads to a multiple of `dp_size * micro_batch_size`;
+  - `build_dp_schedule` asserts on the 9 oversized rows and schedules the
+    padded 10;
+  - `final` mode never pads.
+
   `test_group_identity.py` is unchanged and still pins `rollout_id=None`
   under the default mode; its module docstring records this amendment.
 - **ADR-0003 status.** Its decision stands for the default mode and its

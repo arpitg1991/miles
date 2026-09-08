@@ -11,7 +11,7 @@ tools=0`); the trainer ran 9 zero-gradient steps. The trainer image and
 
 ## Gym image `gym-glm53-vulcan-glm47-20260908b`
 
-Built from AREnATasks arpit-glm-53 (commit that adds
+Built from AREnATasks arpit-glm-53 0d98f0a (adds
 `amzn_arena_contract.tool_parsers.glm47`, a faithful port of SGLang's
 `Glm47MoeDetector`). Same recipe as r12 section 2 with
 `TAG=gym-glm53-vulcan-glm47-20260908b`. Smoke test before launch: roll the

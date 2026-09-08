@@ -78,11 +78,13 @@ Image lineage (`arena-slime-dev:`; each tag is a superset of the previous):
 | `miles-glm53-20260902b` | + fla 0.4.2 KDA kernel patch for triton 3.7.1 (`examples/arena/patches/fla_kda_next_power_of_2.py`, applied by the Dockerfile) | 3c40b4660 |
 | `miles-glm53-20260902c` | + `--arena-mask-clipped-final-turn` flag; hf_export ENOTSUPP fix for FUSE/mountpoint-S3 aux files (`miles/backends/megatron_utils/hf_export.py`). **Pinned by `trainer-pytorchjob.yaml` (r2, r3)** | 5f8925db0, 44ddf62fb |
 | `miles-glm53-20260903d` | + `--arena-keep-timeout-trajectories` (default off) and the per-rollout `Removal reasons:` summary line (`miles_plugins/arena/nats_arena/nats_rollout.py`) | 32da04357 |
+| `miles-glm53-20260908a` | + `--arena-train-segments {final,all}` (plugin ADR-0011) and the all-mode DP alignment pad (zero-loss sibling rows, so `build_dp_schedule` can align singleton micro-batches); drops `rollout/compaction_segments_mean` for the upstream `rollout/num_training_samples` and `rollout/episode_raw_reward`. Built 2026-09-08 on top of the r11 image (`miles-glm53-20260907a`: `--arena-inflight-multiplier`, b209d9b4). **Pinned by `r12/trainer-pytorchjob.yaml`** | d28503cf (`arpit-glm-53`) |
 
 miles argparse is strict: a `miles-config.yaml` key whose flag the image does
 not know kills the trainer at startup (`arena_mask_clipped_final_turn` needs
->= c, `arena_keep_timeout_trajectories` needs d). Bump the manifest image tag
-together with any such key.
+>= c, `arena_keep_timeout_trajectories` needs d, `arena_train_segments` needs
+`miles-glm53-20260908a`). Bump the manifest image tag together with any such
+key.
 
 The base is the ECR mirror of `docker.io/radixark/miles:glm53next` (SGLang
 branch `sglang-miles-glm53next@9a26e749` + radixark/Megatron-LM PR#89

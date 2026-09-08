@@ -41,6 +41,29 @@ keeps starting new work past the point where it can finish inside the window.
   launch, the same guard that protects r8. Bake the trainer fix into the next
   run image.
 
+### 7. Vulcan compaction + every-segment training (r12) — PREPARED
+
+- **Change.** Gym: `--agent vulcan` with token-aware context compaction
+  (AREnATasks ADR-0048, image `gym-glm53-vulcan-20260908a`). The policy writes
+  a handoff note before each compaction; the compacted history is text only
+  (`[system, instruction, bridge]`); each compaction starts a new rollout
+  segment and the gym ships one step per segment. `ARENA_COMPACTION_MAX=2`
+  keeps one NATS result message under the 8 MiB `max_payload`. Trainer:
+  `arena_train_segments: all` (miles ADR-0011, image `miles-glm53-20260908a`)
+  trains every segment as its own Sample with a shared `rollout_id` and the
+  episode reward; the trainer pads the row count to the DP alignment with
+  zero-loss sibling rows. Every other knob is r11. Assets: `r12/`.
+- **Effort.** Done. Both images are built and pushed; `r12/BUILD.md` lists the
+  launch commands in order.
+- **Expected benefit.** High. An episode continues past the 98 k wall instead
+  of dying at it, and every segment of the work carries gradient.
+- **Stability risk.** Medium. New agent loop and new sample shape on the arena
+  NATS path. The row count per step is data dependent. Watch
+  `rollout/num_training_samples`, `rollout/episode_raw_reward`,
+  `train_rollout_logprob_abs_diff` and the gym's 6 MiB payload warning. The
+  loss and advantage path is unchanged (no KL, no entropy term), so a shift
+  from the new sample shape has no gauge; candidate 5 stays open.
+
 ## Remaining candidates
 
 ### 2. Group-relative length penalty on passes (#1573 pattern)
@@ -99,6 +122,8 @@ keeps starting new work past the point where it can finish inside the window.
   Summarization re-renders history, which is exactly what the arena backend
   disables today because it corrupts the cumulative token state. Needs a design
   and an ADR.
+- **Note.** r12 ships the Vulcan variant (AREnATasks ADR-0048, miles ADR-0011),
+  not the session-server-v2 path; see item 7.
 
 ## Rejected
 

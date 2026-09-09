@@ -1,0 +1,99 @@
+# snorkel-general-bash-harbor 27B RL run 2 (prod-bom): NATS JetStream + Service.
+# Separate NATS from run 1 — stream names (ARENA_TASKS/ARENA_RESULTS) are
+# per-server, so parallel runs need their own broker.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rl-glm53f15-nats-config
+  namespace: arena-tasks
+  labels:
+    app: rl-glm53f15-nats
+data:
+  nats.conf: |
+    port: 4222
+    http_port: 8222
+    max_payload: 8388608
+    jetstream {
+      store_dir: /data/jetstream
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rl-glm53f15-nats
+  namespace: arena-tasks
+  labels:
+    app: rl-glm53f15-nats
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rl-glm53f15-nats
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
+      labels:
+        app: rl-glm53f15-nats
+    spec:
+      nodeSelector:
+        node-type: general-cpu
+      containers:
+      - name: nats
+        image: 339713096311.dkr.ecr.us-east-1.amazonaws.com/agif-base-images-omegat:nats-2.11.3-alpine
+        command: ["nats-server"]
+        args: ["-c", "/etc/nats/nats.conf"]
+        ports:
+        - containerPort: 4222
+          name: nats
+        - containerPort: 8222
+          name: monitor
+        readinessProbe:
+          httpGet:
+            path: /healthz?js-server-only=true
+            port: monitor
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          failureThreshold: 6
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            cpu: "2"
+            memory: 4Gi
+        volumeMounts:
+        - mountPath: /data/jetstream
+          name: jetstream
+        - mountPath: /etc/nats
+          name: nats-config
+      volumes:
+      - name: jetstream
+        emptyDir:
+          # Headroom above the 6 GiB results-stream max_bytes bound (see
+          # stream_config.DEFAULT_RESULTS_MAX_BYTES). The stream bound is the
+          # real guard against a volume-full eviction; this is defense in depth.
+          sizeLimit: 20Gi
+      - name: nats-config
+        configMap:
+          name: rl-glm53f15-nats-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rl-glm53f15-nats
+  namespace: arena-tasks
+  labels:
+    app: rl-glm53f15-nats
+spec:
+  selector:
+    app: rl-glm53f15-nats
+  ports:
+  - name: nats
+    port: 4222
+    targetPort: 4222
+  - name: monitor
+    port: 8222
+    targetPort: 8222

@@ -149,6 +149,9 @@ spec:
                     # namespace that TAS does not see.
                     - i-0161b51ba3f04dc21
                     - i-095b374aee2064004
+                    # 2026-09-09 19:22Z r16: uncorrectable NVLink error on the
+                    # SGLang engine (worker-27); hardware fault.
+                    - i-0f2f7d13b4d31644d
                     - i-00cb6ebceda36a4ef
                     # 2026-09-02 second incident, same signature: kueue TAS
                     # assigned these three (each holds an unreaped Failed

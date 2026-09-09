@@ -110,7 +110,7 @@ The table names the source of each piece and the reason for that choice.
 | 4 | Turn the flag on in the task message | n/a | Done in old AGISlime publisher | Write one line in miles build_task_message. | Gym already reads the flag. |
 | 5 | Decode base64 to an int32 array of shape (tokens-1, layers, top_k) | _decode_topk_buffer plus stop-edge trim | Hand-written decoder | Copy upstream exactly. | Upstream's is the reference and handles the extra row. |
 | 6 | Do not blow up trainer RAM while thousands of samples wait in the queue | Not needed. Samples go straight to training. | Lazy: keep the pointer, decode only when the group is drained, delete the file after. | Copy acuadron's idea, rewrite for miles. | We hold about 2000 in-flight samples for hours. Eager decode is over 100 GB of RAM. |
-| 7 | Give padding samples a routing array too | Not needed. Upstream never pads groups. | Zero array shaped like a healthy sibling. | Copy acuadron's idea, rewrite for our pad code. | The trainer asserts every sample has routing. |
+| 7 | Give padding samples a routing array too | Not needed. Upstream never pads groups. | Zero array shaped like a healthy sibling. | Copy acuadron's idea, but fill -1 rows, not zeros. | The trainer asserts every sample has routing. Zero rows crash Megatron (see Outcome). |
 | 8 | Fail loudly if routing is missing | Our fork already raises at conversion time | Raised at sample build | Add acuadron's early check too. | A swallowed error would silently pad over missing data. |
 | 9 | Feed routing into the model forward and backward | Done (Megatron hook, replay queues) | Used as-is | Nothing to do. Set use_rollout_routing_replay: true. | Works once the sample field is filled. |
 | 10 | Indexer (attention) replay | Exists, marked debug-only, 60x larger | Not done | Skip. Keep TIS to cover the residual. | 3.6 GB per episode, and the router strips the request field. |
@@ -180,6 +180,29 @@ Trainer side (miles fork, new image):
   `train/pg_clipfrac` near 0. `train/kl_loss` is not a valid check under R3.
 - Cost: 29 GB per step of int32 through the shared mount and into pinned CPU
   on each actor rank. Watch `train_memory_margin` and the scratch mount.
+
+## Outcome (r16, 2026-09-09)
+
+- Step-0 `train/ppo_kl` fell from 0.008 (r9-r14) to 1.8e-05 and stayed at or
+  below 1.4e-05 through step 5. `train/pg_clipfrac` fell from 0.011 to 3e-04.
+  `train/tis` is 1.000. R3 removes the train/inference mismatch on this path.
+- Pad rows MUST be -1, not 0. An all-zero row selects expert 0 topk times.
+  Megatron builds `routing_map` with `scatter(1, top_indices, 1)`
+  (`moe_utils.py:861`), so duplicates collapse to one entry, but the dropless
+  dispatcher sizes the all-to-all for `tokens * topk` rows
+  (`token_dispatcher.py:572`). The result is `RuntimeError: Split sizes
+  doesn't match total dim 0 size` in `compute_log_prob`. `pad_routing` in
+  `routing_replay.py` fills -1; `replay_base._get_replay_result` rewrites
+  a -1 row to `arange(topk) % num_experts`, the upstream convention.
+- SGLang refuses `--enable-return-routed-experts` on
+  `moe_runner_backend=flashinfer_trtllm` and falls back to `auto`. Upstream
+  bf16 B200 recipes use `triton`; `flashinfer_trtllm_routed` is fp8-only. The
+  fallback is acceptable for bf16. Rollout throughput was not the bottleneck
+  (queue 321 groups by rollout 7).
+- Materialization of 64 groups (512 samples) takes 74 s at drain time on the
+  nfs4 scratch mount. Step 0 took 54 min because of the TileLang JIT of
+  `sparse_mla_bwd_kernel`; later steps take 26-29 min.
+- Run log: `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`, 2026-09-09 entry.
 
 ## References
 

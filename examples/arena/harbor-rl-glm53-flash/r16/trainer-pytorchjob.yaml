@@ -3,7 +3,7 @@
 #
 # r16 deltas vs r15 (2026-09-09): R3 rollout routing replay (miles arena
 # ADR-0012).
-#   - image: miles-glm53-r3-20260909a (arpit-glm-53 a9951bb59, r16/BUILD.md):
+#   - image: miles-glm53-r3-20260909b (arpit-glm-53, -1 pad routing; r16/BUILD.md):
 #     miles_plugins/arena/nats_arena/routing_replay.py and the T1-T3 changes
 #     in message_format.py / nats_rollout.py.
 #   - config (via the ConfigMap): use_rollout_routing_replay: true

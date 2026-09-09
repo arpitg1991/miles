@@ -30,6 +30,7 @@ def build_task_message(
     metadata: dict[str, Any] | None = None,
     gym_name: str = "",
     session: str | None = None,
+    capture_routed_experts: bool = False,
 ) -> dict[str, Any]:
     """Build a task message for publishing to NATS.
 
@@ -50,6 +51,11 @@ def build_task_message(
             (e.g., from before a checkpoint rollback). Optional — older
             gyms that don't echo this back will simply have a None session
             on their results, which the trainer treats as legacy/accepted.
+        capture_routed_experts: Ask the gym to record SGLang's MoE routing
+            (``return_routed_experts``) on every generate call and ship it
+            on the training step (ADR-0012, R3). The key is emitted only
+            when True so the message stays byte-identical for runs
+            without ``--use-rollout-routing-replay``.
 
     Returns:
         JSON-serialisable dict ready for NATS publish.
@@ -75,6 +81,10 @@ def build_task_message(
         # Top-level field so old gyms can still parse the message even
         # if they ignore it. Echoed back by gyms that know to forward it.
         msg["session"] = session
+    if capture_routed_experts:
+        # Top-level, like ``session``: the gym contract reads
+        # ``raw.get("capture_routed_experts", False)`` (amzn_arena_contract).
+        msg["capture_routed_experts"] = True
     return msg
 
 
@@ -147,6 +157,7 @@ def sample_to_task(
     n_samples: int = 1,
     gym_name: str = "",
     session: str | None = None,
+    capture_routed_experts: bool = False,
 ) -> dict[str, Any]:
     """Convert a miles Sample (from manifest dataset) into a NATS task.
 
@@ -181,4 +192,5 @@ def sample_to_task(
         },
         gym_name=gym_name,
         session=session,
+        capture_routed_experts=capture_routed_experts,
     )

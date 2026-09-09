@@ -29,6 +29,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from miles.utils.types import Sample
 
 from miles_plugins.arena.nats_arena.message_format import (
@@ -39,6 +41,14 @@ from miles_plugins.arena.nats_arena.message_format import (
     serialize_task,
 )
 from miles_plugins.arena.nats_arena.mixture_controller import MixtureController
+from miles_plugins.arena.nats_arena.routing_replay import (
+    RoutingReplayError,
+    materialize_group_routing,
+    reap_result_refs,
+    reap_sample_refs,
+    replay_enabled,
+    stash_step_payload,
+)
 from miles_plugins.arena.nats_arena.stream_config import results_stream_config
 
 # Lazy-imported in _maybe_build_autoscaler / _maybe_build_timing_tracker
@@ -86,9 +96,24 @@ _global_worker = None
 _worker_lock = threading.Lock()
 
 
+def _raise_if_fatal(worker) -> None:
+    """Re-raise the worker's fatal error (ADR-0012).
+
+    A RoutingReplayError kills the worker thread, most often between two
+    ``generate_rollout`` calls (during the train step) or while the queue
+    still holds a full batch. Silently building a fresh worker there would
+    discard the error and keep training.
+    """
+    fatal = getattr(worker, "fatal_error", None)
+    if fatal is not None:
+        raise fatal
+
+
 def get_global_worker(args, data_source):
     global _global_worker
     with _worker_lock:
+        if _global_worker is not None:
+            _raise_if_fatal(_global_worker)
         if _global_worker is None or not _global_worker.worker_thread.is_alive():
             logger.info("Creating new global NATS rollout worker...")
             _global_worker = NATSRolloutWorker(args, data_source)
@@ -598,12 +623,20 @@ def _step_to_sample(step: dict, ctx: _EpisodeContext, *, is_final: bool) -> Samp
             else "length" if any_step_truncated
             else "other"
         )
-    return _finish_sample(
+    s = _finish_sample(
         s, ctx,
         removal_reason=removal_reason,
         kept_timeout=kept_timeout,
         kept_context_error=kept_context_error,
     )
+    if replay_enabled(args):
+        # R3 (ADR-0012): keep only the {path,bytes,sha256} pointer (or the
+        # inline base64) while the group waits in the output queue; the
+        # decode happens at drain time in materialize_group_routing. A
+        # trainable step without a payload is fatal here, before the
+        # _process_group pad path can hide it.
+        stash_step_payload(s, step, task_id=task_id)
+    return s
 
 
 def _messages_to_sample(messages: list[dict], ctx: _EpisodeContext, tokenizer) -> Sample:
@@ -694,6 +727,20 @@ def _messages_to_sample(messages: list[dict], ctx: _EpisodeContext, tokenizer) -
         status = Sample.Status.ABORTED
         s.remove_sample = True
         removal_reason = "no_logprobs"
+    # R3 (ADR-0012): the slow path re-tokenizes, so it has no routed_experts
+    # payload either. materialize_group_routing refuses a trainable sample
+    # without one (fatal for the run); remove the sample instead so it gets a
+    # zero array at drain time and its group's siblings still train.
+    if replay_enabled(args):
+        logger.warning(
+            "Task %s: slow-path (messages-only) trajectory has no "
+            "routed_experts under use_rollout_routing_replay; removing "
+            "sample from training.",
+            task_id,
+        )
+        status = Sample.Status.ABORTED
+        s.remove_sample = True
+        removal_reason = removal_reason or "no_routing"
     s.status = status
     if status == Sample.Status.TRUNCATED:
         s.remove_sample = True
@@ -832,6 +879,11 @@ def _result_to_episodes_full_trajectory(
         )
 
         training = _training_steps(steps, args)
+        # Steps outside the training selection (archived segments under
+        # --arena-train-segments final) are never decoded, so their ref files
+        # would stay on the shared mount forever. Reap them now.
+        untrained = [st for st in steps if not any(st is t for t in training)]
+        reap_result_refs([{"trajectories": [{"steps": untrained}]}])
         # --- Fast path: GenerateClient produced real token-level data ---
         # When the gym used ARENA_CLIENT_TYPE=generate, each training step has
         # cumulative token_ids/loss_mask/log_probs built from /generate
@@ -1106,6 +1158,10 @@ class NATSRolloutWorker:
             maxsize=max(1, (10 * args.global_batch_size) // max(1, args.n_samples_per_prompt))
         )
         self.worker_thread = None
+        # Set by the worker loop before it dies on a RoutingReplayError, so
+        # generate_rollout can re-raise the cause instead of returning a
+        # partial batch (ADR-0012).
+        self.fatal_error: BaseException | None = None
 
         # Session token — uniquely identifies *this* trainer process's NATS
         # publish-side identity. Stamped onto every published task; gyms
@@ -1552,6 +1608,7 @@ class NATSRolloutWorker:
                             n_samples=self.n_per_prompt,
                             gym_name=gym_name,
                             session=self.session,
+                            capture_routed_experts=replay_enabled(self.args),
                         )
                         # Make task_id unique per publish to avoid collisions
                         # when the data_source wraps epochs and re-emits the
@@ -1653,6 +1710,7 @@ class NATSRolloutWorker:
                             "result_session=%s self.session=%s",
                             tid, result_session, self.session,
                         )
+                        reap_result_refs([result])
                         continue
 
                     # Drop results for task_ids we're not tracking — these are
@@ -1665,6 +1723,7 @@ class NATSRolloutWorker:
                             "Dropping stale result for unknown task_id %s "
                             "(likely from before NATS reconnect)", tid,
                         )
+                        reap_result_refs([result])
                         continue
 
                     in_flight = max(0, in_flight - 1)
@@ -1735,7 +1794,7 @@ class NATSRolloutWorker:
                                 tid, age, task_deadline_secs,
                             )
                             pending_expected.pop(tid, None)
-                            pending_results.pop(tid, None)
+                            reap_result_refs(pending_results.pop(tid, None) or [])
                             pending_publish_time.pop(tid, None)
                             pending_task_payload.pop(tid, None)
                             tid_to_instance_id.pop(tid, None)
@@ -1767,6 +1826,13 @@ class NATSRolloutWorker:
                 if not msgs and in_flight >= max_in_flight:
                     await asyncio.sleep(1)
 
+            except RoutingReplayError as exc:
+                # Training on a MoE sample without its rollout routing is
+                # silent corruption, not a transient error. Kill the worker;
+                # generate_rollout re-raises fatal_error (ADR-0012).
+                logger.error("Routing replay failure, stopping NATS worker: %s", exc)
+                self.fatal_error = exc
+                raise
             except Exception as exc:
                 if _is_nats_reconnect_error(exc):
                     await _reconnect_nats()
@@ -1798,15 +1864,22 @@ class NATSRolloutWorker:
             if result.get("status") not in SALVAGEABLE_RESULT_STATUSES:
                 logger.warning("Task %s failed: %s", task_id, result.get("error"))
                 n_failed += 1
+                reap_result_refs([result])
                 continue
 
             try:
                 episodes.extend(
                     _result_to_episodes_full_trajectory(result, self._tokenizer, self.args)
                 )
+            except RoutingReplayError:
+                # Never fold a missing routing payload into n_failed: the pad
+                # below would copy a sibling and the batch would train the
+                # MoE on the wrong experts without a trace (ADR-0012).
+                raise
             except Exception as exc:
                 logger.error("Task %s: conversion failed: %s", task_id, exc, exc_info=True)
                 n_failed += 1
+                reap_result_refs([result])
 
         if not episodes:
             logger.warning("Group %s: all %d tasks failed, dropping", task_id, n_failed)
@@ -1838,6 +1911,11 @@ class NATSRolloutWorker:
             if src.rollout_log_probs is not None:
                 pad.rollout_log_probs = [0.0] * pad.response_length
             pad.remove_sample = True
+            # rollout_routed_experts stays None here on purpose: under R3 the
+            # pad is a removed sample without a payload, so
+            # materialize_group_routing gives it a zero array at drain time.
+            # Assigning zeros now would hold one (tokens x layers x topk)
+            # int32 array per padded group in the queue for hours (ADR-0012).
             # Tag pads as "failed" so the rollout-level failed-fraction metric
             # can count them. A pad fills a slot left by a gym-side failure: a
             # synthetic/killed trajectory skipped in _result_to_episodes, or an
@@ -1859,6 +1937,7 @@ class NATSRolloutWorker:
             }
             episodes.append([pad])
         if len(episodes) > self.n_per_prompt:
+            reap_sample_refs(s for episode in episodes[self.n_per_prompt:] for s in episode)
             episodes = episodes[:self.n_per_prompt]
 
         # Inject raw instance_id (stable, OTel-friendly) and dedup_key
@@ -1999,6 +2078,12 @@ def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
     group = next(g for g in data if any(s is src for s in g))
     episode = [s for s in group if _episode_key(s) == _episode_key(src)]
     base = min(s.index for s in episode)
+    # R3 (ADR-0012): fill_replay_data asserts routing on every packed row, so a
+    # pad mirrors the source with zeros (valid expert ids, zero loss). One
+    # array serves every pad of this call; the actor only reads it.
+    replay_zeros = None
+    if src.rollout_routed_experts is not None:
+        replay_zeros = np.zeros_like(src.rollout_routed_experts)
     for k in range(pads):
         pad = Sample()
         pad.tokens = list(src.tokens)
@@ -2008,6 +2093,8 @@ def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
         # when samples[0] carries them (see the failed-pad comment in _process_group).
         if src.rollout_log_probs is not None:
             pad.rollout_log_probs = [0.0] * src.response_length
+        if replay_zeros is not None:
+            pad.rollout_routed_experts = replay_zeros
         pad.reward = src.reward
         pad.group_index = src.group_index
         pad.rollout_id = src.rollout_id
@@ -2052,6 +2139,8 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     assert args.rollout_global_dataset
 
     worker = get_global_worker(args, data_source)
+    # The thread can die with a full queue; the wait loop below never runs then.
+    _raise_if_fatal(worker)
     target_groups = args.global_batch_size // args.n_samples_per_prompt
 
     # --- Dynamic sampling (DAPO) -------------------------------------------
@@ -2094,6 +2183,8 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     start_time = time.time()
     last_log = start_time
     do_print = True
+    replay_on = replay_enabled(args)
+    materialize_secs = 0.0
 
     queue_depth_at_start = worker.get_queue_size()
     logger.info(
@@ -2125,8 +2216,18 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                             "dyn-sampling drop #%d (reason=%s, examined=%d, kept=%d/%d)",
                             dropped, out.reason, examined, len(data), target_groups,
                         )
+                    if replay_on:
+                        # A dropped group never decodes; delete its blobs.
+                        reap_sample_refs(group)
                     continue
 
+            if replay_on:
+                # Drain-time decode (ADR-0012): the group is about to join the
+                # train batch, so this is the first moment the arrays are
+                # worth their RAM. Overlaps with the wait for later groups.
+                t_mat = time.time()
+                materialize_group_routing(group, args)
+                materialize_secs += time.time() - t_mat
             data.append(group)
 
             if do_print:
@@ -2157,6 +2258,7 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
 
         if len(data) < target_groups:
             if not worker.worker_thread.is_alive():
+                _raise_if_fatal(worker)
                 logger.error(
                     "NATS worker thread died during collection (%d/%d groups). "
                     "Returning partial batch to avoid infinite hang.",
@@ -2166,6 +2268,11 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             time.sleep(0.5)
 
     duration = time.time() - start_time
+
+    if replay_on:
+        logger.info(
+            "Routing replay: materialized expert blobs for %d groups in %.1fs", len(data), materialize_secs
+        )
 
     if dyn_filter is not None:
         logger.info(

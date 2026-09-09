@@ -1,6 +1,6 @@
 # ADR-0012: R3 rollout routing replay over the arena NATS path
 
-Status: Proposed (2026-09-09). Investigation complete, no code yet.
+Status: Accepted (2026-09-09).
 
 ## Context
 
@@ -94,6 +94,41 @@ Base64 adds one third on the wire. gzip does not help.
 3. Keep `--arena-train-segments all`. Each compaction segment is its own
    `Sample` with its own token stream, so each archived segment needs its own
    cumulative blob.
+
+## Source of each piece
+
+Three code bases already solve parts of R3. Upstream `radixark/miles` records
+routing in its own rollout process. acuadron's AGISlime publisher and the
+AREnATasks streaming worker carried routing over NATS in an earlier design.
+The table names the source of each piece and the reason for that choice.
+
+| # | Job | Upstream miles | acuadron (AREnATasks / AGISlime) | What we do | Why |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Ask SGLang for routing on every generate call | Done in its own rollout client | Done in the gym client (return_routed_experts, blob stored per trajectory) | Copy acuadron exactly. Already live, only the on/off flag in the task message is missing. | Same code as upstream, already in our gym. |
+| 2 | Keep routing per compaction segment | Not needed (no segments) | Not done (no segments then) | Write new: snapshot the blob when a segment is archived. | Our train_segments all trains every segment as its own sample. |
+| 3 | Carry the blob (58 MB per episode) to the trainer | Not needed. Stays in one process. | Writes a file on a shared mount, sends a small {path, bytes, sha256} pointer over NATS. | Copy acuadron exactly, reuse his function in the Harbor worker. | NATS message cap is 8 MiB, hard cap 64 MiB. Long episodes hit 170 MB. Compression only saves 2 to 3x. |
+| 4 | Turn the flag on in the task message | n/a | Done in old AGISlime publisher | Write one line in miles build_task_message. | Gym already reads the flag. |
+| 5 | Decode base64 to an int32 array of shape (tokens-1, layers, top_k) | _decode_topk_buffer plus stop-edge trim | Hand-written decoder | Copy upstream exactly. | Upstream's is the reference and handles the extra row. |
+| 6 | Do not blow up trainer RAM while thousands of samples wait in the queue | Not needed. Samples go straight to training. | Lazy: keep the pointer, decode only when the group is drained, delete the file after. | Copy acuadron's idea, rewrite for miles. | We hold about 2000 in-flight samples for hours. Eager decode is over 100 GB of RAM. |
+| 7 | Give padding samples a routing array too | Not needed. Upstream never pads groups. | Zero array shaped like a healthy sibling. | Copy acuadron's idea, rewrite for our pad code. | The trainer asserts every sample has routing. |
+| 8 | Fail loudly if routing is missing | Our fork already raises at conversion time | Raised at sample build | Add acuadron's early check too. | A swallowed error would silently pad over missing data. |
+| 9 | Feed routing into the model forward and backward | Done (Megatron hook, replay queues) | Used as-is | Nothing to do. Set use_rollout_routing_replay: true. | Works once the sample field is filled. |
+| 10 | Indexer (attention) replay | Exists, marked debug-only, 60x larger | Not done | Skip. Keep TIS to cover the residual. | 3.6 GB per episode, and the router strips the request field. |
+
+Rows 1 to 3 live in AREnATasks (ADR-0049 there). Rows 4 to 9 live in this
+plugin. Row 10 is a non-goal.
+
+### Why not the upstream session server
+
+Upstream's design is cleaner. The session server owns the token stream, so it
+records routing in-process and requests deltas with
+`routed_experts_start_len`. No blob crosses a network. Our path is different.
+288 external gym pods own the tokens. Each pod calls `/generate` over NATS
+(AREnATasks ADR-0036, ADR-0039, ADR-0046). The trainer never sees a request
+until the episode ends. A switch to the session server is a rewrite of the
+gym worker, the capture layer, and the NATS protocol. R3 does not justify
+that. The pointer protocol in row 3 costs one file write per segment and
+keeps the rest of the path unchanged.
 
 ## Gaps and where each change goes
 

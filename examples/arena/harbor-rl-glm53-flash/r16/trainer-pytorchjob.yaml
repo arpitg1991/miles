@@ -144,6 +144,11 @@ spec:
                   - key: kubernetes.io/hostname
                     operator: NotIn
                     values:
+                    # 2026-09-09 r16: kueue TAS pinned worker-22/worker-3 to
+                    # these nodes twice; their GPUs are held by pods in another
+                    # namespace that TAS does not see.
+                    - i-0161b51ba3f04dc21
+                    - i-095b374aee2064004
                     - i-00cb6ebceda36a4ef
                     # 2026-09-02 second incident, same signature: kueue TAS
                     # assigned these three (each holds an unreaped Failed

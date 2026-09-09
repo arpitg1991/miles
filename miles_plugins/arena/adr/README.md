@@ -37,3 +37,4 @@ in `../RUNLOG.md` and `examples/arena/<job>/RUNLOG.md`, not here.
 | [0009](0009-mask-clipped-final-turn.md) | `--arena-mask-clipped-final-turn`: mask only the clipped final turn (opt-in salvage; inert on GLM, see ADR-0010) |
 | [0010](0010-keep-timeout-trajectories.md) | Keep Harbor agent-timeout trajectories as training samples, opt-in, only when the timeout is the sole defect (`--arena-keep-timeout-trajectories`, removal-reason log) |
 | [0011](0011-multi-segment-episodes-share-rollout-id.md) | Multi-segment episodes share one `rollout_id` behind `--arena-train-segments all` (amends ADR-0003) |
+- [ADR-0012](0012-r3-routing-replay-over-nats.md) — R3 rollout routing replay over the arena NATS path (proposed)

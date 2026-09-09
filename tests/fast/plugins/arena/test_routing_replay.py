@@ -306,7 +306,7 @@ def test_missing_payload_on_removed_sample_gets_zeros() -> None:
     assert s.remove_sample
     materialize_group_routing([s], args)
     assert s.rollout_routed_experts.shape == (7, L, K)
-    assert not s.rollout_routed_experts.any()
+    assert (s.rollout_routed_experts == -1).all()
 
 
 def test_materialize_missing_payload_trainable_raises() -> None:
@@ -353,7 +353,7 @@ def test_slow_path_under_replay_is_removed_and_materializes_zeros(monkeypatch: p
     assert s.metadata["removal_reason"] == "no_routing"
     materialize_group_routing([s], args)
     assert s.rollout_routed_experts.shape == (9, L, K)
-    assert not s.rollout_routed_experts.any()
+    assert (s.rollout_routed_experts == -1).all()
 
 
 def test_slow_path_without_replay_stays_trainable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -405,7 +405,7 @@ def test_ref_outside_root_on_removed_sample_gets_zeros_and_keeps_file(routing_ro
     s = _one_sample(args, _traj(tok_n=8, stop_reason="length", routed_experts_ref=ref))
     assert s.remove_sample and REF_KEY not in s.metadata
     materialize_group_routing([s], args)
-    assert not s.rollout_routed_experts.any()
+    assert (s.rollout_routed_experts == -1).all()
     assert Path(ref["path"]).exists()
 
 
@@ -462,7 +462,7 @@ def test_failed_pads_share_one_zero_array_at_drain(tmp_path: Path) -> None:
     for pad in (pad_a, pad_b):
         assert pad.rollout_routed_experts.shape == (len(pad.tokens) - 1, L, K)
         assert pad.rollout_routed_experts.dtype == np.int32
-        assert not pad.rollout_routed_experts.any()
+        assert (pad.rollout_routed_experts == -1).all()
     assert pad_a.rollout_routed_experts is pad_b.rollout_routed_experts, "one donor array per group"
     assert not Path(ref["path"]).exists()
 
@@ -495,7 +495,7 @@ def test_dp_alignment_pads_carry_shared_zeros() -> None:
     assert len(pads) == 3
     for pad in pads:
         assert pad.rollout_routed_experts.shape == (5, L, K)
-        assert not pad.rollout_routed_experts.any()
+        assert (pad.rollout_routed_experts == -1).all()
     assert pads[0].rollout_routed_experts is pads[2].rollout_routed_experts
     # The source keeps its real routing.
     assert src.rollout_routed_experts.any()
@@ -664,3 +664,12 @@ def test_untrained_segment_refs_are_reaped_under_final_mode(tmp_path, monkeypatc
     rr.reap_result_refs([{"trajectories": [{"steps": untrained}]}])
     assert not archived.exists()
     assert final.exists()
+
+
+def test_pad_routing_rows_are_minus_one_not_zero() -> None:
+    """Zeros mean expert 0 x topk per token; Megatron's dropless dispatcher then
+    permutes fewer rows than tokens*topk and the EP all-to-all fails (r16)."""
+    from miles_plugins.arena.nats_arena.routing_replay import pad_routing
+
+    a = pad_routing((3, 45, 8))
+    assert a.dtype.name == "int32" and a.shape == (3, 45, 8) and (a == -1).all()

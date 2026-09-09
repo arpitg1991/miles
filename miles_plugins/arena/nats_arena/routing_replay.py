@@ -254,12 +254,28 @@ def _load_payload(ref: dict[str, Any] | None, inline: str | None) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+PAD_EXPERT = -1
+
+
+def pad_routing(shape: tuple[int, ...]) -> np.ndarray:
+    """Routing for a sample that carries no real routing (pads, removed rows).
+
+    Rows of -1 are the upstream convention: ``replay_base._get_replay_result``
+    rewrites an all -1 row to ``arange(topk) % num_experts``, so each token
+    still selects ``topk`` distinct experts. An all-zero row selects expert 0
+    ``topk`` times; Megatron's dropless dispatcher then sizes the all-to-all
+    for ``tokens * topk`` rows but permutes fewer, and fails with
+    "Split sizes doesn't match total dim 0 size" (r16 step 0, 2026-09-09).
+    """
+    return np.full(shape, PAD_EXPERT, dtype=np.int32)
+
+
 def materialize_group_routing(group: list[Sample], args: Any) -> None:
-    """Decode every pending payload in ``group`` and fill the rest with zeros.
+    """Decode every pending payload in ``group`` and fill the rest with -1 rows.
 
     Trainable samples decode strictly. A removed sample (failed pad, truncated
-    or overflow sibling) without a usable payload gets a zero array of its own
-    row count, because ``convert_samples_to_train_data`` gates on
+    or overflow sibling) without a usable payload gets an all -1 array of its
+    own row count, because ``convert_samples_to_train_data`` gates on
     ``samples[0]`` and ``fill_replay_data`` asserts routing on every packed
     row. Zero arrays are shared per row count within the group, so the failed
     pads of one group (all copies of one sibling) share one donor array.
@@ -294,11 +310,11 @@ def materialize_group_routing(group: list[Sample], args: Any) -> None:
                 raise
             if ref is not None or inline is not None:
                 logger.warning(
-                    "Task %s: removed sample has unusable routed_experts; using zeros", task_id, exc_info=True
+                    "Task %s: removed sample has unusable routed_experts; using -1 rows", task_id, exc_info=True
                 )
         rows = max(0, len(s.tokens) - 1)
         if rows not in zeros_by_rows:
-            zeros_by_rows[rows] = np.zeros((rows, num_layers, topk), dtype=np.int32)
+            zeros_by_rows[rows] = pad_routing((rows, num_layers, topk))
         s.rollout_routed_experts = zeros_by_rows[rows]
 
 

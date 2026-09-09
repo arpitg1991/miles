@@ -42,6 +42,7 @@ from miles_plugins.arena.nats_arena.message_format import (
 )
 from miles_plugins.arena.nats_arena.mixture_controller import MixtureController
 from miles_plugins.arena.nats_arena.routing_replay import (
+    pad_routing,
     RoutingReplayError,
     materialize_group_routing,
     reap_result_refs,
@@ -2079,11 +2080,12 @@ def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
     episode = [s for s in group if _episode_key(s) == _episode_key(src)]
     base = min(s.index for s in episode)
     # R3 (ADR-0012): fill_replay_data asserts routing on every packed row, so a
-    # pad mirrors the source with zeros (valid expert ids, zero loss). One
-    # array serves every pad of this call; the actor only reads it.
+    # pad mirrors the source shape with -1 rows (replay_base maps them to
+    # distinct experts; zeros break the dropless all-to-all). One array serves
+    # every pad of this call; the actor only reads it.
     replay_zeros = None
     if src.rollout_routed_experts is not None:
-        replay_zeros = np.zeros_like(src.rollout_routed_experts)
+        replay_zeros = pad_routing(src.rollout_routed_experts.shape)
     for k in range(pads):
         pad = Sample()
         pad.tokens = list(src.tokens)

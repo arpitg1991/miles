@@ -4,14 +4,15 @@
 #
 # r16 deltas vs r15 (2026-09-09): R3 rollout routing replay (miles arena
 # ADR-0012, AREnATasks ADR-0049).
-#   - image: TODO(orchestrator) a gym image with G1 (per-segment routing
-#     snapshot), G2 (prepare_routed_experts_for_transport in the Harbor
-#     worker) and G3 (ARENA_ROUTING_DIR). Replace the tag below.
-#   - env ARENA_ROUTING_DIR: TODO(orchestrator) set the identical value to
-#     r16/trainer-pytorchjob.yaml once the shared mount is confirmed (see the
-#     TODO there). Left unset here on purpose: with the env set and no shared
-#     mount the producer writes to a pod-local directory and every trainable
-#     sample fails on the trainer with RoutingReplayError.
+#   - image: gym-glm53-r3-20260909a (AREnATasks arpit-glm-53 e266b87,
+#     `brazil-build docker-arena`, r16/BUILD.md): G1 per-segment routing
+#     snapshot, G2 routed_experts_ref transport in the Harbor worker, G3
+#     ARENA_ROUTING_DIR.
+#   - env ARENA_ROUTING_DIR: identical to r16/trainer-pytorchjob.yaml. Both
+#     pod kinds get the platform-injected /mnt/scratch-s3files-rw nfs4 mount
+#     (verified 2026-09-09). If the env is set without a shared mount the
+#     producer writes pod-locally and every trainable sample fails on the
+#     trainer with RoutingReplayError.
 #   - The trainer sets capture_routed_experts on every task message; the gym
 #     already honors it (amzn_arena_contract.rl.messages).
 #   - Everything else is r15.
@@ -141,7 +142,7 @@ spec:
         # docker-arena`, tagged and pushed to us-east-1 arena-slime-dev
         # (replicates to ap-south-1). Vulcan agent with token-aware context
         # compaction (ADR-0048); see the r12 header block and r13/BUILD.md.
-        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-vulcan-glm47-20260908b
+        image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-r3-20260909a
         command: ["bash", "-c"]
         args:
         - |
@@ -283,11 +284,13 @@ spec:
           value: "2"
         - name: ARENA_TASK_EVENTS_LOG
           value: /tmp/task-events.jsonl
-        # r16 (ADR-0012): TODO(orchestrator) uncomment once the shared mount
-        # is confirmed; MUST equal the trainer value and the path MUST be the
-        # same filesystem in both pods. /trials is an emptyDir, not shared.
-        # - name: ARENA_ROUTING_DIR
-        #   value: /mnt/scratch-s3files-rw/guparpit/routing/rl-glm53f-gbash-r16
+        # r16 (ADR-0012/ADR-0049): the gym stages one routing blob per
+        # segment here and ships a {path,bytes,sha256} ref over NATS. Verified
+        # 2026-09-09 on rl-glm53f13-gym-sgb: /mnt/scratch-s3files-rw is the
+        # same platform-injected EFS (nfs4) mount the trainer pods get. MUST
+        # equal the trainer value. /trials is an emptyDir, not shared.
+        - name: ARENA_ROUTING_DIR
+          value: /mnt/scratch-s3files-rw/guparpit/routing/rl-glm53f-gbash-r16
         - name: DOCKER_HOST
           value: unix:///var/run/docker.sock
         # Harbor bind-mounts trial dirs into task containers; dockerd runs in

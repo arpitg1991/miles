@@ -3,14 +3,14 @@
 #
 # r16 deltas vs r15 (2026-09-09): R3 rollout routing replay (miles arena
 # ADR-0012).
-#   - image: TODO(orchestrator) build + push a trainer image that carries
+#   - image: miles-glm53-r3-20260909a (arpit-glm-53 a9951bb59, r16/BUILD.md):
 #     miles_plugins/arena/nats_arena/routing_replay.py and the T1-T3 changes
-#     in message_format.py / nats_rollout.py, then replace the tag below.
+#     in message_format.py / nats_rollout.py.
 #   - config (via the ConfigMap): use_rollout_routing_replay: true
 #     (r16/miles-config.yaml).
 #   - env ARENA_ROUTING_DIR: the shared directory where the gym stages one
-#     routing blob per segment and the trainer reads + deletes it. See the
-#     TODO at the env entry for the mount decision.
+#     routing blob per segment and the trainer reads + deletes it
+#     (platform-injected /mnt/scratch-s3files-rw, shared with the gym pods).
 #   - gym (r16/gym-worker.yaml): needs an image with the AREnATasks G1-G3
 #     changes and the SAME ARENA_ROUTING_DIR on the SAME mount path.
 #   - Everything else is r15.
@@ -202,7 +202,8 @@ spec:
             # --arena-inflight-multiplier (see header + r11/BUILD.md).
             # r11 image: built 2026-09-07 from arpit-glm-53 b209d9b4 (adds --arena-inflight-multiplier) / docker push (r11/BUILD.md)
             # r12 image: built 2026-09-08 from arpit-glm-53 d28503cf (adds --arena-train-segments {final,all} + the all-mode DP alignment pad; drops rollout/compaction_segments_mean) / docker push (r13/BUILD.md)
-            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-20260908a
+            # r16 image: built 2026-09-09 from arpit-glm-53 a9951bb59 (R3 routing replay over NATS, ADR-0012) / docker push (r16/BUILD.md)
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-r3-20260909a
             imagePullPolicy: Always
             command: ["bash", "-c"]
             args:
@@ -364,12 +365,11 @@ spec:
             # POSIX (the producer relies on open("xb") + os.replace and the
             # trainer on unlink), unlike mountpoint-S3 fast scratch. The gym's
             # /trials is an emptyDir (pod-local) and cannot be shared.
-            # TODO(orchestrator): confirm the gym-worker pods (arena-tasks
-            # namespace) get the same platform-injected /mnt/scratch-s3files-rw
-            # mount, or declare an equivalent shared volume there (kyverno
-            # forbids platform PVC volumes on this PyTorchJob, so nothing is
-            # declared here). Size: ~29 GB of blobs per step in flight, deleted
-            # at drain. Then set the identical value in r16/gym-worker.yaml.
+            # Verified 2026-09-09: gym-worker pods (arena-tasks namespace) get
+            # the same platform-injected /mnt/scratch-s3files-rw nfs4 mount, so
+            # no volume is declared (kyverno forbids platform PVC volumes on
+            # this PyTorchJob). Size: ~29 GB of blobs per step in flight,
+            # deleted at drain. r16/gym-worker.yaml sets the identical value.
             - name: ARENA_ROUTING_DIR
               value: /mnt/scratch-s3files-rw/guparpit/routing/rl-glm53f-gbash-r16
             # consumed by the trainer-side lakefs SDK: the data source pulls

@@ -9,7 +9,15 @@ r16 = r15 + `use_rollout_routing_replay: true`. Both images change:
   `routed_experts_ref` transport in the Harbor worker, and `ARENA_ROUTING_DIR`
   (G1-G3 in ADR-0012; AREnATasks ADR-0049).
 - Shared mount: gym and trainer pods MUST see `ARENA_ROUTING_DIR` on one
-  POSIX filesystem at one path. See the TODO in `r16/trainer-pytorchjob.yaml`.
+  POSIX filesystem at one path. Verified 2026-09-09: both pod kinds get the
+  platform-injected `/mnt/scratch-s3files-rw` nfs4 mount, so no volume change.
+
+Images (2026-09-09), same recipe as r13 below with new tags:
+
+- Trainer `arena-slime-dev:miles-glm53-r3-20260909a` from miles arpit-glm-53
+  `a9951bb59` (`examples/arena/Dockerfile`, base `glm53next-upstream-20260902`).
+- Gym `arena-slime-dev:gym-glm53-r3-20260909a` from AREnATasks arpit-glm-53
+  `e266b87` (`brazil-build docker-arena`).
 
 Smoke test before launch: one step at a 2x4 shape with `--limit 10`; success
 is `train/ppo_kl` at step 0 near 1e-3 or lower and `train/pg_clipfrac` near 0.

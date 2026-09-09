@@ -1639,3 +1639,81 @@ Also running at launch, not touched: r9 (trainer + 160 gym + nats), r11
 (trainer + 288 gym + nats), the r6 leftovers `rl-glm53f6-gym-sgb` (160 pods)
 and `rl-glm53f6-nats` (trainer deleted 2026-09-06), and the 2026-09-04
 `rl-glm53f-nats`.
+
+## 2026-09-09 — r15 (`rl-glm53f15`, TIS) and r16 (`rl-glm53f16`, R3 routing replay): step-0 `train/ppo_kl` 0.008 -> 2e-5
+
+Identity `rl-glm53f-gbash-r15` and `rl-glm53f-gbash-r16`. Both use the r13
+shape: 40 trainer nodes, 288 gym pods, GBS 512, `arena_inflight_multiplier` 4,
+Vulcan gym with `ARENA_TOOL_CALL_PARSER=glm47`.
+
+### r15: TIS only (cheap fix)
+
+r15 = r13 + `use_tis: true`, `tis_clip 2.0`, `tis_clip_low 0.0`, `eps_clip
+0.2/0.28` (the upstream GLM-5.2 recipe). `use_rollout_logprobs` stays false;
+`arguments.py:3185` forbids it with TIS. r15 launched 2026-09-09 and was
+deleted the same day on the user's request ("take down all my other running
+jobs") before it produced a comparable step. TIS does not remove the mismatch;
+it only reweights it. It stays on in r16.
+
+### r16: R3 rollout routing replay
+
+Design: miles `miles_plugins/arena/adr/0012-r3-routing-replay-over-nats.md`
+and AREnATasks `adr/0049-r3-routing-replay-harbor-gym.md`. Trainer image
+`arena-slime-dev:miles-glm53-r3-20260909b`, gym image
+`arena-slime-dev:gym-glm53-r3-20260909a`. Routing blobs travel out of band as
+`{path, bytes, sha256}` refs under
+`ARENA_ROUTING_DIR=/mnt/scratch-s3files-rw/guparpit/routing/rl-glm53f-gbash-r16`.
+Manifests in `r16/`, deltas in `r16/BUILD.md`.
+
+First launch (image `20260909a`, 07:18Z): rollout 0 drained 64 groups
+(reward 0.629) and materialized routing in 75 s, then `compute_log_prob`
+crashed with `RuntimeError: Split sizes doesn't match total dim 0 size` in
+Megatron `token_dispatcher.py:732`. Root cause: pad samples (DP alignment
+pads, group pads) carried all-zero routing. Eight copies of expert 0 collapse
+to one entry in `routing_map` (`scatter(1, top_indices, 1)`), so the
+dropless dispatcher sized the all-to-all for `tokens * topk` rows but
+permuted fewer. Fix: `pad_routing` fills -1 rows, the upstream convention
+that `replay_base._get_replay_result` rewrites to `arange(topk) %
+num_experts`. Image `20260909b`.
+
+Second launch (08:06Z submit) waited 6.5 h in kueue: 2400 of 2440 GPUs were
+in use, and small 16-GPU `acuadron-kimi-k3` pods kept filling freed nodes
+ahead of a 40-node block (no preemption, BestEffortFIFO). Admitted 14:36Z, no
+TAS mis-pin. Gym applied 14:56Z on the `NATS connected (initial)` cue.
+
+Results (`rl-glm53f16-trainer-worker-0`):
+
+| step | logged UTC | ppo_kl | pg_clipfrac | grad_norm | step wall |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 16:49 | 1.8e-05 | 2.6e-04 | 0.099 | 54 min |
+| 1 | 17:24 | 3.5e-06 | 2.9e-04 | 0.082 | 35 min |
+| 2 | 17:50 | -1.3e-05 | 3.2e-04 | 0.095 | 26 min |
+| 3 | 18:17 | -9.7e-06 | 3.0e-04 | 0.105 | 26 min |
+| 4 | 18:46 | -1.4e-05 | 3.0e-04 | 0.135 | 29 min |
+| 5 | 19:42 | -1.4e-07 | 3.1e-04 | 0.084 | 28 min |
+
+r9-r14 logged `ppo_kl` about 0.008 and `pg_clipfrac` about 0.011 at every
+step. R3 cuts both by 400x and 40x. `train/tis` is 1.000, `train/ess_ratio`
+0.999. `train/kl_loss` is not a valid on-policy check under R3 because the
+ref model runs without replay.
+
+Rollout rewards 0-7: 0.63, 0.57, 0.50, 0.55, 0.55, 0.55, 0.54, 0.56;
+`truncated_ratio` 0.0; queue at 321 groups by rollout 7, so the trainer is the
+bottleneck. Step 0 took 54 min because of the first-time TileLang JIT of
+`sparse_mla_bwd_kernel`; steady state is 26-29 min.
+
+Incident 19:22Z: an uncorrectable NVLink error killed the SGLang engine on
+worker-27 (node `i-0f2f7d13b4d31644d`). `server_group.py` recovered the
+engine on the same node at 19:52Z and `update_weights` returned ok on all 64
+ranks (89 s instead of 26 s). No step lost. The node is on the
+`kubernetes.io/hostname NotIn` list in `r16/trainer-pytorchjob.yaml` for any
+relaunch. Checkpoint `iter_0000004` is on scratch.
+
+Other notes:
+
+- `--enable-return-routed-experts` cannot run on
+  `moe_runner_backend=flashinfer_trtllm`; SGLang falls back to `auto`. Upstream
+  bf16 B200 recipes use `triton`, so the fallback is acceptable.
+- Indexer replay (`--use-rollout-indexer-replay`) skipped: 88 KiB per token.
+- The gym-apply watcher MUST wait unbounded for kueue admission. A 2 h cap
+  expired during the queue wait and would have missed the NATS cue.

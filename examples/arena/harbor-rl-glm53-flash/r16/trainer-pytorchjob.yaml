@@ -208,7 +208,7 @@ spec:
             # r11 image: built 2026-09-07 from arpit-glm-53 b209d9b4 (adds --arena-inflight-multiplier) / docker push (r11/BUILD.md)
             # r12 image: built 2026-09-08 from arpit-glm-53 d28503cf (adds --arena-train-segments {final,all} + the all-mode DP alignment pad; drops rollout/compaction_segments_mean) / docker push (r13/BUILD.md)
             # r16 image: built 2026-09-09 from arpit-glm-53 a9951bb59 (R3 routing replay over NATS, ADR-0012) / docker push (r16/BUILD.md)
-            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-r3-20260909a
+            image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-r3-20260909b
             imagePullPolicy: Always
             command: ["bash", "-c"]
             args:

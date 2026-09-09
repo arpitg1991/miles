@@ -14,8 +14,9 @@ r16 = r15 + `use_rollout_routing_replay: true`. Both images change:
 
 Images (2026-09-09), same recipe as r13 below with new tags:
 
-- Trainer `arena-slime-dev:miles-glm53-r3-20260909a` from miles arpit-glm-53
-  `a9951bb59` (`examples/arena/Dockerfile`, base `glm53next-upstream-20260902`).
+- Trainer `arena-slime-dev:miles-glm53-r3-20260909b` from miles arpit-glm-53
+  (20260909a = a9951bb59 crashed at step 0: all-zero pad routing broke the
+  MoE all-to-all; 20260909b carries the -1 pad fix) (`examples/arena/Dockerfile`, base `glm53next-upstream-20260902`).
 - Gym `arena-slime-dev:gym-glm53-r3-20260909a` from AREnATasks arpit-glm-53
   `e266b87` (`brazil-build docker-arena`).
 

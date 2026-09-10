@@ -2559,6 +2559,13 @@ def _add_arena_arguments(parser):
         "under-fed with an empty queue.",
     )
     group.add_argument(
+        "--arena-shuffle-after-first-epoch",
+        action="store_true",
+        default=False,
+        help="Walk the manifest in file order for epoch 0, then reshuffle at "
+        "every epoch rollover. Mutually exclusive with --rollout-shuffle.",
+    )
+    group.add_argument(
         "--dynamic-sampling-max-examine-mult",
         type=float,
         default=4.0,

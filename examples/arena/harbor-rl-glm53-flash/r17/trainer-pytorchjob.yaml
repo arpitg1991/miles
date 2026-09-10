@@ -161,6 +161,10 @@ spec:
                     # 2026-09-09 19:22Z r16: uncorrectable NVLink error on the
                     # SGLang engine (worker-27); hardware fault.
                     - i-0f2f7d13b4d31644d
+                    # 2026-09-10 r17: kueue TAS pinned worker-15/worker-2 here; GPUs
+                    # held by pods in another namespace.
+                    - i-03d44cd5391d8deb2
+                    - i-02f0a3f695e8c55e2
                     - i-00cb6ebceda36a4ef
                     # 2026-09-02 second incident, same signature: kueue TAS
                     # assigned these three (each holds an unreaped Failed

@@ -16,3 +16,15 @@ Warm start: `slime_experiments/rl-glm53f-gbash-r17/` holds a symlink
 `latest_checkpointed_iteration.txt` = 14, no `rollout/` state. Weights resume
 from r16 step 14; the data source starts at row 0 of the curriculum;
 rollout ids continue from 15. `lr` stays 1e-6.
+
+## Apply order
+
+1. `kubectl create configmap rl-glm53f17-trainer-config --from-file=miles-config.yaml=r17/miles-config.yaml`
+2. `kubectl apply -f r17/nats.yaml`
+3. `kubectl apply -f r17/sglang-svc.yaml` — the gym resolves
+   `rl-glm53f17-sglang`. Without it every model call fails on DNS, every
+   group drops, and with `rollout_shuffle: false` the data source burns
+   through the curriculum head (r17 first attempt, 2026-09-10 02:22Z: 1350
+   groups dropped in 10 min).
+4. `kubectl apply -f r17/trainer-pytorchjob.yaml`
+5. After trainer-0 logs `NATS connected (initial)`: `kubectl apply -f r17/gym-worker.yaml`.

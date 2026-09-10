@@ -303,6 +303,13 @@ class ArenaDataSourceWithBuffer(DataSource):
         self._weights_lock = threading.Lock()
         self._deficit: dict[str, float] = {g: 0.0 for g in self.gym_names}
 
+        self._shuffle_after_first_epoch = bool(
+            getattr(args, "arena_shuffle_after_first_epoch", False)
+        )
+        if self._shuffle_after_first_epoch and args.rollout_shuffle:
+            raise ValueError(
+                "--arena-shuffle-after-first-epoch and --rollout-shuffle are mutually exclusive"
+            )
         if self.args.rollout_shuffle:
             for gym_name in self.gym_names:
                 self.datasets[gym_name].shuffle(0)
@@ -397,12 +404,16 @@ class ArenaDataSourceWithBuffer(DataSource):
             offset += take
             if offset >= len(dataset):
                 self.epochs[gym_name] += 1
-                if self.args.rollout_shuffle:
+                if self._shuffle_at(self.epochs[gym_name]):
                     dataset.shuffle(self.epochs[gym_name])
                 offset = 0
 
         self.offsets[gym_name] = offset
         return out
+
+    def _shuffle_at(self, epoch: int) -> bool:
+        # Epoch 0 walks the manifest in file order under the after-first-epoch flag.
+        return self.args.rollout_shuffle or (self._shuffle_after_first_epoch and epoch > 0)
 
     def _make_group(self, prompt_sample: Sample, gym_name: str) -> list[Sample]:
         # dedup_key = (instance_id, epoch) — stable across restarts (so resume
@@ -508,7 +519,7 @@ class ArenaDataSourceWithBuffer(DataSource):
             if gym_name in per_gym:
                 self.offsets[gym_name] = per_gym[gym_name].get("offset", 0)
                 self.epochs[gym_name] = per_gym[gym_name].get("epoch", 0)
-                if self.args.rollout_shuffle and self.epochs[gym_name] > 0:
+                if self.epochs[gym_name] > 0 and self._shuffle_at(self.epochs[gym_name]):
                     self.datasets[gym_name].shuffle(self.epochs[gym_name])
 
         restored_weights = state_dict.get("weights")

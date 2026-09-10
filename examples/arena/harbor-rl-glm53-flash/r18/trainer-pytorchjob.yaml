@@ -192,6 +192,9 @@ spec:
                     - i-0e7902b4e3d9f2d0c
                     - i-04f9a44ac50ae500d
                     - i-0e64a05a2287ddd6f
+                    # 2026-09-10 05:44Z r18: node went NotReady/unreachable (karpenter.sh/disrupted)
+                    # as r17 vacated it; kueue TAS pinned worker-2 there and terminated it.
+                    - i-089c3bbbf596a26cb
           tolerations:
           - effect: NoSchedule
             key: nvidia.com/gpu

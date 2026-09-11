@@ -1099,6 +1099,29 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
     }
 
 
+def _group_reward_stats(groups: list[list[Sample]]) -> dict[str, float]:
+    """Per-group reward dispersion over the KEPT groups (post dynamic-sampling).
+
+    ``rollout/group_std`` covers the pre-filter population to expose collapse;
+    this reports the spread that actually reaches the GRPO advantage. One
+    reward per episode (ADR-0011), population variance per group.
+    """
+    per_group = [
+        np.array([s.reward for s in _episode_representatives([g]) if isinstance(s.reward, (int, float))], dtype=float)
+        for g in groups
+    ]
+    per_group = [r for r in per_group if r.size > 0]
+    if not per_group:
+        return {}
+    variances = np.array([r.var() for r in per_group])
+    means = np.array([r.mean() for r in per_group])
+    return {
+        "rollout/group_reward_var/mean": float(variances.mean()),
+        "rollout/group_reward_std/mean": float(np.sqrt(variances).mean()),
+        "rollout/group_reward_mean/std": float(means.std()),
+    }
+
+
 def _removal_reason_counts(groups) -> tuple[dict[str, int], int, int]:
     """Aggregate why samples were removed from the loss, for the per-rollout
     "Removal reasons" summary log.
@@ -2414,6 +2437,8 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 "rollout/reward_nonzero_frac": tm["reward_nonzero_frac"],
                 "rollout/zero_reward_groups_frac": tm["zero_reward_groups_frac"],
                 "rollout/group_std": tm["mean_group_std"],
+                # kept-group spread (post-filter), see _group_reward_stats
+                **_group_reward_stats(data),
                 "rollout/reward_p25": tm["reward_p25"],
                 "rollout/reward_p50": tm["reward_p50"],
                 "rollout/reward_p75": tm["reward_p75"],

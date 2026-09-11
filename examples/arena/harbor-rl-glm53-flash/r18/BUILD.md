@@ -126,3 +126,12 @@ so steps 30-32 are lost. The resume runs as a second 40-node job next to r19.
 4. `kubectl create -f r18/workflow-resume.yaml` -> `rl-glm53f18r-gzc97`.
    Watch the DAG with the r19/BUILD.md step 4 command. The PyTorchJob stays
    Suspended in kueue until 40 nodes free.
+5. Outcome: kueue admitted the workload after 690 s (13:16Z), all 40 workers
+   Running by 13:21Z, no TAS mis-pin. worker-0 logged
+   `Checkpoint sidecar rollout_id=29`, `successfully loaded checkpoint ... at
+   iteration 29`, `Loading arena data source state from
+   .../rollout/arena_data_source_state_29.pt`, `Rollout 30: collecting 64
+   groups`, and `NATS connected (initial)` at 13:33Z; the template then
+   deployed `rl-glm53f18r-gzc97-gym` (288/288). Ignore two startup
+   Tracebacks: the Ray `docker cpuset ids` probe and the SGLang
+   `_freeze_gc_after_server_warmup` connection-refused retries.

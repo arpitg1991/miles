@@ -1122,6 +1122,18 @@ def _group_reward_stats(groups: list[list[Sample]]) -> dict[str, float]:
     }
 
 
+def _prompt_mean_rewards(groups: list[list[Sample]]) -> dict[str, float]:
+    """instance_id -> mean reward over the group's episodes (one reward per episode)."""
+    out: dict[str, float] = {}
+    for g in groups:
+        reps = _episode_representatives([g])
+        iid = (reps[0].metadata or {}).get("instance_id") if reps else None
+        rewards = [s.reward for s in reps if isinstance(s.reward, (int, float))]
+        if iid and rewards:
+            out[str(iid)] = float(sum(rewards) / len(rewards))
+    return out
+
+
 def _removal_reason_counts(groups) -> tuple[dict[str, int], int, int]:
     """Aggregate why samples were removed from the loss, for the per-rollout
     "Removal reasons" summary log.
@@ -2419,6 +2431,11 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     )
     if hasattr(data_source, "record_consumed_samples"):
         data_source.record_consumed_samples(rollout_id, consumed_ids)
+    # Per-prompt mean raw reward over the PRE-filter population: a group the
+    # dynamic-sampling filter dropped as all-correct is exactly the one
+    # --arena-skip-prompt-above-reward must remove next epoch.
+    if hasattr(data_source, "record_prompt_rewards"):
+        data_source.record_prompt_rewards(_prompt_mean_rewards(all_data))
 
     if getattr(args, "use_wandb", False):
         try:
@@ -2555,7 +2572,9 @@ def _add_arena_arguments(parser):
     fallback), so the flag itself is a no-op kept for YAML compatibility.
 
     Knobs read by other arena modules (data source, eval path, coordinator)
-    are NOT registered here — only what nats_rollout itself consumes.
+    are NOT registered here — only what nats_rollout itself consumes or
+    feeds (``--arena-skip-prompt-above-reward``: recorded here, read by the
+    data source).
     """
     group = parser.add_argument_group(title="arena nats rollout")
     group.add_argument(
@@ -2582,6 +2601,15 @@ def _add_arena_arguments(parser):
         "(max_in_flight = multiplier x rollout_batch_size). 2 keeps the "
         "r10-lineage oversubscription; raise it when SGLang engines sit "
         "under-fed with an empty queue.",
+    )
+    group.add_argument(
+        "--arena-skip-prompt-above-reward",
+        type=float,
+        default=None,
+        help="After epoch 0, the data source skips a prompt whose last "
+        "recorded mean raw reward exceeds this value (solved prompts). "
+        "Recorded here at drain time over the pre-filter population. "
+        "None = off.",
     )
     group.add_argument(
         "--dynamic-sampling-max-examine-mult",

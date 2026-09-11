@@ -259,6 +259,14 @@ class ArenaDataSourceWithBuffer(DataSource):
         self.sample_group_index = 0
         self.sample_index = 0
         self.metadata: dict[str, Any] = {}
+        # instance_id -> mean raw reward of the last group trained on it.
+        # Fed by nats_rollout at drain time (record_prompt_rewards), read by
+        # _read_from_gym when --arena-skip-prompt-above-reward is set.
+        self.prompt_reward: dict[str, float] = {}
+        self.skip_prompt_above_reward: float | None = getattr(
+            args, "arena_skip_prompt_above_reward", None
+        )
+        self._skipped_this_epoch: dict[str, int] = {}
 
         gym_configs = _resolve_gym_configs(args)
 
@@ -383,26 +391,55 @@ class ArenaDataSourceWithBuffer(DataSource):
             return []
         offset = self.offsets[gym_name]
         out: list[list[Sample]] = []
+        skip_ids = self._skip_ids(gym_name)
 
         while len(out) < count:
-            need = count - len(out)
-            available = len(dataset) - offset
-            take = min(need, available)
+            prompt_sample = dataset.samples[offset]
+            iid = (prompt_sample.metadata or {}).get("instance_id")
+            if iid in skip_ids:
+                self._skipped_this_epoch[gym_name] = self._skipped_this_epoch.get(gym_name, 0) + 1
+            else:
+                out.append(self._make_group(prompt_sample, gym_name))
 
-            for i in range(take):
-                prompt_sample = dataset.samples[offset + i]
-                group = self._make_group(prompt_sample, gym_name)
-                out.append(group)
-
-            offset += take
+            offset += 1
             if offset >= len(dataset):
+                if skip_ids:
+                    logger.info(
+                        "Gym %s epoch %d: skipped %d/%d prompts with reward > %.3f",
+                        gym_name, self.epochs[gym_name],
+                        self._skipped_this_epoch.get(gym_name, 0), len(dataset),
+                        self.skip_prompt_above_reward,
+                    )
+                self._skipped_this_epoch[gym_name] = 0
                 self.epochs[gym_name] += 1
                 if self.args.rollout_shuffle:
                     dataset.shuffle(self.epochs[gym_name])
                 offset = 0
+                skip_ids = self._skip_ids(gym_name)
 
         self.offsets[gym_name] = offset
         return out
+
+    def _skip_ids(self, gym_name: str) -> set[str]:
+        """instance_ids to skip in the current pass over ``gym_name``.
+
+        Empty before the first epoch completes, when the threshold is unset,
+        and when every prompt of the gym would be skipped (never starve a
+        rollout; a prompt with no record is always kept).
+        """
+        thr = self.skip_prompt_above_reward
+        if thr is None or self.epochs.get(gym_name, 0) < 1:
+            return set()
+        dataset = self.datasets[gym_name]
+        ids = [(s.metadata or {}).get("instance_id") for s in dataset.samples]
+        skip = {i for i in ids if i is not None and self.prompt_reward.get(i, -1.0) > thr}
+        if skip and len(skip) >= len(ids):
+            logger.warning(
+                "Gym %s: all %d prompts have reward > %.3f; skip filter disabled for this pass",
+                gym_name, len(ids), thr,
+            )
+            return set()
+        return skip
 
     def _make_group(self, prompt_sample: Sample, gym_name: str) -> list[Sample]:
         # dedup_key = (instance_id, epoch) — stable across restarts (so resume
@@ -480,6 +517,7 @@ class ArenaDataSourceWithBuffer(DataSource):
             "sample_group_index": self.sample_group_index,
             "sample_index": self.sample_index,
             "metadata": self.metadata,
+            "prompt_reward": self.prompt_reward,
             "timing_tracker": getattr(self, "_timing_tracker_state", None),
         }
         path = os.path.join(
@@ -526,6 +564,7 @@ class ArenaDataSourceWithBuffer(DataSource):
         self.sample_group_index = state_dict.get("sample_group_index", 0)
         self.sample_index = state_dict.get("sample_index", 0)
         self.metadata = state_dict.get("metadata", {})
+        self.prompt_reward = state_dict.get("prompt_reward", {})
         self._timing_tracker_state = state_dict.get("timing_tracker")
 
     def get_restored_weights(self) -> dict[str, float] | None:
@@ -548,6 +587,10 @@ class ArenaDataSourceWithBuffer(DataSource):
 
     def record_consumed_samples(self, rollout_id: int, instance_ids: list[str]) -> None:
         self.metadata[str(rollout_id)] = instance_ids
+
+    def record_prompt_rewards(self, rewards: dict[str, float]) -> None:
+        """Overwrite the per-instance_id mean raw reward with this rollout's value."""
+        self.prompt_reward.update(rewards)
 
     def get_consumed_instance_ids(self) -> set[str]:
         ids: set[str] = set()

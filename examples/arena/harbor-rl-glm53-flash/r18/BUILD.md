@@ -97,3 +97,32 @@ and its `rl-glm53f18-*` leftovers, then apply in this order:
 3. `kubectl apply -f r18/sglang-svc.yaml`
 4. `kubectl apply -f r18/trainer-pytorchjob.yaml`
 5. After worker-0 logs `NATS connected (initial)`: `kubectl apply -f r18/gym-worker.yaml`.
+
+## Resume (Argo, 2026-09-11)
+
+The manual r18 run trained through step 32 and stopped. `save_interval: 5`
+left `iter_0000029` as the newest checkpoint
+(`latest_checkpointed_iteration.txt` = 29, `rollout/arena_data_source_state_29.pt`),
+so steps 30-32 are lost. The resume runs as a second 40-node job next to r19.
+
+1. Verify the checkpoint from any live trainer pod:
+   `kubectl exec <pod> -c pytorch -- ls /mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/rl-glm53f-gbash-r18 .../rollout`
+   and `cat .../latest_checkpointed_iteration.txt`. Expect `iter_0000029` and
+   `arena_data_source_state_29.pt`.
+2. `r18/workflow-resume.yaml` targets `guparpit-miles-deployer` (the r19
+   path). It keeps `experiment-name: rl-glm53f-gbash-r18`, so the trainer
+   resumes the weights and the data source state from the same directory. It
+   keeps the original r18 image `miles-glm53-r3-20260909b`, `replica-trainer`
+   16, the r18 `NotIn` list as `excluded-nodes`, and `r18/miles-config.yaml`
+   verbatim. `generateName: rl-glm53f18r-` keeps the resource names apart from
+   the retired manual `rl-glm53f18-*` objects. Regenerate with PyYAML as in
+   r19/BUILD.md step 2 (emit `miles-config` as a `|` block scalar, round-trip
+   check, then `kubectl create --dry-run=client -f r18/workflow-resume.yaml`).
+3. Check capacity first: `kubectl get nodes -l node.kubernetes.io/instance-type=p6-b200.48xlarge`
+   and the ClusterQueue `gpu.p6-b200-48xlarge` usage. At submit time (12:00Z)
+   306 nodes were Ready, 293 held GPU pods (13 of them backfill), and the
+   queue used 2304 of 2440 GPUs: 17 free nodes, so the job queued behind no
+   other pending workload (BestEffortFIFO, no preemption).
+4. `kubectl create -f r18/workflow-resume.yaml` -> `rl-glm53f18r-gzc97`.
+   Watch the DAG with the r19/BUILD.md step 4 command. The PyTorchJob stays
+   Suspended in kueue until 40 nodes free.

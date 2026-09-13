@@ -1717,3 +1717,20 @@ Other notes:
 - Indexer replay (`--use-rollout-indexer-replay`) skipped: 88 KiB per token.
 - The gym-apply watcher MUST wait unbounded for kueue admission. A 2 h cap
   expired during the queue wait and would have missed the NATS cue.
+
+## 2026-09-13: r19 retired, r20 and r21 submitted
+
+- r19 relaunch `rl-glm53f19-8zqkd` reached rollout 49 (avg_reward 0.480,
+  ckpt `iter_0000044`) and was retired on user direction after the r20
+  PyTorchJob existed. `shutdown: Terminate` skipped the onExit cleanup, so
+  the Deployments, PyTorchJob, and Services were deleted by hand. The
+  `/tmp/r19-resume.sh` watcher relaunched r19 as `rl-glm53f19-2h2v5` 90 s
+  later; the watcher was killed by PID and the relaunch torn down.
+- Gym image `gym-glm53-r4-20260913a` (AREnATasks `dd0df46`,
+  `sha256:8d4baaaf...`): `ARENA_PARTIAL_REWARD=ctrf`.
+- WorkflowTemplate `guparpit-miles-deployer-v2` (AREnATasksApps `5360981`;
+  `partial-reward` parameter plus the gym mount fixes). RBAC allows
+  `create` only on workflowtemplates, so the revision has a new name.
+- r20 `rl-glm53f20-x9tvq` (06:08Z) and r21 `rl-glm53f21-zrcp6` (06:43Z)
+  submitted; both held by kueue. At submit time the `p6-network` topology
+  fit 37 of 40 pods (241 nodes occupied, 23 burn-in tainted, 5 disrupted).

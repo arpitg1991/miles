@@ -32,7 +32,7 @@ Kept from r19: `REPLICA_TRAINER` 8, `use_tis` true, `use_rollout_logprobs`
 false, `lr` 1e-6, GBS 512, `rollout_batch_size` 64, `n_samples_per_prompt` 8,
 `arena_inflight_multiplier` 4, `gym-replicas` 288, the 22-node `NotIn` list.
 
-r21 is this run at `lr` 1.5e-6 (`r21/`).
+r21 is this run at `lr` 1.5e-6 (`r21/`). Submitted as `rl-glm53f20-x9tvq` (2026-09-13 06:08Z).
 
 ## Not changed, still open
 

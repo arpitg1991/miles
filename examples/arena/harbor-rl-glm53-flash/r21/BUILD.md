@@ -3,7 +3,7 @@
 Trainer image unchanged: `arena-slime-dev:miles-glm53-r3-20260911b`. Gym image
 `arena-slime-dev:gym-glm53-r4-20260913a` (AREnATasks `arpit-glm-53`, CTRF
 partial reward mode; see ADR-0039). Launched through the user-owned
-WorkflowTemplate `guparpit-miles-deployer`, regenerated from AREnATasksApps
+WorkflowTemplate `guparpit-miles-deployer-v2`, created 2026-09-13 from AREnATasksApps
 `arpit-glm-53` with the `partial-reward` parameter and the gym tokenizer-cache
 and mount-fallback fixes (`32589b3`, `2e19fe6`).
 
@@ -47,9 +47,10 @@ Context `arena-prod-bom-v2`, namespace `arena-tasks`, `kubectl` only.
 
 1. `kubectl exec <live trainer pod> -c pytorch -- ls /mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/rl-glm53f-gbash-r21`
    must fail with `No such file or directory`.
-2. Apply the regenerated template: `kubectl apply -f /tmp/guparpit-miles-deployer.yaml`
+2. Create the regenerated template: `kubectl create -f /tmp/guparpit-miles-deployer-v2.yaml`
    (generated file with `__AWS_REGION__` -> `ap-south-1` and the name
-   `guparpit-miles-deployer`). A running Workflow keeps its stored copy.
+   `guparpit-miles-deployer-v2`; RBAC grants create, not patch, on
+   workflowtemplates). A running Workflow keeps its stored copy.
 3. `python gen-workflow.py 21`, then `kubectl create --dry-run=client -f r21/workflow.yaml`.
 4. `kubectl create -f r21/workflow.yaml`. Watch the DAG as in `r19/BUILD.md`.
 5. Kueue holds the PyTorchJob until 40 `p6-b200` nodes are free.

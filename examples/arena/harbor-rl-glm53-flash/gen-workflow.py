@@ -1,4 +1,4 @@
-"""Emit r<N>/workflow.yaml for the guparpit-miles-deployer WorkflowTemplate.
+"""Emit r<N>/workflow.yaml for the guparpit-miles-deployer-v2 WorkflowTemplate.
 
 Usage: .venv python gen-workflow.py <N> [--partial-reward ctrf]
 
@@ -32,6 +32,7 @@ def main() -> None:
     ap.add_argument("n", type=int)
     ap.add_argument("--partial-reward", default="ctrf")
     ap.add_argument("--base", default="r19")
+    ap.add_argument("--template", default="guparpit-miles-deployer-v2")
     a = ap.parse_args()
     here = pathlib.Path(__file__).parent
     run = here / f"r{a.n}"
@@ -39,6 +40,9 @@ def main() -> None:
     cfg = (run / "miles-config.yaml").read_text()
     gym_img = re.search(r"image: (\S+arena-slime-dev:gym-\S+)", (run / "gym-worker.yaml").read_text()).group(1)
     wf["metadata"]["generateName"] = f"rl-glm53f{a.n}-"
+    # RBAC allows create but not patch on workflowtemplates, so each template
+    # revision gets a new name.
+    wf["spec"]["workflowTemplateRef"]["name"] = a.template
     params = {p["name"]: p for p in wf["spec"]["arguments"]["parameters"]}
     params["experiment-name"]["value"] = f"rl-glm53f-gbash-r{a.n}"
     params["miles-config"]["value"] = _Block(cfg)

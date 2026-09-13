@@ -32,7 +32,7 @@ Kept from r19: `REPLICA_TRAINER` 8, `use_tis` true, `use_rollout_logprobs`
 false, GBS 512, `rollout_batch_size` 64, `n_samples_per_prompt` 8,
 `arena_inflight_multiplier` 4, `gym-replicas` 288, the 22-node `NotIn` list.
 
-This run equals r20 except `lr` 1e-6 -> 1.5e-6. r20 is the control.
+This run equals r20 except `lr` 1e-6 -> 1.5e-6. r20 is the control. Submitted as `rl-glm53f21-zrcp6` (2026-09-13 06:43Z).
 
 ## Not changed, still open
 

@@ -1752,3 +1752,18 @@ Other notes:
   are groups where all 8 samples pass the same test subset.
 - Resume watchers `/tmp/r20-resume.sh` (PID 26915) and `/tmp/r21-resume.sh`
   (PID 26927) started 20:10Z. MUST kill them by PID before any retire.
+
+## 2026-09-13: r22 submitted (r20 ids on the robust-20260913 variant)
+
+- Request: r20 settings and task ids, task content from
+  `lakefs://arena-inspect/dev/internal/snorkel-general-bash-harbor/robust-20260913/`.
+- Variant manifest: 2877 tasks, commit `f6d04286ce2a...`. Of the 871 r20 ids
+  849 exist there; 22 (2.5%) are missing and dropped. Manifest
+  `robust-20260913-r19signal/manifest-849.jsonl` + `r22-derivation-849.json`
+  on the scratch mount.
+- `rl-glm53f22-6f2sp` created 23:10Z and terminated 25 s later by
+  `/tmp/r22-resume.sh`, which I started before the PyTorchJob existed.
+  Resubmitted as `rl-glm53f22-fv54h` 23:13Z. Watcher now has a 1800 s
+  workflow-age guard (PID 460435). Lesson: start a resume watcher only after
+  the PyTorchJob exists, or use the age guard.
+- r20 / r21 unaffected (both Running, 17 h / 16 h).

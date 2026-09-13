@@ -7,7 +7,7 @@ metadata:
     arena.agif.amazon.dev/submitter: guparpit
 spec:
   workflowTemplateRef:
-    name: guparpit-miles-deployer
+    name: guparpit-miles-deployer-v2
   arguments:
     parameters:
     - name: username

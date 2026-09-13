@@ -1734,3 +1734,21 @@ Other notes:
 - r20 `rl-glm53f20-x9tvq` (06:08Z) and r21 `rl-glm53f21-zrcp6` (06:43Z)
   submitted; both held by kueue. At submit time the `p6-network` topology
   fit 37 of 40 pods (241 nodes occupied, 23 burn-in tainted, 5 disrupted).
+- 18:31Z / 18:32Z: kueue admitted both runs after `acuadron-kimi-k3` was
+  cut to 82 pods (the run owner did it; our user is denied by the
+  `arena-validate-workload-owner-delete` admission policy). Both trainers
+  logged `NATS connected (initial)` at 18:55Z / 18:56Z; gyms 288/288 ready.
+- First two rollouts (partial reward on, 871-prompt manifest, shuffle on):
+
+  | run | lr | rollout 0 avg_reward | rollout 1 avg_reward | all_zero_percentage |
+  | --- | --- | --- | --- | --- |
+  | r20 | 1e-6 | 0.785 | 0.806 | 0.0 |
+  | r21 | 1.5e-6 | 0.821 | 0.805 | 0.0 |
+
+  r19 (binary reward) sat at 0.48 with a large all-zero share, so the
+  fractional CTRF credit moved the mean by about +0.3 and removed the
+  all-zero groups. Dynamic sampling now drops 1 to 5 zero-std groups per
+  rollout at fractional values (`zero_std_0.7`, `zero_std_0.9`), which
+  are groups where all 8 samples pass the same test subset.
+- Resume watchers `/tmp/r20-resume.sh` (PID 26915) and `/tmp/r21-resume.sh`
+  (PID 26927) started 20:10Z. MUST kill them by PID before any retire.

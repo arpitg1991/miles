@@ -63,3 +63,11 @@ Context `arena-prod-bom-v2`, namespace `arena-tasks`, `kubectl` only.
   appears in `rollout_tasks`-adjacent group reward lines.
 - `rollout/zero_std/all_zero_percentage` falls versus r19 (partial passes now
   carry variance).
+
+## Admission record
+
+- Admitted 2026-09-13 18:30Z after the kimi scale-down; NATS connected
+  18:55Z; gym 288/288 ready.
+- Rollout 0 avg_reward 0.785, rollout 1
+  0.806; `all_zero_percentage` 0.0.
+- Resume watcher `/tmp/r20-resume.sh` started 20:10Z. Kill it by PID before a retire.

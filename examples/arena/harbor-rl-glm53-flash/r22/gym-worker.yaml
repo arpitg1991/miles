@@ -87,6 +87,10 @@ spec:
     spec:
       serviceAccountName: arena-tasks-runner
       enableServiceLinks: false
+      # r23+: same class as the trainer and NATS. With no class the pods run at
+      # priority 0 and any high-priority gym Deployment preempts them
+      # (2026-09-14: 247 of 864 workers lost across r20/r21/r22).
+      priorityClassName: high
       # Keep gym + dind pods OFF the GPU nodes: p6-b200 nodes are NOT tainted
       # (1258 default-toleration pods sat on them in the 2026-09-03 snapshot) and
       # the trainer requests 1200Gi / 0 CPU, leaving ~746 GiB and ~190 vCPU per

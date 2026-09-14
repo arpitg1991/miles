@@ -1767,3 +1767,22 @@ Other notes:
   workflow-age guard (PID 460435). Lesson: start a resume watcher only after
   the PyTorchJob exists, or use the age guard.
 - r20 / r21 unaffected (both Running, 17 h / 16 h).
+
+## 2026-09-14: gym pods preempted; priorityClassName fix (template v3)
+
+- 05:33Z / 05:34Z: `shenghh-27b-snorkel-genbash-match-xdvjr` and `-szfr2`
+  each started a 256-replica gym Deployment at `priorityClassName: high`
+  (1000). Our gym Deployments set no class, so the pods ran at priority 0.
+  The scheduler preempted 247 of them: r22 128, r20 111, r21 8. Trainers,
+  engines, and NATS were not touched (they already use `high`). The
+  replacement pods stay Pending (0 of 682 nodes fit; the two new gyms hold
+  the freed nodes in `ImagePullBackOff` on a us-east-1 ECR reference).
+  Every episode on a killed worker holds its NATS slot until the 18000 s
+  ack window expires.
+- Fix: `priorityClassName: high` on the gym pod template in AREnATasksApps
+  `miles/manifests/gym_worker_deployment.yaml` (test
+  `test_miles_deployer_gym_workers_run_at_high_priority`) and in
+  `r22/gym-worker.yaml`. New WorkflowTemplate `guparpit-miles-deployer-v3`;
+  `gen-workflow.py` defaults to it. Live r20/r21/r22 keep their stored v2
+  copy; a pod's priority is immutable, so only a Deployment roll or a new
+  submit picks the class up.

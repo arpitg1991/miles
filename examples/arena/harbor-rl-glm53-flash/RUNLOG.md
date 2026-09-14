@@ -1786,3 +1786,21 @@ Other notes:
   `gen-workflow.py` defaults to it. Live r20/r21/r22 keep their stored v2
   copy; a pod's priority is immutable, so only a Deployment roll or a new
   submit picks the class up.
+- 05:53Z: patched the three live gym Deployments to `priorityClassName:
+  high` (user choice). The new pods preempted our own priority-0 pods, so
+  the roll finished in 6 min; r20 reported 97 killed groups as failed.
+- 06:19Z: all 864 workers idle. JetStream consumer showed
+  `ack_wait=18000 max_deliver=-1 ack_pending=292/334/289 pending=0`: every
+  task on a killed pod stays in flight for 5 h; the trainer queues (101 to
+  158 groups) would run dry near 07:30.
+- 06:24Z: `kubectl rollout restart deploy/<wf>-nats` on all three (user
+  approved; r19 precedent). Trainer `_ensure_nats(is_reconnect=True)`
+  recreated the streams and re-published 256 tasks per run, dropped 0.
+- Gym workers did NOT re-attach. After the broker restart the pull loop in
+  `amzn_flex_streams/backends/nats.py::_iterate_pull` fetches from a durable
+  that no longer exists and treats the reply as a timeout, forever. 275 of
+  288 r20 pods logged nothing after 06:25; no consumer existed on any broker.
+  The r19 note that gyms re-attach in 90 s was wrong.
+- 06:40Z: `kubectl rollout restart deploy/<wf>-gym` on all three (user
+  choice). 06:44Z: 288/288 ready, consumer recreated, `ack_pending` 264 /
+  277 / 261, `pending=0`. A NATS restart MUST be followed by a gym restart.

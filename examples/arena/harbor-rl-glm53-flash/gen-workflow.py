@@ -1,4 +1,4 @@
-"""Emit r<N>/workflow.yaml for the guparpit-miles-deployer-v3 WorkflowTemplate.
+"""Emit r<N>/workflow.yaml for the guparpit-miles-deployer-v4 WorkflowTemplate.
 
 Usage: .venv python gen-workflow.py <N> [--partial-reward ctrf]
 
@@ -32,7 +32,7 @@ def main() -> None:
     ap.add_argument("n", type=int)
     ap.add_argument("--partial-reward", default="ctrf")
     ap.add_argument("--base", default="r19")
-    ap.add_argument("--template", default="guparpit-miles-deployer-v3")
+    ap.add_argument("--template", default="guparpit-miles-deployer-v4")
     a = ap.parse_args()
     here = pathlib.Path(__file__).parent
     run = here / f"r{a.n}"

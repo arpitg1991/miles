@@ -64,6 +64,10 @@ keeps starting new work past the point where it can finish inside the window.
   loss and advantage path is unchanged (no KL, no entropy term), so a shift
   from the new sample shape has no gauge; candidate 5 stays open.
 
+### 8. Fresher samples + live PPO ratio + continued turns (r25) — PREPARED
+
+- **Change.** `arena_inflight_multiplier` 4 -> 2, `global_batch_size` 512 -> 256, `save_interval` 10, `num_rollout` 300, `arena_truncated_turn_rule: mask` (open), gym `ARENA_COMPACTION_MAX` 5 + `ARENA_TRUNCATED_TURN_MAX` 5 under a 64 MiB NATS `max_payload` (template `guparpit-miles-deployer-v4`). Assets: `r25/`, launch steps in `r25/BUILD.md`.
+
 ## Remaining candidates
 
 ### 2. Group-relative length penalty on passes (#1573 pattern)

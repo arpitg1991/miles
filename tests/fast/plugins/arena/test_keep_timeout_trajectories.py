@@ -205,15 +205,15 @@ def test_flag_on_clean_stop_untouched(agent_stop):
 # Other defects on a timeout trajectory are never salvaged -------------------
 def test_flag_on_timeout_with_empty_response_still_removed():
     # Nothing trainable: has_response is False -> keep branch must not fire.
-    (s,) = _result_to_samples_full_trajectory(
+    # An all-zero loss_mask step is dropped before it can become a
+    # response_length == 0 row; _process_group pads the slot from a sibling
+    # (see test_zero_loss_mask_steps_dropped.py).
+    samples = _result_to_samples_full_trajectory(
         _result(_step([0, 0, 0, 0], traj_extra=dict(_TIMEOUT))),
         tokenizer=None,
         args=_args(True),
     )
-    assert s.status == Sample.Status.TRUNCATED
-    assert s.remove_sample is True
-    assert s.loss_mask == []
-    assert "kept_timeout" not in s.metadata
+    assert samples == []
 
 
 def test_flag_on_timeout_with_hard_context_overflow_still_removed():

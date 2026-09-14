@@ -3,7 +3,11 @@ import torch
 from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
-from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
+from miles.backends.training_utils.loss_hub.advantages import (
+    apply_advantage_scale,
+    compute_advantages,
+    normalize_advantages,
+)
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
@@ -106,6 +110,19 @@ def compute_advantages_and_returns(
         max_seq_lens=max_seq_lens,
         values=values,
     )
+
+    # Per-token advantage scale from the rollout side (arena continued clipped
+    # turns). Applied before OPD and before whitening; loss_mask stays untouched
+    # because it feeds the loss denominators. ``mask`` and ``flip`` are a plain
+    # multiply; ``flip_positive`` needs the advantage sign, so the rule name is
+    # read here.
+    advantage_scale = rollout_data.get("advantage_scale")
+    if advantage_scale is not None:
+        apply_advantage_scale(
+            advantages,
+            advantage_scale,
+            positive_only=getattr(args, "arena_truncated_turn_rule", None) == "flip_positive",
+        )
 
     # Apply on-policy distillation KL penalty to advantages (orthogonal to advantage estimator)
     if args.use_opd:

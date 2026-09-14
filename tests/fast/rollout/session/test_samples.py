@@ -279,6 +279,30 @@ class TestMultiTurnPrefixChain:
         assert len(merged.teacher_log_probs) == merged.response_length
         merged.validate()  # the new teacher_log_probs length assertion must hold
 
+    def test_two_turn_merge_fills_advantage_scale_with_ones(self):
+        """advantage_scale merges like the OPD lists, but its neutral value is 1:
+        the observation span and a turn that carries None get ones, not zeros."""
+        tok = _mock_tokenizer()
+
+        records = [
+            _make_record(prompt_token_ids=[1, 2, 3], output_token_ids=[10, 11], output_log_probs=[-0.1, -0.2]),
+            _make_record(
+                prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+                output_token_ids=[30, 31],
+                output_log_probs=[-0.3, -0.4],
+            ),
+        ]
+        samples = compute_samples_from_openai_records(_ARGS, records, tok)
+        samples[0].advantage_scale = [1.0, 0.0]
+
+        merged = merge_samples(samples, tok)
+
+        assert merged.advantage_scale == [1.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+        merged.validate()
+
+        plain = compute_samples_from_openai_records(_ARGS, records, tok)
+        assert merge_samples(plain, tok).advantage_scale is None
+
     def test_two_turn_merge_propagates_opd_student_top_logprobs_metadata(self):
         """Top-k OPD student top-logprobs are per-token metadata, not equal metadata."""
         tok = _mock_tokenizer()

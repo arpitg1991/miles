@@ -180,3 +180,44 @@ def normalize_advantages(
         advantages = list(torch.split(whitened_advs_flat, chunk_lengths))
 
     return advantages
+
+
+def apply_advantage_scale(
+    advantages: list[torch.Tensor],
+    scales: list[torch.Tensor],
+    *,
+    positive_only: bool = False,
+) -> list[torch.Tensor]:
+    """Multiply a per-token scale into the per-token advantages, in place.
+
+    The rollout side fills ``advantage_scale`` with one per token and a rule
+    value on selected spans (0 masks, -1 flips). With ``positive_only`` a
+    negative scale acts only where the advantage is positive; a token with a
+    negative advantage under a negative scale gets zero. The sign of the
+    advantage is known only here, after reward normalization, so this is the
+    one branch the ``flip_positive`` rule needs.
+
+    Args:
+        advantages: List of per-token advantage tensors, modified in place.
+        scales: One tensor per sample, same shape as the advantages.
+        positive_only: Restrict a negative scale to positive advantages.
+
+    Returns:
+        The ``advantages`` list.
+    """
+    if len(advantages) != len(scales):
+        raise ValueError(f"advantage_scale length mismatch: advantages={len(advantages)}, scales={len(scales)}.")
+    for i, adv in enumerate(advantages):
+        scale = scales[i]
+        if not torch.is_tensor(scale):
+            scale = torch.tensor(scale, dtype=torch.float32)
+        scale = scale.detach().to(device=adv.device, dtype=adv.dtype)
+        if scale.shape != adv.shape:
+            raise ValueError(
+                f"advantage_scale shape mismatch at sample {i}: advantages={tuple(adv.shape)}, "
+                f"scale={tuple(scale.shape)}."
+            )
+        if positive_only:
+            scale = torch.where(scale < 0, torch.where(adv > 0, scale, torch.zeros_like(scale)), scale)
+        advantages[i] = adv * scale
+    return advantages

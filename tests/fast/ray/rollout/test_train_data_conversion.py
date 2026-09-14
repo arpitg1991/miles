@@ -56,6 +56,22 @@ class TestConvertSamplesToTrainData:
             assert key in out, f"missing required key {key}"
         assert len(out["tokens"]) == len(samples)
 
+    def test_advantage_scale_sparse_fill(self):
+        """advantage_scale is emitted only when one sample sets it; the rest get ones."""
+        args = make_args(rewards_normalization=False)
+        samples = make_samples_grouped(n_groups=1, group_size=2)
+        kwargs = dict(
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert "advantage_scale" not in convert_samples_to_train_data(args, samples, **kwargs)
+
+        samples[1].advantage_scale = [0.0] * samples[1].response_length
+        out = convert_samples_to_train_data(args, samples, **kwargs)
+        assert out["advantage_scale"][0] == [1.0] * samples[0].response_length
+        assert out["advantage_scale"][1] == [0.0] * samples[1].response_length
+
     def test_loss_mask_none_filled_with_ones(self):
         args = make_args(rewards_normalization=False)
         s = make_sample(response_length=5)
@@ -771,6 +787,7 @@ class TestSplitTrainDataRaw:
             "loss_masks": [[0, 1], [0, 1], [0, 1], [0, 1]],
             "rollout_indexer_topk": [torch.tensor([i]) for i in range(4)],
             "opd_reverse_kl": [[float(i)] for i in range(4)],
+            "advantage_scale": [[1.0] for _ in range(4)],
         }
 
         args = MagicMock()
@@ -782,6 +799,7 @@ class TestSplitTrainDataRaw:
         for part in result:
             assert len(part["rollout_indexer_topk"]) == 2
             assert len(part["opd_reverse_kl"]) == 2
+            assert len(part["advantage_scale"]) == 2
 
     def test_no_witness_ids_when_absent(self) -> None:
         tokens = [[1, 2], [3, 4]]

@@ -21,6 +21,7 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "rollout_sampling_mask_offsets": "int64",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
+    "advantage_scale": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
 }
@@ -181,6 +182,15 @@ def convert_samples_to_train_data(
 
     if samples[0].opd_reverse_kl is not None:
         train_data["opd_reverse_kl"] = [sample.opd_reverse_kl for sample in samples]
+
+    # advantage_scale is sparse: most samples carry None (all ones). Emit the key
+    # only when one sample sets it, and fill the others with ones so every row
+    # has one value per response token for the CP slicer.
+    if any(sample.advantage_scale is not None for sample in samples):
+        train_data["advantage_scale"] = [
+            sample.advantage_scale if sample.advantage_scale is not None else [1.0] * sample.response_length
+            for sample in samples
+        ]
 
     x = metadata.get("dynamic_global_batch_size")
     assert args.use_dynamic_global_batch_size == (x is not None)
@@ -404,6 +414,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            "advantage_scale",
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",

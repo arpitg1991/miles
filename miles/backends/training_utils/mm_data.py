@@ -263,7 +263,7 @@ def expand_multimodal_rollout_data_in_place(
         parallel_state = get_parallel_state()
         cp_size = parallel_state.cp.size
         if cp_size > 1 and qkv_format == "thd":
-            for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
+            for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl", "advantage_scale"):
                 values = rollout_data.get(key)
                 if not values:
                     continue

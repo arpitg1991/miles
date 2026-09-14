@@ -433,6 +433,54 @@ def _finish_sample(
     return s
 
 
+# --arena-truncated-turn-rule -> the advantage_scale value written on a
+# continued clipped turn. ``flip_positive`` also writes -1; the trainer loss
+# (apply_advantage_scale) turns it into ``where(adv > 0, -1, 0)`` because the
+# sign of the advantage is known only after reward normalization.
+_TRUNCATED_TURN_RULE_SCALE = {"mask": 0.0, "flip": -1.0, "flip_positive": -1.0}
+
+
+def _truncated_spans_scale(
+    spans: list[list[int]],
+    prompt_len: int,
+    response_length: int,
+    args: Any,
+) -> tuple[list[float] | None, int]:
+    """Build ``Sample.advantage_scale`` for one step from the gym's ``truncated_spans``.
+
+    The gym ships every mid-episode generate that hit the per-turn cap as
+    ``[start, end)`` in the index space of the step's ``token_ids`` /
+    ``loss_mask`` (AREnATasks ``sglang_rollout.record_finish``), and leaves
+    the loss mask at 1. The response window starts at ``prompt_len`` (the
+    first 1), so a span is shifted by ``prompt_len`` and clipped to the
+    window. A span that starts before the window belongs to a turn the gym
+    did not train on and is a silent no-op.
+
+    Returns:
+        ``(scale, n_out_of_range)``. ``scale`` is None when no span lands in
+        the window, so an unused field costs nothing downstream.
+        ``n_out_of_range`` counts spans that reach past the token stream or
+        are malformed (``start >= end``, negative start); the caller reports
+        the count once per batch.
+    """
+    if not spans or response_length <= 0:
+        return None, 0
+    value = _TRUNCATED_TURN_RULE_SCALE[getattr(args, "arena_truncated_turn_rule", "mask")]
+    scale = [1.0] * response_length
+    filled = False
+    n_out_of_range = 0
+    for start, end in spans:
+        start, end = int(start), int(end)
+        if start < 0 or start >= end or end > prompt_len + response_length:
+            n_out_of_range += 1
+        lo = max(start - prompt_len, 0)
+        hi = min(end - prompt_len, response_length)
+        if lo < hi:
+            scale[lo:hi] = [value] * (hi - lo)
+            filled = True
+    return (scale if filled else None), n_out_of_range
+
+
 def _step_to_sample(step: dict, ctx: _EpisodeContext, *, is_final: bool) -> Sample:
     """Convert one GenerateClient step (cumulative token arrays) into a Sample.
 
@@ -533,6 +581,14 @@ def _step_to_sample(step: dict, ctx: _EpisodeContext, *, is_final: bool) -> Samp
     # empty list, which aligns with response_length==0.
     s.rollout_log_probs = resp_log_probs
     s.status = status
+    # Continued clipped turns: a mid-episode generate hit the per-turn cap and
+    # the episode went on. The gym keeps those tokens in the loss mask and
+    # ships ``truncated_spans``; --arena-truncated-turn-rule decides what the
+    # loss does with them through Sample.advantage_scale. An older gym image
+    # omits the field, which reads as no spans (byte-identical behaviour).
+    s.advantage_scale, spans_out_of_range = _truncated_spans_scale(
+        step.get("truncated_spans") or [], prompt_len, response_length, args
+    )
     # --arena-mask-clipped-final-turn: the gym ships ONE step whose
     # stop_reason is "length" exactly when the FINAL generate hit the
     # per-turn cap, and that final turn's output tokens are the
@@ -630,6 +686,9 @@ def _step_to_sample(step: dict, ctx: _EpisodeContext, *, is_final: bool) -> Samp
         kept_timeout=kept_timeout,
         kept_context_error=kept_context_error,
     )
+    if spans_out_of_range:
+        # Summed and reported once per batch by generate_rollout.
+        s.metadata["truncated_spans_out_of_range"] = spans_out_of_range
     if replay_enabled(args):
         # R3 (ADR-0012): keep only the {path,bytes,sha256} pointer (or the
         # inline base64) while the group waits in the output queue; the
@@ -771,6 +830,9 @@ def _result_to_episodes_full_trajectory(
     ``group_metrics`` lands on the first sample of the first episode only.
     """
     episodes: list[list[Sample]] = []
+    # Steps dropped because their loss_mask had no 1; stamped on the first
+    # surviving sample of this result for the arena/zero_mask_steps_dropped metric.
+    zero_mask_dropped = 0
     task_id = result.get("task_id", "unknown")
     gym_name = result.get("gym_name", "unknown")
     # Per-task group_metrics dict computed gym-side. Stored on the FIRST
@@ -894,20 +956,37 @@ def _result_to_episodes_full_trajectory(
                 _step_to_sample(st, ctx, is_final=(k == len(training) - 1))
                 for k, st in enumerate(training)
             ]
-            for k, s in enumerate(episode):
-                s.metadata["segment"] = k
-                s.metadata["n_segments"] = len(training)
         else:
             if not messages:
                 logger.warning("Trajectory for %s has no messages, skipping", task_id)
                 continue
             episode = [_messages_to_sample(messages, ctx, tokenizer)]
+        # A step whose loss_mask has no 1 yields response_length == 0, which
+        # makes prompt_length == total_length and breaks the Megatron loss /
+        # CP slicing (same failure as the synthetic path above). Drop the
+        # step; when nothing is left, skip the trajectory the same way, so
+        # ``_process_group`` pads the slot with a removed sibling copy.
+        kept = [s for s in episode if s.response_length > 0]
+        zero_mask_dropped += len(episode) - len(kept)
+        if not kept:
+            logger.warning(
+                "Task %s: every step has an all-zero loss_mask; skipping "
+                "trajectory, _process_group will pad the slot.",
+                task_id,
+            )
+            continue
+        episode = kept
+        for k, s in enumerate(episode):
+            s.metadata["segment"] = k
+            s.metadata["n_segments"] = len(episode)
         # Attach group_metrics to ONLY the first sample of each group —
         # all samples in the group share the same metrics, and stamping
         # them on every sample would inflate the per-batch aggregate.
         if group_metrics is not None and not episodes:
             episode[0].metadata["group_metrics"] = group_metrics
         episodes.append(episode)
+    if zero_mask_dropped and episodes:
+        episodes[0][0].metadata["zero_mask_steps_dropped"] = zero_mask_dropped
     return episodes
 
 
@@ -1075,6 +1154,22 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
     # Per-episode response length (loss_mask window), summed over segments.
     response_lens = _episode_response_lengths(all_data)
 
+    # ---- continued clipped turns (--arena-truncated-turn-rule) -------------
+    # truncated_turn_tokens: fraction of response tokens whose advantage_scale
+    # is not 1 (the spans), over the pre-filter population. truncated_ratio
+    # keeps its meaning (the final generate hit the cap).
+    all_samples = [s for g in all_data for s in g]
+    scaled_tokens = sum(
+        sum(1 for v in s.advantage_scale if v != 1.0)
+        for s in all_samples
+        if getattr(s, "advantage_scale", None) is not None
+    )
+    response_tokens = sum(
+        s.response_length for s in all_samples if isinstance(getattr(s, "response_length", None), int)
+    )
+    zero_mask_dropped = sum(int((s.metadata or {}).get("zero_mask_steps_dropped", 0)) for s in all_samples)
+    spans_out_of_range = sum(int((s.metadata or {}).get("truncated_spans_out_of_range", 0)) for s in all_samples)
+
     return {
         "total_episodes": total_episodes,
         "avg_reward": sum(rewards) / max(total_episodes, 1),
@@ -1096,6 +1191,9 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
         "reward_p75": _pct(all_data_rewards, 75),
         "reward_p90": _pct(all_data_rewards, 90),
         "avg_response_length": sum(response_lens) / max(len(response_lens), 1),
+        "truncated_turn_tokens": scaled_tokens / max(response_tokens, 1),
+        "zero_mask_steps_dropped": zero_mask_dropped,
+        "truncated_spans_out_of_range": spans_out_of_range,
     }
 
 
@@ -2337,6 +2435,12 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     # Every count below is per EPISODE (ADR-0011): a multi-segment episode under
     # --arena-train-segments all is one unit, so the numbers match ``final``.
     tm = _batch_telemetry(data, all_data)
+    if tm["truncated_spans_out_of_range"]:
+        logger.warning(
+            "truncated_spans: %d span(s) reached past the token stream or were "
+            "malformed; clipped to the response window.",
+            tm["truncated_spans_out_of_range"],
+        )
     total_episodes = int(tm["total_episodes"])
     avg_reward = tm["avg_reward"]
     logger.info(
@@ -2467,6 +2571,10 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 # Pre-filter population (all_data); miles-native log_rollout_data
                 # logs the post-filter rollout/truncated_ratio at the same step.
                 "rollout/truncated_ratio_prefilter": truncated_ratio,
+                # Continued clipped turns (--arena-truncated-turn-rule) and the
+                # all-zero loss_mask guard in _result_to_episodes_full_trajectory.
+                "arena/truncated_turn_tokens": tm["truncated_turn_tokens"],
+                "arena/zero_mask_steps_dropped": tm["zero_mask_steps_dropped"],
                 # Segment counts: miles log_rollout_data logs
                 # rollout/num_training_samples and rollout/episode_raw_reward
                 # for this batch (ADR-0011), so nothing to add here.
@@ -2643,6 +2751,18 @@ def _add_arena_arguments(parser):
         "only that clipped final turn's loss-mask tokens and keep the "
         "earlier turns trainable, instead of removing the whole sample "
         "(the r5-lineage default).",
+    )
+    group.add_argument(
+        "--arena-truncated-turn-rule",
+        choices=("mask", "flip", "flip_positive"),
+        default="mask",
+        help="What the loss does with a continued clipped turn: a mid-episode "
+        "generate that hit the per-turn token cap while the episode went on "
+        "(the gym ships those tokens as truncated_spans and keeps them in "
+        "the loss mask). Written per token into Sample.advantage_scale: "
+        "mask = 0 (no gradient on the span), flip = -1 (negate the "
+        "advantage), flip_positive = -1 where the episode advantage is "
+        "positive and 0 where it is negative. Default: mask.",
     )
     group.add_argument(
         "--arena-keep-timeout-trajectories",

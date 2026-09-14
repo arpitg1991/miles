@@ -56,6 +56,8 @@ class Sample:
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
     opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
+    # Per-token multiplier on the advantage; None means all ones (no cost when unused).
+    advantage_scale: list[float] | None = None
 
     class Status(Enum):
         PENDING = "pending"
@@ -210,6 +212,10 @@ class Sample:
             assert (
                 len(self.opd_reverse_kl) == self.response_length
             ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
+        if self.advantage_scale is not None:
+            assert (
+                len(self.advantage_scale) == self.response_length
+            ), f"advantage_scale length ({len(self.advantage_scale)}) != response_length ({self.response_length})"
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
@@ -243,6 +249,8 @@ class Sample:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
         if self.opd_reverse_kl is not None:
             self.opd_reverse_kl = self.opd_reverse_kl[:-n]
+        if self.advantage_scale is not None:
+            self.advantage_scale = self.advantage_scale[:-n]
         if self.metadata and "opd_student_top_logprobs" in self.metadata:
             self.metadata["opd_student_top_logprobs"] = self.metadata["opd_student_top_logprobs"][:-n]
         if self.loss_mask is not None:

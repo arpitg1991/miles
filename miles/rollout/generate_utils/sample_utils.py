@@ -50,15 +50,17 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
         if sample.rollout_log_probs is None:
             sample.rollout_log_probs = [0.0] * sample.response_length
 
-    def _merge_optional_per_token(field):
-        # Optional OPD per-token lists (teacher_log_probs, opd_reverse_kl): merge like
-        # rollout_log_probs when present (zeros over the injected observation span), else keep None.
+    def _merge_optional_per_token(field, fill=0.0):
+        # Optional per-token lists (teacher_log_probs, opd_reverse_kl, advantage_scale):
+        # merge like rollout_log_probs when present (``fill`` over the injected
+        # observation span and over a side that carries None), else keep None.
+        # advantage_scale uses fill=1.0 because its neutral value is one, not zero.
         av, bv = getattr(a, field), getattr(b, field)
         if av is None and bv is None:
             return None
-        av = av if av is not None else [0.0] * a.response_length
-        bv = bv if bv is not None else [0.0] * b.response_length
-        return av + [0.0] * obs_len + bv
+        av = av if av is not None else [fill] * a.response_length
+        bv = bv if bv is not None else [fill] * b.response_length
+        return av + [fill] * obs_len + bv
 
     def _pop_opd_student_top_logprobs(metadata):
         if metadata is None:
@@ -165,6 +167,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             rollout_sampling_mask=sampling_mask,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),
+            advantage_scale=_merge_optional_per_token("advantage_scale", fill=1.0),
             rollout_routed_experts=b.rollout_routed_experts,
             rollout_indexer_topk=b.rollout_indexer_topk,
             remove_sample=_merge_equal_value("remove_sample"),

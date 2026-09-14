@@ -1804,3 +1804,30 @@ Other notes:
 - 06:40Z: `kubectl rollout restart deploy/<wf>-gym` on all three (user
   choice). 06:44Z: 288/288 ready, consumer recreated, `ack_pending` 264 /
   277 / 261, `pending=0`. A NATS restart MUST be followed by a gym restart.
+
+## 2026-09-14: r23/r24 launched; r20/r21/r22 retired
+
+- 08:13Z r20 (`rl-glm53f20-97mrn`) worker-0 exited 1 right after the iter-14
+  checkpoint and HF export completed. Cause unrecoverable: pods GC'd, the
+  resumed run overwrote `trainer-0.log` on scratch, wandb shared mode reused
+  the run dir. Watcher relaunched it as `rl-glm53f20-xv8wv` (resumed from iter
+  14, first batch at 09:22Z). Watcher bug: `grep glm53f20 | tail -1` picked
+  the old failed `x9tvq` workflow; Argo onExit on `97mrn` did the cleanup.
+- 09:19Z r20 engine 30 stopped answering health checks; RolloutHealthMonitor
+  killed the actor (fault-tolerance path). Rebuild at update_weights was
+  never reached because the run was retired.
+- Reward decline analysis (all three runs): not policy drift. (1) completion-
+  order bias: rollout 0 is the 64 fastest groups (r21: 17.7k tokens, 0
+  truncations, 0 timeouts; by rollout 5: 40k, 0.12, 3 timeouts). r21 rollouts
+  0-11 came from the untouched base policy (lag 11) and still fell 0.82 ->
+  0.69. (2) `arena_skip_prompt_above_reward 0.9` removed 202/871 (r21) and
+  369/849 (r22) prompts at epoch 2. (3) `episode_raw_reward` is post-filter.
+- 09:56Z launched r23 (`rl-glm53f23-fkmgl`, = r21 minus skip) and r24
+  (`rl-glm53f24-2nl5b`, = r22 at lr 1.5e-6 minus skip) via template v3. Both
+  got 40 nodes without waiting.
+- 10:04Z-10:12Z retired r20 (`xv8wv`), r21 (`zrcp6`), r22 (`fv54h`) per user:
+  watcher PIDs killed first, then `shutdown: Stop` on each workflow. Stop runs
+  onExit (write-report, finalize-bundle, cleanup); every pytorchjob, deploy,
+  and svc was gone within ~4 min. Prefer Stop over Terminate for retires.
+- New watchers `/tmp/r23-resume.sh`, `/tmp/r24-resume.sh`: select the Running
+  workflow by phase, 1800 s age guard, Stop instead of Terminate.

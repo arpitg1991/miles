@@ -42,15 +42,14 @@ fixed, the value is not.
 
 Both images do not exist yet. Fill the tags before you submit.
 
-1. Build the gym image from AREnATasks (`arpit-glm-53`, the commit that adds
-   `ARENA_TRUNCATED_TURN_MAX`): `brazil-build docker-arena`, then push to
-   `arena-slime-dev` in us-east-1 and wait for the ap-south-1 replica.
-2. Build the trainer image from miles (`arpit-glm-53`, the commit that adds
-   `arena_truncated_turn_rule`) and push it the same way.
-3. Replace the two `TODO r25 image` tags: the gym tag in `r25/gym-worker.yaml`,
-   then rerun `.venv/bin/python gen-workflow.py 25` (AREnATasks `.venv`; it
-   reads the gym tag and the config), then set the trainer tag in
-   `r25/workflow.yaml`. Keep the `# TODO r25 image` lines out of the final file.
+1. DONE 2026-09-14 22:40Z: gym image `gym-glm53-r5-20260914a` (AREnATasks
+   `1b07eda`, `sha256:97bc7a13...`), built with `brazil-build docker-arena`
+   and pushed to `arena-slime-dev` us-east-1; ap-south-1 replica in 15 s.
+2. DONE 2026-09-14 22:39Z: trainer image `miles-glm53-r5-20260914a` (miles
+   `e247e5e80`, `sha256:c258e933...`), `docker build -f
+   examples/arena/Dockerfile` on base `glm53next-upstream-20260902`.
+3. DONE: both tags set in `r25/gym-worker.yaml`, `r25/trainer-pytorchjob.yaml`
+   and `r25/workflow.yaml` (`gen-workflow.py 25` rerun, round-trip OK).
 4. `kubectl create -f /tmp/guparpit-miles-deployer-v4.yaml` (RBAC allows
    `create`, not `patch`, on workflowtemplates; the file is the committed
    AREnATasksApps `apps/arena-miles-deployer/generated/workflowtemplate.yaml`

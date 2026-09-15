@@ -368,6 +368,22 @@ def policy_loss_function(
         "ess_ratio": ess_ratio_sum.squeeze(),
     }
 
+    # Advantage mass over the loss-masked tokens, after the arena truncated-turn
+    # rule (monitoring only, no rebalancing). Each value is a per-micro-batch
+    # sum; aggregate_train_losses sums it across micro-batches and DP*CP ranks
+    # and divides by the rollout count, so both masses become a per-sample
+    # mean under the same divisor and log_train_step derives the ratio from
+    # the reduced values. ``advantages`` is already zero off the active tokens.
+    # Emitted only when the arena plugin registered the rule knob, so the
+    # upstream metric key set (loss snapshots) stays unchanged.
+    if getattr(args, "arena_truncated_turn_rule", None) is not None:
+        reported_loss["adv_pos_mass"] = advantages.clamp_min(0).sum().detach()
+        reported_loss["adv_neg_mass"] = (-advantages).clamp_min(0).sum().detach()
+        if (shifted := batch.get("truncated_turn_shifted")) is not None:
+            # 1.0 on each token the ``shift`` rule changed (loss.py), same
+            # reduction as the masses: shifted tokens per sample.
+            reported_loss["truncated_turn_shifted_tokens"] = torch.cat(shifted, dim=0).sum().detach()
+
     if train_rollout_logprob_abs_diff is not None:
         reported_loss["train_rollout_logprob_abs_diff"] = train_rollout_logprob_abs_diff.clone().detach()
     if train_rollout_kl is not None:

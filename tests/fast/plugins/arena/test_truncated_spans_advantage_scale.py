@@ -6,19 +6,22 @@ The gym ships every mid-episode generate that hit the per-turn cap as a
 ``token_ids`` / ``loss_mask`` and keeps the loss mask at 1. The trainer maps
 the span into the response window (from the first 1 on) and writes the rule
 value: ``mask`` -> 0, ``flip`` -> -1, ``flip_positive`` -> -1 (the loss turns
-it into ``where(adv > 0, -1, 0)``). No span, or an older gym image without
-the field, leaves ``advantage_scale`` None.
+it into ``where(adv > 0, -1, 0)``), ``shift`` -> -1 (the loss turns it into
+``max(adv - lambda, min_adv)`` where adv > 0). No span, or an older gym image
+without the field, leaves ``advantage_scale`` None.
 
 Run: python -m pytest tests/fast/plugins/arena/test_truncated_spans_advantage_scale.py -v
 """
 
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 
 import pytest
 
 from miles_plugins.arena.nats_arena.nats_rollout import (
+    _add_arena_arguments,
     _batch_telemetry,
     _result_to_episodes_full_trajectory,
     _result_to_samples_full_trajectory,
@@ -73,7 +76,7 @@ def _expected(value: float) -> list[float]:
 
 @pytest.mark.parametrize(
     ("rule", "value"),
-    [("mask", 0.0), ("flip", -1.0), ("flip_positive", -1.0)],
+    [("mask", 0.0), ("flip", -1.0), ("flip_positive", -1.0), ("shift", -1.0)],
 )
 def test_rule_value_written_on_span(rule: str, value: float) -> None:
     (s,) = _result_to_samples_full_trajectory(
@@ -85,6 +88,33 @@ def test_rule_value_written_on_span(rule: str, value: float) -> None:
     assert s.remove_sample is False
     assert "truncated_spans_out_of_range" not in s.metadata
     s.validate()
+
+
+def test_argparse_rule_choices_and_shift_defaults() -> None:
+    parser = argparse.ArgumentParser()
+    _add_arena_arguments(parser)
+
+    args = parser.parse_args([])
+    assert args.arena_truncated_turn_rule == "mask"
+    assert args.arena_truncated_turn_lambda == 0.5
+    assert args.arena_truncated_turn_min_adv == -1.0
+
+    args = parser.parse_args(
+        [
+            "--arena-truncated-turn-rule",
+            "shift",
+            "--arena-truncated-turn-lambda",
+            "0.25",
+            "--arena-truncated-turn-min-adv",
+            "-2",
+        ]
+    )
+    assert args.arena_truncated_turn_rule == "shift"
+    assert args.arena_truncated_turn_lambda == 0.25
+    assert args.arena_truncated_turn_min_adv == -2.0
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--arena-truncated-turn-rule", "bogus"])
 
 
 def test_default_rule_is_mask() -> None:

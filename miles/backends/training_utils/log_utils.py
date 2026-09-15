@@ -530,6 +530,12 @@ def log_train_step(
     }
     log_dict_out[f"train/{role_tag}grad_norm"] = float(grad_norm)
 
+    # A ratio of the reduced masses, not a mean of per-micro-batch ratios.
+    pos = log_dict_out.get(f"train/{role_tag}adv_pos_mass")
+    neg = log_dict_out.get(f"train/{role_tag}adv_neg_mass")
+    if pos is not None and neg is not None:
+        log_dict_out[f"train/{role_tag}adv_neg_pos_ratio"] = neg / (pos + 1e-6)
+
     if extra_metrics:
         for key, val in extra_metrics.items():
             log_dict_out[f"train/{role_tag}{key}"] = val

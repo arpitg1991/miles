@@ -1849,4 +1849,11 @@ Other notes:
   `73223f264`; base r24, `arena_truncated_turn_rule: mask`, images
   `gym-glm53-r5-20260914a` / `miles-glm53-r5-20260914a`). PyTorchJob held by
   kueue behind r23 and r24.
+- 01:02Z: r23 `rl-glm53f23-8skq6` retired on the user's word ("remove r23"):
+  watcher PID killed first, then `shutdown: Stop`; all resources gone by
+  01:06Z. kueue admitted the r25 trainer at 00:51Z once the nodes freed.
+- 01:29Z: r26 `rl-glm53f26-kk68n` submitted (miles `b4c3cbb8c`,
+  `arena_truncated_turn_rule: shift`, lambda 0.5, floor -1.0, trainer image
+  `miles-glm53-r6-20260915a`). Admitted at once; 41 pods Running by 01:36Z.
+  r24, r25, r26 hold 120 GPU nodes.
 

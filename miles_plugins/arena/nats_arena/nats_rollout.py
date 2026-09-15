@@ -434,10 +434,13 @@ def _finish_sample(
 
 
 # --arena-truncated-turn-rule -> the advantage_scale value written on a
-# continued clipped turn. ``flip_positive`` also writes -1; the trainer loss
-# (apply_advantage_scale) turns it into ``where(adv > 0, -1, 0)`` because the
-# sign of the advantage is known only after reward normalization.
-_TRUNCATED_TURN_RULE_SCALE = {"mask": 0.0, "flip": -1.0, "flip_positive": -1.0}
+# continued clipped turn. ``flip_positive`` and ``shift`` also write -1: the
+# field is a span marker for those two rules, and the trainer loss reads the
+# advantage sign, which is known only after reward normalization.
+# flip_positive: apply_advantage_scale -> ``where(adv > 0, -1, 0)``.
+# shift: apply_truncated_turn_shift -> ``max(adv - lambda, min_adv)`` where
+# adv > 0 (--arena-truncated-turn-lambda, --arena-truncated-turn-min-adv).
+_TRUNCATED_TURN_RULE_SCALE = {"mask": 0.0, "flip": -1.0, "flip_positive": -1.0, "shift": -1.0}
 
 
 def _truncated_spans_scale(
@@ -2754,7 +2757,7 @@ def _add_arena_arguments(parser):
     )
     group.add_argument(
         "--arena-truncated-turn-rule",
-        choices=("mask", "flip", "flip_positive"),
+        choices=("mask", "flip", "flip_positive", "shift"),
         default="mask",
         help="What the loss does with a continued clipped turn: a mid-episode "
         "generate that hit the per-turn token cap while the episode went on "
@@ -2762,7 +2765,22 @@ def _add_arena_arguments(parser):
         "the loss mask). Written per token into Sample.advantage_scale: "
         "mask = 0 (no gradient on the span), flip = -1 (negate the "
         "advantage), flip_positive = -1 where the episode advantage is "
-        "positive and 0 where it is negative. Default: mask.",
+        "positive and 0 where it is negative, shift = max(adv - lambda, "
+        "min_adv) where the advantage is positive and unchanged otherwise "
+        "(--arena-truncated-turn-lambda, --arena-truncated-turn-min-adv). "
+        "Default: mask.",
+    )
+    group.add_argument(
+        "--arena-truncated-turn-lambda",
+        type=float,
+        default=0.5,
+        help="shift rule: the amount subtracted from a positive advantage on a continued clipped turn. Default: 0.5.",
+    )
+    group.add_argument(
+        "--arena-truncated-turn-min-adv",
+        type=float,
+        default=-1.0,
+        help="shift rule: the floor of the shifted advantage on a continued clipped turn. Default: -1.0.",
     )
     group.add_argument(
         "--arena-keep-timeout-trajectories",

@@ -68,6 +68,10 @@ keeps starting new work past the point where it can finish inside the window.
 
 - **Change.** `arena_inflight_multiplier` 4 -> 2, `global_batch_size` 512 -> 256, `save_interval` 10, `num_rollout` 300, `arena_truncated_turn_rule: mask` (open), gym `ARENA_COMPACTION_MAX` 5 + `ARENA_TRUNCATED_TURN_MAX` 5 under a 64 MiB NATS `max_payload` (template `guparpit-miles-deployer-v4`). Assets: `r25/`, launch steps in `r25/BUILD.md`.
 
+### 9. Shift credit on continued clipped turns (r26) — PREPARED
+
+- **Change.** r25 with `arena_truncated_turn_rule: shift` (`arena_truncated_turn_lambda` 0.5, `arena_truncated_turn_min_adv` -1.0): a span token with a positive advantage A gets `max(A - 0.5, -1.0)`; trainer image `miles-glm53-r6-20260915a`. New gauges `train/adv_pos_mass`, `train/adv_neg_mass`, `train/adv_neg_pos_ratio`, `train/truncated_turn_shifted_tokens`. Assets: `r26/`, launch steps in `r26/BUILD.md`.
+
 ## Remaining candidates
 
 ### 2. Group-relative length penalty on passes (#1573 pattern)

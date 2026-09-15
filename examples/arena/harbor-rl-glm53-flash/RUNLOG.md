@@ -1831,3 +1831,22 @@ Other notes:
   and svc was gone within ~4 min. Prefer Stop over Terminate for retires.
 - New watchers `/tmp/r23-resume.sh`, `/tmp/r24-resume.sh`: select the Running
   workflow by phase, 1800 s age guard, Stop instead of Terminate.
+
+## 2026-09-15: r23 watcher restart, r25 launch
+
+- 00:26:46Z: `/tmp/r23-resume.sh` logged `trainer= state=''` for
+  `rl-glm53f23-fkmgl`, patched it to `shutdown: Stop`, and created
+  `rl-glm53f23-8skq6` at 00:31Z. The old trainer was 28 min into the step-20
+  checkpoint. The resumed trainer loads iteration 19 (the step-20 save), so
+  no optimizer progress was lost; the 115-group queue and 256 in-flight
+  episodes were. The old PyTorchJob object is gone, so a real disappearance
+  cannot be told from a transient `kubectl get pytorchjob` failure. The r25
+  watcher requires two consecutive empty reads 120 s apart plus rc=0.
+- 00:45Z: WorkflowTemplate `guparpit-miles-deployer-v4` created (AREnATasksApps
+  `5a0baa1`: NATS `max_payload` 64 MiB, `ARENA_COMPACTION_MAX` 5,
+  `ARENA_TRUNCATED_TURN_MAX` 5).
+- 00:46Z: r25 `rl-glm53f25-6ggcw` submitted from `r25/workflow.yaml` (miles
+  `73223f264`; base r24, `arena_truncated_turn_rule: mask`, images
+  `gym-glm53-r5-20260914a` / `miles-glm53-r5-20260914a`). PyTorchJob held by
+  kueue behind r23 and r24.
+

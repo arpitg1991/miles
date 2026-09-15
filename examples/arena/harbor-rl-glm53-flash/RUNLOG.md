@@ -1839,9 +1839,14 @@ Other notes:
   `rl-glm53f23-8skq6` at 00:31Z. The old trainer was 28 min into the step-20
   checkpoint. The resumed trainer loads iteration 19 (the step-20 save), so
   no optimizer progress was lost; the 115-group queue and 256 in-flight
-  episodes were. The old PyTorchJob object is gone, so a real disappearance
-  cannot be told from a transient `kubectl get pytorchjob` failure. The r25
-  watcher requires two consecutive empty reads 120 s apart plus rc=0.
+  episodes were. CORRECTION (01:50Z post-mortem): this was a trainer crash,
+  not a watcher misfire. `hf/rollout_19` finished at 00:25Z and
+  `memsample-0.log` (60 s cadence) stops at 00:24:53Z, 2 min before the
+  watcher fired. The PyTorchJob has `ttlSecondsAfterFinished: 0`, so a Failed
+  job and its pods vanish within seconds and every watcher only ever sees
+  `state=''`. Third identical death right after the HF export (r20 x2, r23);
+  the crash log is overwritten by the resume because `trainer-0.log` is keyed
+  by experiment name. The r25/r26 watchers still require two reads plus rc=0.
 - 00:45Z: WorkflowTemplate `guparpit-miles-deployer-v4` created (AREnATasksApps
   `5a0baa1`: NATS `max_payload` 64 MiB, `ARENA_COMPACTION_MAX` 5,
   `ARENA_TRUNCATED_TURN_MAX` 5).
@@ -1849,7 +1854,7 @@ Other notes:
   `73223f264`; base r24, `arena_truncated_turn_rule: mask`, images
   `gym-glm53-r5-20260914a` / `miles-glm53-r5-20260914a`). PyTorchJob held by
   kueue behind r23 and r24.
-- 01:02Z: r23 `rl-glm53f23-8skq6` retired on the user's word ("remove r23"):
+- 01:02Z: r23 `rl-glm53f23-8skq6` retired on the user's explicit "remove r23":
   watcher PID killed first, then `shutdown: Stop`; all resources gone by
   01:06Z. kueue admitted the r25 trainer at 00:51Z once the nodes freed.
 - 01:29Z: r26 `rl-glm53f26-kk68n` submitted (miles `b4c3cbb8c`,

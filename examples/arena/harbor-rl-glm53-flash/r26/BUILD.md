@@ -60,23 +60,9 @@ r25.
 
 ## Launch
 
-1. DONE 2026-09-15 01:13Z: trainer image `miles-glm53-r6-20260915a` (miles
-   `aca2e9520`, `sha256:444d710f12dcf69b72a166b7b5eb0b422ceeb88394221d02d804ba43cfd518e3`),
-   `docker build -f examples/arena/Dockerfile` on base
-   `glm53next-upstream-20260902`, pushed to `arena-slime-dev` us-east-1;
-   ap-south-1 replica in 16 s with the same digest. The image carries
-   `shift` in `nats_rollout.py` and `apply_truncated_turn_shift` in
-   `loss_hub/advantages.py` (checked with `inspect.getsource` inside the
-   image).
-2. DONE: tags set in `r26/trainer-pytorchjob.yaml` and `r26/workflow.yaml`
-   (`gen-workflow.py 26` rerun, round-trip OK; the generator copies the r19
-   trainer image, so `trainer-image` was set to the r6 tag by hand).
-3. TODO: `kubectl create -f r26/workflow.yaml`. The workflow creates NATS,
-   the SGLang service and the PyTorchJob; kueue holds the job while other
-   runs hold the GPU nodes.
-4. TODO: start `/tmp/r26-resume.sh` only after the PyTorchJob exists. The
-   watcher needs two empty reads 120 s apart and a zero kubectl exit code
-   before it resumes (r25 note: a single-read watcher restarted a healthy
-   run mid-checkpoint).
-5. TODO: after the first optimizer steps, confirm `train/adv_neg_pos_ratio`
-   and `train/truncated_turn_shifted_tokens` appear in W&B.
+1. DONE 2026-09-15 01:29Z: `kubectl create -f r26/workflow.yaml` ->
+   `rl-glm53f26-kk68n` (template `guparpit-miles-deployer-v4`). NATS ready
+   01:31Z; PyTorchJob created 01:32Z and admitted by kueue at once (41 pods
+   Running by 01:36Z) next to r24 and r25, so three 40-node runs are live.
+2. DONE 2026-09-15 01:36Z: `/tmp/r26-resume.sh` started after the PyTorchJob
+   existed (two-read guard, same as r25).

@@ -1,12 +1,12 @@
-# r25 deltas vs r23 (2026-09-14): arena_inflight_multiplier 4 -> 2 (sample age
+# r25 deltas vs r24 (2026-09-15): arena_inflight_multiplier 4 -> 2 (sample age
 # 6-7 -> 2-3 optimizer steps), global_batch_size 512 -> 256 (two optimizer steps
 # per 64x8 rollout, so the PPO ratio and clip are live), save_interval 5 -> 10,
 # num_rollout 130 -> 300, arena_truncated_turn_rule: mask (new trainer arg;
 # REQUIRES a trainer image built after it lands). Gym pairs with
 # ARENA_COMPACTION_MAX=5 + ARENA_TRUNCATED_TURN_MAX=5 and a 64 MiB NATS
 # max_payload (r25/gym-worker.yaml, r25/nats.yaml, template
-# guparpit-miles-deployer-v4). Everything else is r23 (lr 1.5e-6, eps_clip
-# 0.2/0.28, TP8 PP4 EP16, manifest-871, no prompt skip).
+# guparpit-miles-deployer-v4). Everything else is r24 (lr 1.5e-6, eps_clip
+# 0.2/0.28, TP8 PP4 EP16, robust-20260913 manifest-849, no prompt skip).
 # Fresh run: no checkpoint dir under slime_experiments/rl-glm53f-gbash-r25.
 # r23 deltas vs r21 (2026-09-14): arena_skip_prompt_above_reward removed.
 # Everything else is r21 (lr 1.5e-6, ecr-20260823 manifest-871, gym image
@@ -155,7 +155,7 @@ data_source_path: miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWith
 # r18 consumed 31 steps x 64 = 1984 prompts of the easiest-first order; r19
 # skips the easiest 1000 rows instead of replaying them. r20/r21: the 871
 # rows of that list with r19 training signal (r19signal/r19-derivation-871.json).
-prompt-data-list: '[{"path":"/mnt/scratch-s3files-rw/guparpit/data/snorkel-general-bash-harbor/ecr-20260823-curriculum-r19signal/manifest-871.jsonl","gym_name":"snorkel-general-bash-harbor","weight":1.0}]'
+prompt-data-list: '[{"path":"/mnt/scratch-s3files-rw/guparpit/data/snorkel-general-bash-harbor/robust-20260913-r19signal/manifest-849.jsonl","gym_name":"snorkel-general-bash-harbor","weight":1.0}]'
 sglang_disable_overlap_schedule: true
 # sglang router binds on replica-index 0, where the rl-glm53f-sglang Service
 # points (smoke-proven pattern)

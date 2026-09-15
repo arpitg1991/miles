@@ -142,7 +142,6 @@ spec:
         # docker-arena`, tagged and pushed to us-east-1 arena-slime-dev
         # (replicates to ap-south-1). Vulcan agent with token-aware context
         # compaction (ADR-0048); see the r12 header block and r13/BUILD.md.
-: build from AREnATasks after ARENA_TRUNCATED_TURN_MAX lands.
         image: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-r5-20260914a
         command: ["bash", "-c"]
         args:

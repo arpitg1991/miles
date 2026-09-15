@@ -1,12 +1,12 @@
 # r25: fresher samples, live PPO ratio, longer episodes
 
-r23 with a shorter publisher pipeline, two optimizer steps per rollout, and a
+r24 with a shorter publisher pipeline, two optimizer steps per rollout, and a
 gym that survives a per-turn token cut-off. Template
 `guparpit-miles-deployer-v4` (AREnATasksApps, 64 MiB NATS `max_payload`).
 
-## Deltas vs r23
+## Deltas vs r24
 
-| Knob | r23 | r25 | Reason |
+| Knob | r24 | r25 | Reason |
 | --- | --- | --- | --- |
 | `arena_inflight_multiplier` | 4 | 2 | At 4x a sample waited 6-7 optimizer steps between generation and training; 2x cuts the age to 2-3 steps. |
 | `global_batch_size` | 512 | 256 | One rollout is 64 x 8 = 512 episodes, so 256 gives two optimizer steps per rollout and the PPO ratio and clip become live. |
@@ -19,7 +19,7 @@ gym that survives a per-turn token cut-off. Template
 
 Unchanged: lr 1.5e-6, eps_clip 0.2/0.28, TP8 PP4 EP16, `manifest-871.jsonl`,
 rollout_shuffle, TIS, R3 routing replay, partial reward `ctrf`, 40 replicas
-(8 actor + 32 engine), 288 gym replicas, the r23 `excluded-nodes` list.
+(8 actor + 32 engine), 288 gym replicas, the r23/r24 `excluded-nodes` list.
 
 Token budget check: `rollout_max_context_len` and `sglang_context_length`
 stay 131072 and bound one segment; `rollout_max_response_len` 32768 bounds

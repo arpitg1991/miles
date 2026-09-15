@@ -50,9 +50,13 @@ Both images do not exist yet. Fill the tags before you submit.
    examples/arena/Dockerfile` on base `glm53next-upstream-20260902`.
 3. DONE: both tags set in `r25/gym-worker.yaml`, `r25/trainer-pytorchjob.yaml`
    and `r25/workflow.yaml` (`gen-workflow.py 25` rerun, round-trip OK).
-4. `kubectl create -f /tmp/guparpit-miles-deployer-v4.yaml` (RBAC allows
-   `create`, not `patch`, on workflowtemplates; the file is the committed
-   AREnATasksApps `apps/arena-miles-deployer/generated/workflowtemplate.yaml`
-   with `__AWS_REGION__` -> `ap-south-1` and the name -> `guparpit-miles-deployer-v4`).
-5. `kubectl create -f r25/workflow.yaml`.
-6. Start `/tmp/r25-resume.sh` only after the PyTorchJob exists.
+4. DONE 2026-09-15 00:45Z: `kubectl create -f /tmp/guparpit-miles-deployer-v4.yaml`
+   -> WorkflowTemplate `guparpit-miles-deployer-v4`.
+5. DONE 2026-09-15 00:46Z: `kubectl create -f r25/workflow.yaml` ->
+   `rl-glm53f25-6ggcw`. NATS ready 00:48Z; PyTorchJob created 00:49Z and held
+   by kueue (`Created,Suspended`) while r23 (resumed as `rl-glm53f23-8skq6`)
+   and r24 hold 80 GPU nodes.
+6. DONE 2026-09-15 00:52Z: `/tmp/r25-resume.sh` started after the PyTorchJob
+   existed. This watcher needs two empty reads 120 s apart and a zero kubectl
+   exit code before it resumes; the r23 watcher fired on a single empty read
+   at 00:26Z and restarted a healthy run mid-checkpoint.

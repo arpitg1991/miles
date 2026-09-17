@@ -66,3 +66,30 @@ r25.
    Running by 01:36Z) next to r24 and r25, so three 40-node runs are live.
 2. DONE 2026-09-15 01:36Z: `/tmp/r26-resume.sh` started after the PyTorchJob
    existed (two-read guard, same as r25).
+
+## r7 probe resume (2026-09-17)
+
+r26 resumed from iter 69 as `rl-glm53f26-dcskp` on trainer image
+`miles-glm53-r7-20260917a` (miles `f60ead4cc`). The probe writes one
+`rollout_{rollout_id}.jsonl` per training rollout with per-sample reward,
+raw_reward, response_length, total_length, status, group_index, and
+segment_k. No tensors. The goal is the within-group advantage-vs-episode-
+length correlation behind the CTRF length drift (length grows on r21, r24,
+r25, r26; flat on pre-CTRF r11).
+
+| Item | r26 as launched | r7 probe resume | Reason |
+| --- | --- | --- | --- |
+| trainer image | `miles-glm53-r6-20260915a` | `miles-glm53-r7-20260917a` | miles `8989cfb49`: `--arena-sample-summary-dir`, `save_dashboard_columns` sample_index Int32 -> Int64, non-fatal wrapper. |
+| `arena_sample_summary_dir` | absent | `/mnt/scratch-s3files-rw/guparpit/debug/rl-glm53f-gbash-r26/sample_summary` | Per-sample (reward, length) capture, ~100 KB per rollout, not on a tensor path. |
+| everything else | r26 | unchanged | Same checkpoint line (`iter_*` 69), same gym image, batch shape, and rule knobs. |
+
+Remove `arena_sample_summary_dir` after 2-3 rollouts only if it shows any
+cost.
+
+Crash lesson from `rl-glm53f26-6ddss` and `rl-glm53f26-7g5p7`:
+`save_debug_rollout_data` also runs `save_dashboard_columns`. That writer
+typed `sample_index` as Int32 and crashed on the ADR-0011 segment index
+(`base + k * (1 << 40)`) before `torch.save`. Each cycle lost one ~2.5 h
+rollout on 40 nodes with no optimizer step. Debug sidecars are on the hot
+path. Trace every call to its guard before you enable one on a production
+run.

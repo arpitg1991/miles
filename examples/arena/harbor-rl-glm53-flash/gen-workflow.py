@@ -33,6 +33,10 @@ def main() -> None:
     ap.add_argument("--partial-reward", default="ctrf")
     ap.add_argument("--base", default="r19")
     ap.add_argument("--template", default="guparpit-miles-deployer-v4")
+    # Default: keep the trainer image of the existing r<N>/workflow.yaml. The
+    # base workflow carries an older tag, so a plain regeneration silently
+    # downgraded r26 (r6 -> r3) on 2026-09-17.
+    ap.add_argument("--trainer-image", default=None)
     a = ap.parse_args()
     here = pathlib.Path(__file__).parent
     run = here / f"r{a.n}"
@@ -45,6 +49,13 @@ def main() -> None:
     wf["spec"]["workflowTemplateRef"]["name"] = a.template
     params = {p["name"]: p for p in wf["spec"]["arguments"]["parameters"]}
     params["experiment-name"]["value"] = f"rl-glm53f-gbash-r{a.n}"
+    out = run / "workflow.yaml"
+    trainer_image = a.trainer_image
+    if trainer_image is None and out.exists():
+        prev = {p["name"]: p["value"] for p in yaml.safe_load(out.read_text())["spec"]["arguments"]["parameters"]}
+        trainer_image = prev.get("trainer-image")
+    if trainer_image is not None:
+        params["trainer-image"]["value"] = trainer_image
     params["miles-config"]["value"] = _Block(cfg)
     # r19 left gym-image and partial-reward at the template defaults.
     for name, value in (("gym-image", gym_img), ("partial-reward", a.partial_reward)):
@@ -52,13 +63,12 @@ def main() -> None:
             params[name]["value"] = value
         else:
             wf["spec"]["arguments"]["parameters"].append({"name": name, "value": value})
-    out = run / "workflow.yaml"
     out.write_text(yaml.dump(wf, sort_keys=False, width=10**9))
     back = yaml.safe_load(out.read_text())
     got = {p["name"]: p["value"] for p in back["spec"]["arguments"]["parameters"]}
     if got["miles-config"] != cfg:
         sys.exit("miles-config round-trip mismatch")
-    print(out, "generateName", back["metadata"]["generateName"], "gym-image", got["gym-image"], "partial-reward", got["partial-reward"], "experiment", got["experiment-name"])
+    print(out, "generateName", back["metadata"]["generateName"], "trainer-image", got["trainer-image"], "gym-image", got["gym-image"], "partial-reward", got["partial-reward"], "experiment", got["experiment-name"])
 
 
 if __name__ == "__main__":

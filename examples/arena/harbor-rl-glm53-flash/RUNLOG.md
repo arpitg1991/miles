@@ -1862,3 +1862,64 @@ Other notes:
   `miles-glm53-r6-20260915a`). Admitted at once; 41 pods Running by 01:36Z.
   r24, r25, r26 hold 120 GPU nodes.
 
+## 2026-09-17: r26 sample-summary probe, two lost rollouts, trainer image r7
+
+- Purpose: capture per-episode (reward, length) on r26 to measure the
+  within-group advantage-vs-episode-length correlation behind the CTRF
+  length drift. Episode length grows on every CTRF partial-reward run
+  (r21, r24, r25, r26) and stays flat on pre-CTRF r11.
+- 04:56Z attempt 1 (failed): stopped `rl-glm53f26-kk68n` (`shutdown: Stop`)
+  and created `rl-glm53f26-6ddss` from iter 69 with `save_debug_rollout_data`
+  in the miles-config. It completed rollout 70 at 07:32Z (256 samples,
+  avg_reward 0.831) and died before `torch.save` inside
+  `save_dashboard_columns` (`miles/ray/rollout/debug_data.py`):
+  `polars.exceptions.ComputeError: could not append value: 1099511627808 of
+  type: i64`. The parquet schema typed `sample_index` as Int32, and
+  `arena_train_segments: all` sets `index = base + k * (1 << 40)` (ADR-0011,
+  `_SEGMENT_INDEX_STRIDE`). That writer has no flag of its own. No train
+  step ran; zero data captured. Workflow phase Failed at 07:37Z.
+- 07:39Z: the watcher `/tmp/r26-resume.sh` auto-resumed `rl-glm53f26-7g5p7`
+  from iter 69 with the same flag (it re-creates `r26/workflow.yaml`).
+  07:55Z: reverted `r26/miles-config.yaml` and `r26/workflow.yaml` so a later
+  resume drops the flag.
+- Also found: `save_debug_train_data` (megatron `actor.py:608`) and the
+  rollout `.pt` both carry `rollout_routed_experts` (R3 replay payload,
+  ~1.4 KB/token), so neither is a safe capture. `save_debug_event_data` has
+  no reward or length. The trajectory jsonl has no length.
+- Fix, miles commits on arpit-glm-53. `8989cfb49` feat(arena):
+  `--arena-sample-summary-dir` writes `rollout_{rollout_id}.jsonl` per
+  training rollout with per-sample rollout_id, index, episode_index,
+  segment_k, group_index, status, remove_sample, mode (dp_pad marker),
+  reward, raw_reward, response_length, total_length, span_tokens,
+  has_advantage_scale, stop_reason. No tensors. It never raises (logs a
+  warning). Same commit: `save_dashboard_columns` sample_index Int32 ->
+  Int64 and a non-fatal wrapper. Test
+  `tests/fast/plugins/arena/test_sample_summary.py` (3 passed).
+- `f60ead4cc` chore: `gen-workflow.py` now keeps the existing
+  `r<N>/workflow.yaml` trainer-image and adds `--trainer-image`. A plain
+  regeneration had silently downgraded r26 from r6 to r3 on this day; caught
+  before submit. `r26/miles-config.yaml` gains `arena_sample_summary_dir:
+  /mnt/scratch-s3files-rw/guparpit/debug/rl-glm53f-gbash-r26/sample_summary`.
+  `8fa0e43f9` chore: `r26/workflow.yaml` regenerated on the new image.
+- Trainer image `miles-glm53-r7-20260917a` built from `f60ead4cc` with
+  `docker build -f examples/arena/Dockerfile` on base
+  `glm53next-upstream-20260902`. Build 49 s (cache). Push 10 s to us-east-1
+  at 08:10Z; ap-south-1 replica at 08:11Z; digest
+  `sha256:b97decbecfd8454931d2b3ff6da02243bf37dc093f80f9b5c44a53f4a0a654aa`.
+  Verified in the image: the new arg, the Int64 fix, `git rev-parse HEAD`
+  = `f60ead4cc`.
+- 08:12Z: killed the r26 watcher, patched `rl-glm53f26-7g5p7` to
+  `shutdown: Stop` (user approved). 08:17Z: Failed with no leftovers.
+  08:17Z: created `rl-glm53f26-dcskp` (same experiment name; it reloads the
+  latest `iter_*`, which is 69), restarted one watcher, retargeted the
+  status script. Each flagged cycle (`6ddss`, `7g5p7`) lost one ~2.5 h
+  rollout on 40 nodes with no optimizer step; `7g5p7` was stopped ~2.3 h
+  before its own crash point.
+- Analysis plan: `/tmp/glm53/adv_len.py` (local, not in the repo) rebuilds
+  GRPO advantages per group from the jsonl (drops remove_sample, reward
+  None, mode dp_pad). It reports pooled and per-group corr(adv, episode
+  length), longest-vs-shortest episode advantage, and length by status.
+  Remove `arena_sample_summary_dir` after 2-3 rollouts only if it shows any
+  cost; it writes ~100 KB per rollout and is not on a tensor path.
+- r25 `rl-glm53f25-bkrxk` untouched: rollout 62 at 07:03Z, reward 0.790,
+  `episode_response_length/mean` 150560.

@@ -45,31 +45,36 @@ def save_dashboard_columns(samples: list[Sample], path: Path) -> None:
             _warned_no_polars = True
         return
     schema = dict(
-        sample_index=pl.Int32,
+        # Int64: arena multi-segment indices exceed Int32 (ADR-0011 stride 1<<40).
+        sample_index=pl.Int64,
         response_length=pl.Int32,
         total_length=pl.Int32,
         tokens=pl.List(pl.Int32),
         loss_mask=pl.List(pl.Int8),
         rollout_log_probs=pl.List(pl.Float32),
     )
-    frame = pl.DataFrame(
-        [
-            dict(
-                sample_index=sample.index,
-                response_length=sample.response_length,
-                total_length=len(sample.tokens),
-                tokens=list(sample.tokens),
-                loss_mask=sample.loss_mask,
-                rollout_log_probs=sample.rollout_log_probs,
-            )
-            for sample in samples
-        ],
-        schema=schema,
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    frame.write_parquet(tmp, row_group_size=8)
-    tmp.replace(path)
+    # A debug sidecar must not end the run: log the failure and skip the dump.
+    try:
+        frame = pl.DataFrame(
+            [
+                dict(
+                    sample_index=sample.index,
+                    response_length=sample.response_length,
+                    total_length=len(sample.tokens),
+                    tokens=list(sample.tokens),
+                    loss_mask=sample.loss_mask,
+                    rollout_log_probs=sample.rollout_log_probs,
+                )
+                for sample in samples
+            ],
+            schema=schema,
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        frame.write_parquet(tmp, row_group_size=8)
+        tmp.replace(path)
+    except Exception as exc:
+        logger.warning("dashboard_columns dump to %s failed: %s", path, exc)
 
 
 def save_debug_trajectory_data(args, samples: list[Sample], rollout_id, evaluation: bool):

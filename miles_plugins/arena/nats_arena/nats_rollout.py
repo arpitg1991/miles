@@ -27,6 +27,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -2259,6 +2260,56 @@ def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
 # Main rollout function
 # ---------------------------------------------------------------------------
 
+def _write_sample_summary(args: Any, rollout_id: int, samples: list[Sample]) -> None:
+    """Write one JSONL row per training sample to ``--arena-sample-summary-dir``.
+
+    The file is ``rollout_{rollout_id}.jsonl``. Each row holds scalar reward and
+    length fields only, no token tensors, so a production run can measure the
+    within-group advantage-vs-episode-length correlation offline. ``index`` is
+    decoded with ``_SEGMENT_INDEX_STRIDE`` into ``episode_index`` and
+    ``segment_k`` (ADR-0011). ``span_tokens`` counts the ``advantage_scale``
+    entries that a truncated-turn rule rewrote.
+    """
+    # Diagnostics-only path: a failure here MUST never end a production run.
+    # That is the justification for the broad except.
+    try:
+        path = Path(args.arena_sample_summary_dir) / f"rollout_{rollout_id}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for s in samples:
+            meta = s.metadata or {}
+            index = None if s.index is None else int(s.index)
+            scale = s.advantage_scale
+            rows.append(
+                {
+                    "rollout_id": rollout_id,
+                    "index": index,
+                    "episode_index": None if index is None else index % _SEGMENT_INDEX_STRIDE,
+                    "segment_k": None if index is None else index // _SEGMENT_INDEX_STRIDE,
+                    "group_index": s.group_index,
+                    "sample_rollout_id": s.rollout_id,
+                    "status": s.status.value,
+                    "remove_sample": s.remove_sample,
+                    # "dp_pad" marks a DP-alignment pad row that copies a sibling reward.
+                    "mode": meta.get("mode"),
+                    "reward": float(s.reward) if isinstance(s.reward, (int, float)) else None,
+                    "raw_reward": meta.get("raw_reward"),
+                    "response_length": s.response_length,
+                    "total_length": len(s.tokens),
+                    "span_tokens": 0 if scale is None else sum(1 for v in scale if v != 1.0),
+                    "has_advantage_scale": scale is not None,
+                    "stop_reason": meta.get("agent_stop_reason") or meta.get("stop_reason") or None,
+                }
+            )
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w") as f:
+            f.write("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+        os.replace(tmp, path)
+        logger.info("arena sample summary: %d rows -> %s", len(rows), path)
+    except Exception as exc:
+        logger.warning("arena sample summary for rollout %d failed: %s", rollout_id, exc)
+
+
 def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = False):
     """NATS rollout function entry point.
 
@@ -2664,6 +2715,12 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
         except Exception as exc:
             logger.warning("Failed to log queue metrics to W&B: %s", exc)
 
+    # Training rollouts only: the evaluation branch raised at the top. The
+    # rows reflect the final batch: post dynamic-sampling, post DP padding,
+    # with advantage_scale already set by _step_to_sample.
+    if getattr(args, "arena_sample_summary_dir", None) is not None:
+        _write_sample_summary(args, rollout_id, [s for group in data for s in group])
+
     return data
 
 
@@ -2754,6 +2811,14 @@ def _add_arena_arguments(parser):
         "only that clipped final turn's loss-mask tokens and keep the "
         "earlier turns trainable, instead of removing the whole sample "
         "(the r5-lineage default).",
+    )
+    group.add_argument(
+        "--arena-sample-summary-dir",
+        type=str,
+        default=None,
+        help="Directory for one JSONL file per training rollout "
+        "(rollout_{rollout_id}.jsonl) with per-sample reward and length "
+        "fields; no tensors. Decodes the ADR-0011 segment index. Default: off.",
     )
     group.add_argument(
         "--arena-truncated-turn-rule",

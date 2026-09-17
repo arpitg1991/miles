@@ -1532,3 +1532,90 @@ class TestGradedRenormalizeAfterMask:
         samples = [self._make_sample(1.0), self._make_sample(0.0, remove=True)]
         _raw, processed = graded_renormalize_after_mask(args, samples)
         assert processed[0] == 0.0
+
+
+class TestShapeGroupLengthReward:
+    """The group-relative token-efficiency term (--arena-length-reward-coef)."""
+
+    @staticmethod
+    def _args(coef: float = 0.05) -> SimpleNamespace:
+        return SimpleNamespace(arena_length_reward_coef=coef, reward_key=None)
+
+    @staticmethod
+    def _group(pairs: list[tuple[float, int]]) -> list[SimpleNamespace]:
+        """One sample per episode: ``(reward, response_length)`` in order."""
+        return [
+            SimpleNamespace(
+                group_index=0,
+                rollout_id=i,
+                index=i,
+                reward=reward,
+                response_length=length,
+                remove_sample=False,
+            )
+            for i, (reward, length) in enumerate(pairs)
+        ]
+
+    def test_all_passed_group_gains_variance(self):
+        from miles_plugins.arena.nats_arena.nats_rollout import shape_group_length_reward
+
+        # The real failure mode: 8/8 solved, so the filter deletes the group.
+        group = self._group([(1.0, 40_000), (1.0, 240_000), (1.0, 440_000)])
+        assert shape_group_length_reward(self._args(), group) is True
+        rewards = [s.reward for s in group]
+        assert rewards[0] > rewards[1] > rewards[2]
+        assert rewards[0] == pytest.approx(1.025)  # shortest: +coef/2
+        assert rewards[1] == pytest.approx(1.0)  # midpoint: unchanged
+        assert rewards[2] == pytest.approx(0.975)  # longest: -coef/2
+        assert len(set(rewards)) == 3  # non-zero std -> survives the filter
+
+    def test_off_by_default(self):
+        from miles_plugins.arena.nats_arena.nats_rollout import shape_group_length_reward
+
+        group = self._group([(1.0, 40_000), (1.0, 440_000)])
+        assert shape_group_length_reward(self._args(coef=0.0), group) is False
+        assert [s.reward for s in group] == [1.0, 1.0]
+
+    def test_all_failed_group_untouched(self):
+        from miles_plugins.arena.nats_arena.nats_rollout import shape_group_length_reward
+
+        # Paying the shortest failure would reward giving up early.
+        group = self._group([(0.0, 40_000), (0.0, 440_000)])
+        assert shape_group_length_reward(self._args(), group) is False
+        assert [s.reward for s in group] == [0.0, 0.0]
+
+    def test_never_outranks_a_better_score(self):
+        from miles_plugins.arena.nats_arena.nats_rollout import shape_group_length_reward
+
+        # Worst case: the best episode is also the longest, the runner-up the
+        # shortest. The gate keeps the ordering.
+        group = self._group([(0.9, 40_000), (1.0, 440_000)])
+        shape_group_length_reward(self._args(), group)
+        assert group[1].reward > group[0].reward
+
+    def test_clamp_preserves_a_narrow_reward_gap(self):
+        from miles_plugins.arena.nats_arena.nats_rollout import shape_group_length_reward
+
+        # CTRF granularity reaches 0.0099 (~101 tests), below coef/2. The clamp
+        # bounds the fall to 0.49x the gap, so the ordering survives.
+        group = self._group([(0.99, 40_000), (1.0, 440_000)])
+        shape_group_length_reward(self._args(), group)
+        assert group[1].reward > group[0].reward
+        assert group[1].reward == pytest.approx(1.0 - 0.49 * 0.01)
+
+    def test_multi_segment_episode_sums_its_segments(self):
+        from miles_plugins.arena.nats_arena.nats_rollout import shape_group_length_reward
+
+        # arena_train_segments=all: segments share a rollout_id and one reward.
+        group = [
+            SimpleNamespace(group_index=0, rollout_id=0, index=0, reward=1.0,
+                            response_length=300_000, remove_sample=False),
+            SimpleNamespace(group_index=0, rollout_id=0, index=1, reward=1.0,
+                            response_length=300_000, remove_sample=False),
+            SimpleNamespace(group_index=0, rollout_id=1, index=2, reward=1.0,
+                            response_length=100_000, remove_sample=False),
+        ]
+        assert shape_group_length_reward(self._args(), group) is True
+        # 600k total beats 100k, so the single-segment episode is the short one.
+        assert group[2].reward > group[0].reward
+        assert group[0].reward == group[1].reward  # one reward per episode

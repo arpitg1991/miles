@@ -1066,6 +1066,81 @@ def _episode_response_lengths(groups: list[list[Sample]]) -> list[int]:
     ]
 
 
+def shape_group_length_reward(args, group: list[Sample]) -> bool:
+    """Add a token-efficiency term to every episode reward, relative to its group.
+
+    This follows the Kimi k1.5 length reward, gated on the group's best reward:
+    an episode at the best reward is scored on how short it is against its
+    siblings, and an episode below the best pays a penalty only for being long.
+    One deviation from Kimi: the best-reward branch keeps the full range instead
+    of clipping the long half to 0, because the long tail is exactly what needs
+    separating here. The term is bounded by ``coef``, so a coefficient under the
+    task reward's granularity cannot trade a passed test for a shorter answer.
+
+    The call sits before the dynamic-sampling filter on purpose. A group where
+    every attempt passed carries zero reward variance today and the filter
+    deletes it, which throws away 88% of all dropped groups. Shaping gives that
+    group variance whose only content is "solve it again, shorter".
+
+    Args:
+        args: miles arguments. ``arena_length_reward_coef`` scales the term and
+            0.0 disables it.
+        group: the samples of one prompt group, every segment included.
+
+    Returns:
+        True when shaping turned a zero-variance group into a trainable one.
+    """
+    coef = float(getattr(args, "arena_length_reward_coef", 0.0) or 0.0)
+    if coef <= 0.0:
+        return False
+
+    episodes = [
+        e
+        for e in _episodes([group])
+        if isinstance(e[0].reward, (int, float)) and not any(getattr(s, "remove_sample", False) for s in e)
+    ]
+    if len(episodes) < 2:
+        return False
+
+    rewards = [e[0].reward for e in episodes]
+    best = max(rewards)
+    # ponytail: leave an all-failed group alone. Paying its shortest attempt
+    # would teach the agent to give up early, and all-zero groups are only 42 of
+    # 766 observed drops, so the filter can keep deleting them. Upgrade path: a
+    # separate coefficient for the failed case, once give-up rate is measured.
+    if best <= 0.0:
+        return False
+
+    lengths = [sum(s.response_length for s in e) for e in episodes]
+    lo, hi = min(lengths), max(lengths)
+    if hi <= lo:
+        return False
+
+    # A fixed coefficient is not safe on its own: CTRF reward is passed/tests,
+    # and 13.5% of observed within-group reward gaps are under 0.05 (minimum
+    # 0.0099, a task with ~101 tests). Clamping each downward shift to under
+    # half the gap to the next lower reward level makes a reordering impossible
+    # at any coefficient. Only the best level ever shifts upward, and nothing
+    # sits above it, so the upward side needs no clamp.
+    levels = sorted(set(rewards))
+    below = {v: (v - levels[i - 1] if i else float("inf")) for i, v in enumerate(levels)}
+
+    rescued = min(rewards) >= best
+    for episode, reward, length in zip(episodes, rewards, lengths):
+        # lam runs +0.5 at the group's shortest episode to -0.5 at its longest.
+        # An episode at the best reward takes the full range, so the long tail
+        # is separated from the short head instead of sharing Kimi's clipped
+        # 0. An episode below the best takes the negative half only: paying its
+        # shortest attempt would reward giving up early.
+        lam = 0.5 - (length - lo) / (hi - lo)
+        shift = coef * (lam if reward >= best else min(0.0, lam))
+        if shift < 0.0:
+            shift = max(shift, -0.49 * below[reward])
+        for s in episode:
+            s.reward = reward + shift
+    return rescued
+
+
 def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> dict[str, float]:
     """Per-rollout counts and reward-collapse scalars, counted per EPISODE.
 
@@ -2369,6 +2444,7 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     all_data: list[list[Sample]] = []
     examined = 0
     dropped = 0
+    rescued = 0
     start_time = time.time()
     last_log = start_time
     do_print = True
@@ -2394,6 +2470,11 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             # population (a zero-variance group is exactly what we want to
             # measure, and exactly what the filter would otherwise hide).
             all_data.append(group)
+
+            # Shape BEFORE the filter so an all-passed group gains variance and
+            # survives instead of being deleted for having none.
+            if shape_group_length_reward(args, group):
+                rescued += 1
 
             if dyn_filter is not None and examined < max_examined:
                 examined += 1
@@ -2465,8 +2546,9 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
 
     if dyn_filter is not None:
         logger.info(
-            "Dynamic sampling: kept=%d/%d, dropped=%d (zero-variance), examined=%d, cap=%d%s",
-            len(data), target_groups, dropped, examined, max_examined,
+            "Dynamic sampling: kept=%d/%d, dropped=%d (zero-variance), examined=%d, cap=%d, "
+            "length-reward rescued=%d%s",
+            len(data), target_groups, dropped, examined, max_examined, rescued,
             " [HIT CAP — accepted unfiltered tail]" if examined >= max_examined and len(data) < target_groups else "",
         )
 
@@ -2769,6 +2851,16 @@ def _add_arena_arguments(parser):
         "(max_in_flight = multiplier x rollout_batch_size). 2 keeps the "
         "r10-lineage oversubscription; raise it when SGLang engines sit "
         "under-fed with an empty queue.",
+    )
+    group.add_argument(
+        "--arena-length-reward-coef",
+        type=float,
+        default=0.0,
+        help="Scale of the group-relative token-efficiency term added to each "
+        "episode reward (Kimi k1.5 length reward, gated on the group's best "
+        "reward). The term spans +-coef/2, so coef/2 MUST stay below the reward "
+        "granularity (1/tests under CTRF) or efficiency outranks passing "
+        "another test. 0.0 = off.",
     )
     group.add_argument(
         "--arena-skip-prompt-above-reward",

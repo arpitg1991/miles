@@ -469,3 +469,13 @@ wandb_always_use_train_step: false
 # Zero-variance groups carry no GRPO gradient; drop them and fetch extras
 # (examine cap 4x target via --dynamic-sampling-max-examine-mult default).
 dynamic_sampling_filter_path: miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+# r7 probe (2026-09-17, user-directed; REQUIRES image miles-glm53-r7-20260917a:
+# on r6 the strict argparse kills the trainer at startup on this key). The
+# arena rollout writes one jsonl per training rollout with per-sample
+# reward, raw_reward, response_length, total_length, span_tokens, status and
+# the ADR-0011 segment index. No tensors, ~100 KB per rollout, never fatal.
+# Purpose: measure the within-group advantage-vs-episode-length correlation
+# behind the CTRF length drift. The first attempt (save_debug_rollout_data on
+# rl-glm53f26-6ddss) killed the trainer in the polars dashboard writer
+# (Int32 sample_index vs the 1<<40 segment stride) and captured nothing.
+arena_sample_summary_dir: /mnt/scratch-s3files-rw/guparpit/debug/rl-glm53f-gbash-r26/sample_summary

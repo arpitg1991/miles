@@ -1980,3 +1980,30 @@ Other notes:
   inside ~10-15 rollouts.
 - r26 `rl-glm53f26-dcskp` keeps running as the long arm. r27 does NOT replace
   it. User chose a separate queued run.
+- 00:02:49Z: created `rl-glm53f27-tvgrz`. It DIED 37 s after admission and left a
+  zombie workflow. Kueue admitted it in 29 s (the queue was never the problem)
+  and it preempted `statefulset-acuadron-k3-109-d8c64` at effective priority
+  1000, so another team lost capacity for nothing. Then
+  `Workload EvictedDueToNodeFailures: no replacement for unhealthy node(s):
+  i-08faf7d33aedffdc4` at 00:06:44Z, `FinishedWorkload` at 00:06:46Z, and the
+  PyTorchJob was garbage-collected within ~10 min (ttl 0 again).
+- The zombie is the lesson. The workflow phase stayed `Running` for 21 min with
+  ZERO GPU pods, because `deploy-trainer` is `Skipped`
+  (`when '22 == 0' evaluated false`) and only `deploy-trainer-pinned` runs. No
+  step recreates a deleted PyTorchJob, so `wait-trainer-nats` loops
+  `Waiting for trainer worker-0 to log 'NATS connected (initial)'...` forever.
+  Signature to check: phase `Running` + `get pytorchjob` empty.
+- Pod naming correction: trainer pods are `<wf>-trainer-worker-N`, NOT
+  `<wf>-trainer-N`. `kubectl logs <wf>-trainer-0` returns NotFound.
+- 00:24Z: patched `rl-glm53f27-tvgrz` to `shutdown: Stop` (user approved,
+  named the run). Failed at 00:24Z with no `deploy`, `svc`, `pytorchjob`, or pod
+  leftovers. No resume watcher existed yet, so none needed killing.
+- `i-08faf7d33aedffdc4` added to the `excluded-nodes` parameter (22 -> 23 ids)
+  before the relaunch. The node returned to `Ready` on its own.
+- 00:26Z: created `rl-glm53f27-44wsc` from the same `r27/workflow.yaml`.
+- r26 `rl-glm53f26-dcskp` at rollout 81: `rollout/raw_reward` 0.709,
+  `rollout/response_lengths` 71694, `rollout/truncated` 0.182, and the last two
+  `episode_response_length/mean` samples 165863 then 206979 with
+  `truncated_ratio` 0.182 -> 0.273. Length still climbs. r25
+  `rl-glm53f25-bkrxk` at rollout 80: raw_reward 0.817, response_lengths 71051,
+  truncated 0.219.

@@ -1923,3 +1923,60 @@ Other notes:
   cost; it writes ~100 KB per rollout and is not on a tensor path.
 - r25 `rl-glm53f25-bkrxk` untouched: rollout 62 at 07:03Z, reward 0.790,
   `episode_response_length/mean` 150560.
+
+## 2026-09-18 — r27: group-relative token-efficiency reward
+
+- Cause. The r26 sample-summary probe (rollouts 70-76, 288 groups) shows the
+  reward ignores tokens. 229 of 288 groups hold 2 or more episodes tied at the
+  group's best reward, with a median 2.09x and a maximum 14.9x token spread
+  inside that tied set. GRPO gives every tied episode the same advantage, so
+  nothing favours the cheap solution. Mean response length grew 31k -> 77k
+  tokens per sample with `corr(length, rollout_id)` = +0.903, while reward at a
+  fixed truncated share stayed flat over ~150 optimizer steps.
+- `33697784f` feat: `shape_group_length_reward` in
+  `miles_plugins/arena/nats_arena/nats_rollout.py` plus
+  `--arena-length-reward-coef` (default 0.0, off). The Kimi k1.5 length reward
+  gated on the group's best reward. Two deliberate deviations: the best-reward
+  branch keeps the full `+-coef/2` range instead of clipping the long half to
+  0, and each downward shift is clamped to `0.49x` the gap to the next lower
+  reward level in the group.
+- The clamp is not decoration. Within-group adjacent reward gaps under CTRF
+  (615 gaps over rollouts 70-76) run to a minimum of 0.0099, and 13.5% sit
+  under 0.05. `/tmp/glm53/replay.py` over 320 real r26 groups found 20
+  reward-order flips at an unclamped 0.05 and **0** flips with the clamp, at a
+  within-group rank corr(advantage, length) of -0.249.
+- The call sits BEFORE the dynamic-sampling filter on purpose.
+  `check_reward_nonzero_std` drops 7-11 groups per rollout (median 9) out of
+  ~41 examined to fill 32, so ~22% of rollout compute is discarded. Of 766
+  observed drops, 677 are `zero_std_1.0`: every attempt passed. Shaping gives
+  those groups variance whose only content is "solve it again, shorter", so
+  they survive instead of being deleted. The log line gains
+  `length-reward rescued=N`.
+- An all-failed group stays untouched. Paying its shortest attempt would
+  reward giving up early, and all-zero groups are only 42 of the 766 drops.
+- `28d8fd75d` test: `examples/arena/harbor-rl-glm53-flash/check_length_reward.py`
+  resolves its source path from `__file__`. It had hardcoded a workspace path
+  and failed inside the image, where the tree is at `/root/miles`. 14 checks
+  pass. `tests/fast/plugins/arena/test_nats_arena.py` gains
+  `TestShapeGroupLengthReward` (6 tests); no pytest exists in any local venv,
+  so the ast harness carried the local verification.
+- Trainer image `miles-glm53-r8-20260917a` built from `33697784f` on base
+  `glm53next-upstream-20260902`, image id
+  `sha256:745391177652`, pushed to us-east-1 with digest
+  `sha256:146899672444bf84cbbc13a1cc307ef5f3dd26f47dd87bd0c14e1dcd98130a2c`.
+  Verified against the INSTALLED module in the image, not the ast harness: an
+  all-passed 3-episode group at coef 0.10 becomes 1.05 / 1.00 / 0.95, a 0.01
+  reward gap keeps its order, and an all-failed group is untouched.
+- r27 = r26 plus `arena_length_reward_coef: 0.10` and its own
+  `arena_sample_summary_dir`. The workflow diff against r26 is exactly
+  `experiment-name`, `trainer-image`, and those two config lines. User chose
+  coef 0.10. In a fully tied group the term is the only variance, so GRPO
+  normalization makes the value irrelevant there; the value only sets how hard
+  length competes with reward in a MIXED group.
+- r27 starts fresh from `ref_load`, not forked from an r26 checkpoint. The
+  template derives `--load` and `--save` from `experiment-name`, and no run in
+  this series overrides `load`. The control is r26 rollouts 0-20: r26 reached
+  51k tokens by rollout 5 and 64k by rollout 10, so r27 answers the question
+  inside ~10-15 rollouts.
+- r26 `rl-glm53f26-dcskp` keeps running as the long arm. r27 does NOT replace
+  it. User chose a separate queued run.

@@ -3,10 +3,11 @@
 No pytest locally, so this compiles the three real function bodies out of
 nats_rollout.py and exercises them. Any drift in the source is picked up.
 """
-import ast, sys
+import ast, pathlib, sys
 from types import SimpleNamespace
 
-SRC = "/workplace/guparpit/arena/src/miles/miles_plugins/arena/nats_arena/nats_rollout.py"
+# Resolve from this file so the check runs in a workspace and inside the image.
+SRC = str(pathlib.Path(__file__).resolve().parents[3] / "miles_plugins/arena/nats_arena/nats_rollout.py")
 WANT = {"_episode_key", "_episodes", "shape_group_length_reward"}
 tree = ast.parse(open(SRC).read())
 picked = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in WANT]

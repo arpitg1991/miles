@@ -106,7 +106,14 @@ tied-best length spread narrows.
 
 ## Launch
 
-1. PENDING: `kubectl create -f r27/workflow.yaml`. The prod-bom GPU queue has no
-   preemption and every workload sits at inference=1000, so a 40-node run waits
-   for capacity. r27 stays queued until 40 nodes free up.
-2. PENDING: start the resume watcher only AFTER the PyTorchJob exists.
+1. FAILED 2026-09-18 00:02Z: `rl-glm53f27-tvgrz` admitted in 29 s, then evicted
+   37 s later: `EvictedDueToNodeFailures ... unhealthy node(s):
+   i-08faf7d33aedffdc4`. The PyTorchJob was garbage-collected and the workflow
+   hung in `wait-trainer-nats` with zero GPU pods, because `deploy-trainer` is
+   `Skipped` and nothing recreates a deleted PyTorchJob. Stopped at 00:24Z.
+   `i-08faf7d33aedffdc4` added to `excluded-nodes`.
+2. DONE 2026-09-18 00:26Z: `kubectl create -f r27/workflow.yaml` ->
+   `rl-glm53f27-44wsc`.
+3. PENDING: start the resume watcher only AFTER the PyTorchJob exists.
+
+Trainer pods are `<wf>-trainer-worker-N`, not `<wf>-trainer-N`.

@@ -112,8 +112,21 @@ tied-best length spread narrows.
    hung in `wait-trainer-nats` with zero GPU pods, because `deploy-trainer` is
    `Skipped` and nothing recreates a deleted PyTorchJob. Stopped at 00:24Z.
    `i-08faf7d33aedffdc4` added to `excluded-nodes`.
-2. DONE 2026-09-18 00:26Z: `kubectl create -f r27/workflow.yaml` ->
-   `rl-glm53f27-44wsc`.
-3. PENDING: start the resume watcher only AFTER the PyTorchJob exists.
+2. FAILED 2026-09-18 00:26Z: `rl-glm53f27-44wsc` evicted under 60 s on
+   `i-05c9a8a01c250e0d7`. Node exclusion of one named node does not help. The
+   cause is Karpenter drift: 203 of 337 p6 nodeclaims read `Drifted: True`, and
+   Karpenter recycles them ~30 at a time. TAS gang placement is all-or-nothing,
+   so one tainted node out of 40 kills the workload.
+3. DONE 2026-09-18 13:21Z: `excluded-nodes` grown from 23 to 226 IDs (the prior
+   23 plus all 203 drifted). `kubectl create -f r27/workflow.yaml` ->
+   `rl-glm53f27-vv8g7`. **Zero evictions.** Admitted 15:56:51Z after 2 h 35 min
+   queued. The unlock was kueue preemption inside our own ClusterQueue
+   (`withinClusterQueue: LowerPriority`, preemptor priority 1000 over a
+   priority-0 tenant), NOT an `arena-backfill` drain. Backfill never yields,
+   because `gpu.p6-b200-48xlarge` sets `reclaimWithinCohort: Never` by design
+   (ADR-0035 in AREnAInfraCDK; automatic reclaim caused the 2026-08-17 Kueue
+   webhook outage).
+4. DONE 2026-09-18 20:37Z: resume watcher `/tmp/r27-resume.sh` started, after
+   the PyTorchJob existed. Kill it by PID before any planned take-down.
 
 Trainer pods are `<wf>-trainer-worker-N`, not `<wf>-trainer-N`.

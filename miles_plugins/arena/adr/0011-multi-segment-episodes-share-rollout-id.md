@@ -174,6 +174,15 @@ callers keep the old behaviour). The default is byte-identical to today.
   so `remove_sample`, `removal_reason` and `status` can differ between the
   segments of one episode. `weight_versions` is the trajectory list on every
   segment.
+- **A Harbor chain step is a segment boundary.** For a harbor `[[steps]]`
+  task the gym runs the chain in one container and ships one segment per
+  step with `segment_end="step"` (AREnATasks ADR-0064). Compaction segments
+  inside a step keep `segment_end="compaction"`. The gym strips
+  `stop_reason` from every non-final step, so the invariant above holds by
+  gym-side stripping: only the final step can carry `stop_reason="length"`.
+  The clipped tokens of a non-final step ride `truncated_spans` and take
+  `--arena-truncated-turn-rule`. The per-step stops live in
+  `grader_metadata.chain.step_stops`. The trainer needs no change.
 - **Telemetry counts episodes.** `generate_rollout` groups samples into
   episodes by `(group_index, rollout_id if not None else index)`
   (`_episodes`). `avg_reward`, `nonzero_count` and

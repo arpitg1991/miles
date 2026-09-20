@@ -21,13 +21,16 @@ trimmed for r28.
 .venv/bin/python gen-workflow.py 29 --base r28 --template guparpit-miles-deployer-v6 \
   --partial-reward off --experiment-name rl-glm53f-adebt-r29 \
   --gym-image 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adebt-r29-20260920a \
+  --trainer-image 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-r9-20260920a \
   --param gym=agentic-debt --param ack-wait=36000 --param agent-timeout-multiplier=1 \
   --param trainer-task-deadline-secs=39600 --param compaction-max=2
 ```
 
 ## Launch checklist
 
-1. Gym image `gym-glm53-adebt-r29-20260920a` visible in ap-south-1.
+1. Gym image `gym-glm53-adebt-r29-20260920a` and trainer image
+   `miles-glm53-r9-20260920a` (arpit-glm-53 03791ce86, routing-ref fix)
+   visible in ap-south-1.
 2. WorkflowTemplate `guparpit-miles-deployer-v6` created from
    `~/glm53-prep/guparpit-miles-deployer-v6.yaml`.
 3. Retire r28 only on an explicit user yes that names `rl-glm53f28-gs4d4`:

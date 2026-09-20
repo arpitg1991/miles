@@ -2,7 +2,7 @@
 
 r27 batch shape and trainer image (`miles-glm53-r8-20260917a`) on the
 `agentic-debt` gym. Template `guparpit-miles-deployer-v5`, gym image
-`PLACEHOLDER_GYM_IMAGE` until the ADR-0064 gym image build lands, 40 replicas
+`gym-glm53-adebt-r28-20260920a` (AREnATasks `01f7a13`, digest `sha256:fcc52063...`, ap-south-1 replica confirmed), 40 replicas
 (8 actor + 32 engine), 288 gym replicas.
 
 ## Why
@@ -73,7 +73,7 @@ reward is the binary harbor verifier value. An aborted chain (a step with
 | --- | --- | --- |
 | `workflowTemplateRef.name` | `guparpit-miles-deployer-v4` | `guparpit-miles-deployer-v5` |
 | `experiment-name` | `rl-glm53f-gbash-r27` | `rl-glm53f-adebt-r28` |
-| `gym-image` | `gym-glm53-r5-20260914a` | `PLACEHOLDER_GYM_IMAGE` |
+| `gym-image` | `gym-glm53-r5-20260914a` | `gym-glm53-adebt-r28-20260920a` |
 | `gym` | template default `snorkel-general-bash-harbor` | `agentic-debt` |
 | `partial-reward` | `ctrf` | `off` |
 | `ack-wait`, `agent-timeout-multiplier`, `trainer-task-deadline-secs`, `compaction-max` | template defaults 18000, 8, 21600, 5 | 36000, 1, 39600, 2 |

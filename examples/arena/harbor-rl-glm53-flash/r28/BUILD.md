@@ -83,8 +83,10 @@ reward is the binary harbor verifier value. An aborted chain (a step with
 | `arena_sample_summary_dir` | `.../rl-glm53f-gbash-r27/sample_summary` | `.../rl-glm53f-adebt-r28/sample_summary` |
 
 Everything else is r27: trainer image `miles-glm53-r8-20260917a`, 40
-replicas, `replica-trainer` 8, `gym-replicas` 288, the r27 `excluded-nodes`
-list (226 IDs), `global_batch_size` 256, `save_interval` 10, `num_rollout`
+replicas, `replica-trainer` 8, `gym-replicas` 288, `excluded-nodes` trimmed
+to the 83 p6 nodeclaims still `Drifted=True` (AMIDrift) at 02:45Z on
+2026-09-20 (143 of the r27 226 were recycled; no new drifted node outside
+the list), `global_batch_size` 256, `save_interval` 10, `num_rollout`
 300, lr 1.5e-6, eps_clip 0.2/0.28, TP8 PP4 EP16, TIS, R3 routing replay,
 `arena_train_segments` `all`, `arena_mask_clipped_final_turn` true,
 `arena_keep_timeout_trajectories` true, `arena_truncated_turn_rule` `shift`

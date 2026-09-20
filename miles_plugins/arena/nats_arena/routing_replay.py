@@ -57,7 +57,22 @@ class RoutingReplayError(RuntimeError):
     choices in the forward and backward pass. A sample without them, or with
     a corrupt payload, would silently train the MoE on the wrong experts. The
     NATS worker therefore treats this error as fatal: it is never folded into
-    the per-group ``n_failed`` pad path.
+    the per-group ``n_failed`` pad path. ``RoutingRefLostError`` is the one
+    subclass the drain survives.
+    """
+
+
+class RoutingRefLostError(RoutingReplayError):
+    """The ref file is gone before the trainer read it.
+
+    The trainer owns every ref it accepts, so a missing file means that
+    another path deleted it first. On 2026-09-20 a NATS redelivery of an
+    accepted result went down the stale-result reap while the group waited
+    in the output queue (r27 ``opq-admm-calibration.g549``, r28
+    ``python-ec2-reaper_s0.g1075``). Every other sample still has its
+    payload, so ``generate_rollout`` drops the affected group and continues.
+    A corrupt or all-zero payload stays a plain ``RoutingReplayError`` and
+    stays fatal.
     """
 
 
@@ -193,6 +208,10 @@ def decode_routing(
 def _read_ref(path: Path, ref: dict[str, Any]) -> bytes:
     try:
         raw = path.read_bytes()
+    except FileNotFoundError as exc:
+        raise RoutingRefLostError(
+            f"routed_experts_ref file unreadable: {path} (deleted before the drain read it)"
+        ) from exc
     except OSError as exc:
         raise RoutingReplayError(
             f"routed_experts_ref file unreadable: {path} "

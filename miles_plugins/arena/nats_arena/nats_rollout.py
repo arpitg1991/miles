@@ -44,6 +44,7 @@ from miles_plugins.arena.nats_arena.message_format import (
 from miles_plugins.arena.nats_arena.mixture_controller import MixtureController
 from miles_plugins.arena.nats_arena.routing_replay import (
     pad_routing,
+    RoutingRefLostError,
     RoutingReplayError,
     materialize_group_routing,
     reap_result_refs,
@@ -109,6 +110,24 @@ def _raise_if_fatal(worker) -> None:
     fatal = getattr(worker, "fatal_error", None)
     if fatal is not None:
         raise fatal
+
+
+def _discard_stale_result(result: dict, tid: str, accepted_tids: set[str]) -> None:
+    """Drop a same-session result whose task_id is no longer pending.
+
+    A redelivery of an accepted result keeps its ref files. The group that
+    holds them waits in the output queue and reads them at drain time; r27
+    and r28 died on this reap (2026-09-20). Only a result that nobody
+    accepted (DLQ-swept, or pending state reset on a reconnect) has orphaned
+    files, and those are deleted here.
+    """
+    if tid in accepted_tids:
+        logger.info(
+            "Dropping redelivered result for accepted task_id %s; its ref files stay with the queued group", tid
+        )
+        return
+    logger.info("Dropping stale result for unknown task_id %s (likely from before NATS reconnect)", tid)
+    reap_result_refs([result])
 
 
 def get_global_worker(args, data_source):
@@ -1614,6 +1633,14 @@ class NATSRolloutWorker:
         pending_results: dict[str, list[dict]] = {}
         # Map task_id -> expected count (always 1 in batch mode)
         pending_expected: dict[str, int] = {}
+        # task_ids whose group reached the output queue. A JetStream
+        # redelivery of such a result (its ack was lost in a connection flap
+        # at a rollout boundary) arrives after the tid left pending_expected.
+        # Such a result MUST NOT reap its ref files. The queued group still
+        # reads them at drain time.
+        # ponytail: one short string per accepted group for the life of the
+        # worker; prune on drain if the set ever matters.
+        accepted_tids: set[str] = set()
         # Map task_id -> wall-clock publish time (seconds since epoch).
         # Used by the DLQ sweep to time out tasks that NATS has finished
         # redelivering (max_deliver=3 attempts, ack_wait=3600s each) without
@@ -1932,11 +1959,7 @@ class NATSRolloutWorker:
                     # above, this is rare but still useful as a backstop for
                     # within-session redeliveries that landed late.
                     if tid not in pending_expected:
-                        logger.info(
-                            "Dropping stale result for unknown task_id %s "
-                            "(likely from before NATS reconnect)", tid,
-                        )
-                        reap_result_refs([result])
+                        _discard_stale_result(result, tid, accepted_tids)
                         continue
 
                     in_flight = max(0, in_flight - 1)
@@ -1960,6 +1983,7 @@ class NATSRolloutWorker:
                     if len(pending_results[tid]) >= expected:
                         task_results = pending_results.pop(tid)
                         pending_expected.pop(tid, None)
+                        accepted_tids.add(tid)
                         pending_publish_time.pop(tid, None)
                         pending_task_payload.pop(tid, None)
                         instance_id = tid_to_instance_id.pop(tid, tid)
@@ -2444,6 +2468,7 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     all_data: list[list[Sample]] = []
     examined = 0
     dropped = 0
+    lost_ref_groups = 0
     rescued = 0
     start_time = time.time()
     last_log = start_time
@@ -2496,8 +2521,22 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 # train batch, so this is the first moment the arrays are
                 # worth their RAM. Overlaps with the wait for later groups.
                 t_mat = time.time()
-                materialize_group_routing(group, args)
-                materialize_secs += time.time() - t_mat
+                try:
+                    materialize_group_routing(group, args)
+                except RoutingRefLostError as exc:
+                    # One deleted blob is no reason to stop the run. Drop the
+                    # whole group, so the GRPO baseline sees no partial prompt
+                    # group. Every other group still has its payload.
+                    lost_ref_groups += 1
+                    meta = group[0].metadata if isinstance(group[0].metadata, dict) else {}
+                    logger.error(
+                        "Rollout %d: dropping group task_id=%s instance_id=%s group_index=%s after a lost routing ref: %s",
+                        rollout_id, meta.get("task_id"), meta.get("instance_id"), group[0].group_index, exc,
+                    )
+                    reap_sample_refs(group)
+                    continue
+                finally:
+                    materialize_secs += time.time() - t_mat
             data.append(group)
 
             if do_print:
@@ -2541,7 +2580,8 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
 
     if replay_on:
         logger.info(
-            "Routing replay: materialized expert blobs for %d groups in %.1fs", len(data), materialize_secs
+            "Routing replay: materialized expert blobs for %d groups in %.1fs; dropped %d groups with a lost ref",
+            len(data), materialize_secs, lost_ref_groups,
         )
 
     if dyn_filter is not None:
@@ -2714,6 +2754,8 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 # Segment counts: miles log_rollout_data logs
                 # rollout/num_training_samples and rollout/episode_raw_reward
                 # for this batch (ADR-0011), so nothing to add here.
+                # groups dropped at drain time because a routing blob was gone
+                "rollout/routing_ref_lost_groups": lost_ref_groups,
                 # dynamic-sampling (DAPO) telemetry
                 "rollout/dyn_sampling_dropped": dropped,
                 "rollout/dyn_sampling_drop_frac": (

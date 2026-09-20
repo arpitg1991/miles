@@ -2007,3 +2007,35 @@ Other notes:
   `truncated_ratio` 0.182 -> 0.273. Length still climbs. r25
   `rl-glm53f25-bkrxk` at rollout 80: raw_reward 0.817, response_lengths 71051,
   truncated 0.219.
+
+## 2026-09-20 — r28: multi-step agentic-debt-r3 chains (ADR-0064)
+
+- Code: AREnATasks `01f7a13` (chain-step gym reader, one normalized step
+  list, reward = sum of graded step rewards / declared K, `segment_end =
+  "step"`, 60 MiB result guard, Terminus-2 rollout-state reset per harbor
+  step) + `c3d7c49` (ADR-0064); Apps `2c9d0f0` (v5 deadline parameters);
+  miles `b5a6590e0`..`6452ffeea` (r28 config).
+- 02:09Z: gym image `gym-glm53-adebt-r28-20260920a` pushed (us-east-1,
+  ap-south-1 replica confirmed). 02:33Z: WorkflowTemplate
+  `guparpit-miles-deployer-v5` created; live v4 vs v5 differs only in the four
+  deadline parameters, their env wiring, and the DinD sidecar
+  (`arena-dind-container:latest`, Apps `03030e3`, first run here).
+- Drift check before launch: 83 of 313 p6 nodeclaims `Drifted=True`
+  (AMIDrift, since 2026-09-16), all inside the r27 list; 143 of the 226 r27
+  ids were recycled; 223 clean nodes free. `excluded-nodes` trimmed to the
+  83 live ids. One node tainted `karpenter.sh/disrupted` at the time.
+- 02:46:47Z: `kubectl create -f r28/workflow.yaml` -> `rl-glm53f28-gs4d4`.
+  NATS Running 02:47Z; PyTorchJob created and admitted by kueue at once
+  (no queue wait); 40 trainer pods scheduling by 02:50Z. Run on the le5
+  manifest (556 chains / 1,816 segments), `global_batch_size` 256 (32
+  groups), `gym agentic-debt`, `partial-reward off`, ack-wait 36,000,
+  multiplier 1, trainer deadline 39,600, compaction-max 2, inflight 4,
+  `arena_length_reward_coef 0`.
+- Desktop rebooted at 01:10Z (uptime 1 h 37 min at 02:47Z): every `/tmp`
+  watcher and the r27 monitor died with it. Restarted from the durable
+  copies in `~/glm53-prep/`: r25 and r27 resume watchers 02:49Z, r27 monitor
+  02:51Z (cache restored from `~/glm53-prep/r27cache`), r28 watcher 02:53Z
+  after the PyTorchJob existed. r25 `rl-glm53f25-q75xd` (40 h) and r27
+  `rl-glm53f27-vq6mb` (4 h) were Running throughout.
+- Expected trainer shape: one optimizer step per 256 episodes; rows per
+  step ~837 mean (8 x K segments per group, K mean 3.3) vs 310 in r27.

@@ -1,11 +1,14 @@
-"""Emit r<N>/workflow.yaml for the guparpit-miles-deployer-v4 WorkflowTemplate.
+"""Emit r<N>/workflow.yaml for a guparpit-miles-deployer WorkflowTemplate.
 
-Usage: .venv python gen-workflow.py <N> [--partial-reward ctrf]
+Usage: .venv python gen-workflow.py <N> [--base r27] [--template ...]
+       [--partial-reward ctrf] [--experiment-name NAME] [--gym-image IMAGE]
+       [--param NAME=VALUE ...]
 
-Copies every submit parameter from r19/workflow.yaml, then sets the run
+Copies every submit parameter from the base workflow.yaml, then sets the run
 identity, the miles-config block (r<N>/miles-config.yaml verbatim), the
-gym image (r<N>/gym-worker.yaml) and the partial-reward mode. Checks that
-a re-parse of the output returns the config byte for byte.
+gym image (r<N>/gym-worker.yaml unless --gym-image is given), the
+partial-reward mode and any --param. Checks that a re-parse of the output
+returns the config byte for byte.
 """
 
 import argparse
@@ -37,18 +40,25 @@ def main() -> None:
     # base workflow carries an older tag, so a plain regeneration silently
     # downgraded r26 (r6 -> r3) on 2026-09-17.
     ap.add_argument("--trainer-image", default=None)
+    ap.add_argument("--experiment-name", default=None, help="default rl-glm53f-gbash-r<N>")
+    # r28: the gym image is a placeholder until the image build lands, so the
+    # gym-worker.yaml regex cannot supply it.
+    ap.add_argument("--gym-image", default=None)
+    # Template parameters the base workflow does not carry (r28: the v5
+    # deadline knobs and the gym name). Appended when absent, replaced when present.
+    ap.add_argument("--param", action="append", default=[], metavar="NAME=VALUE")
     a = ap.parse_args()
     here = pathlib.Path(__file__).parent
     run = here / f"r{a.n}"
     wf = yaml.safe_load((here / a.base / "workflow.yaml").read_text())
     cfg = (run / "miles-config.yaml").read_text()
-    gym_img = re.search(r"image: (\S+arena-slime-dev:gym-\S+)", (run / "gym-worker.yaml").read_text()).group(1)
+    gym_img = a.gym_image or re.search(r"image: (\S+arena-slime-dev:gym-\S+)", (run / "gym-worker.yaml").read_text()).group(1)
     wf["metadata"]["generateName"] = f"rl-glm53f{a.n}-"
     # RBAC allows create but not patch on workflowtemplates, so each template
     # revision gets a new name.
     wf["spec"]["workflowTemplateRef"]["name"] = a.template
     params = {p["name"]: p for p in wf["spec"]["arguments"]["parameters"]}
-    params["experiment-name"]["value"] = f"rl-glm53f-gbash-r{a.n}"
+    params["experiment-name"]["value"] = a.experiment_name or f"rl-glm53f-gbash-r{a.n}"
     out = run / "workflow.yaml"
     trainer_image = a.trainer_image
     if trainer_image is None and out.exists():
@@ -58,7 +68,8 @@ def main() -> None:
         params["trainer-image"]["value"] = trainer_image
     params["miles-config"]["value"] = _Block(cfg)
     # r19 left gym-image and partial-reward at the template defaults.
-    for name, value in (("gym-image", gym_img), ("partial-reward", a.partial_reward)):
+    extra = [tuple(kv.split("=", 1)) for kv in a.param]
+    for name, value in (("gym-image", gym_img), ("partial-reward", a.partial_reward), *extra):
         if name in params:
             params[name]["value"] = value
         else:

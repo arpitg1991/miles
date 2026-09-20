@@ -6,7 +6,10 @@ hard-overflow trim, sha/byte checks, file deletion), the fatal path for a
 trainable sample without a payload, the all-zero payload guard, the zero
 arrays that failed pads and DP-alignment pads carry, the ``ARENA_ROUTING_DIR``
 containment check on ref paths, the slow-path removal, and the worker
-fatal-error path across ``generate_rollout`` calls.
+fatal-error path across ``generate_rollout`` calls. It also covers the
+lost-ref path (r27 and r28, 2026-09-20): a redelivered result keeps the refs
+of its queued group, and a group whose blob is gone leaves the batch without
+an exception.
 
 Run: python -m pytest tests/fast/plugins/arena/test_routing_replay.py -v
 """
@@ -36,6 +39,7 @@ from miles_plugins.arena.nats_arena.routing_replay import (
     INLINE_KEY,
     REF_KEY,
     ROUTING_DIR_ENV,
+    RoutingRefLostError,
     RoutingReplayError,
     decode_routing,
     materialize_group_routing,
@@ -673,3 +677,61 @@ def test_pad_routing_rows_are_minus_one_not_zero() -> None:
 
     a = pad_routing((3, 45, 8))
     assert a.dtype.name == "int32" and a.shape == (3, 45, 8) and (a == -1).all()
+
+
+# ---------------------------------------------------------------------------
+# Lost ref: reap on a redelivered result, then read at drain time
+# ---------------------------------------------------------------------------
+
+
+def test_missing_file_is_lost_error_but_corrupt_file_is_not(tmp_path: Path) -> None:
+    args = _args()
+    gone = {"path": str(tmp_path / "gone.routing"), "bytes": 4, "sha256": "x"}
+    with pytest.raises(RoutingRefLostError, match="unreadable"):
+        materialize_group_routing([_one_sample(args, _traj(tok_n=8, routed_experts_ref=gone))], args)
+    corrupt = _ref(tmp_path, _raw(7), sha256="0" * 64)
+    with pytest.raises(RoutingReplayError, match="sha256") as info:
+        materialize_group_routing([_one_sample(args, _traj(tok_n=8, routed_experts_ref=corrupt))], args)
+    assert not isinstance(info.value, RoutingRefLostError)
+
+
+def test_redelivered_accepted_result_keeps_its_refs(tmp_path: Path) -> None:
+    # The r27/r28 trigger: the result of an accepted group comes back a second
+    # time after its tid left pending_expected. The queued group still owns
+    # the file, so the stale-result path leaves it alone. An unknown tid
+    # (nobody accepted it) still reaps.
+    ref = _ref(tmp_path, _raw(7), name="accepted.routing")
+    result = _result("t.g1.", [_traj(tok_n=8, routed_experts_ref=ref)])
+    nats_rollout._discard_stale_result(result, "t.g1.", {"t.g1."})
+    assert Path(ref["path"]).exists()
+    nats_rollout._discard_stale_result(result, "t.g1.", set())
+    assert not Path(ref["path"]).exists()
+
+
+def test_generate_rollout_drops_group_with_lost_ref_and_continues(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Reap then read: the trainer accepted a result, queued its group, then a
+    # redelivered copy of the same result went down the reap path. The whole
+    # group leaves the batch, its remaining blobs are deleted, the next group
+    # trains, and no exception reaches the caller.
+    lost_a = _queued_sample(tmp_path, "lost_a", reward=1.0, index=0)
+    lost_b = _queued_sample(tmp_path, "lost_b", reward=0.0, index=0)
+    kept = _queued_sample(tmp_path, "kept", reward=1.0, index=1)
+    sibling_path = Path(lost_b.metadata[REF_KEY]["path"])
+    redelivered = {"trajectories": [{"steps": [{"routed_experts_ref": lost_a.metadata[REF_KEY]}]}]}
+    reap_result_refs([redelivered])
+    assert not Path(lost_a.metadata[REF_KEY]["path"]).exists()
+    monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker([[lost_a, lost_b], [kept]]))
+
+    data = generate_rollout(_rollout_args(), 0, data_source=pytypes.SimpleNamespace())
+    assert [g[0].metadata["task_id"] for g in data] == ["kept"]
+    assert kept.rollout_routed_experts.shape == (7, L, K)
+    assert lost_b.rollout_routed_experts is None
+    assert not sibling_path.exists(), "the drain reaps the remaining blobs of the dropped group"
+
+
+def test_generate_rollout_still_fails_on_corrupt_ref(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    bad = _queued_sample(tmp_path, "bad", reward=1.0, index=0)
+    bad.metadata[REF_KEY]["sha256"] = "0" * 64
+    monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker([[bad]]))
+    with pytest.raises(RoutingReplayError, match="sha256"):
+        generate_rollout(_rollout_args(), 0, data_source=pytypes.SimpleNamespace())

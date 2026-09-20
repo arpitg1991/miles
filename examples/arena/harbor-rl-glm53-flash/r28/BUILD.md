@@ -111,12 +111,14 @@ The script re-parses the output and exits non-zero when the embedded
 
 ## Launch checklist
 
-1. AREnATasksApps: commit the v5 deployer changes and create
-   `guparpit-miles-deployer-v5`. On 2026-09-20 01:00Z the cluster held v1-v4
-   only. Check: `kubectl get workflowtemplate guparpit-miles-deployer-v5`.
-2. Build and push the ADR-0064 gym image; put its ECR reference in
-   `r28/workflow.yaml` (`--gym-image` above, or edit the `gym-image` value).
-   The workflow MUST NOT go out with `PLACEHOLDER_GYM_IMAGE`.
+1. DONE 2026-09-20 02:33Z: AREnATasksApps `2c9d0f0` committed;
+   `guparpit-miles-deployer-v5` created from
+   `~/glm53-prep/guparpit-miles-deployer-v5.yaml`. The live v4 and v5 differ
+   only in the four deadline parameters, their env wiring, and the DinD
+   sidecar (`arena-dind-container:latest`, Apps `03030e3`, not yet run).
+2. DONE 2026-09-20 02:09Z: gym image `gym-glm53-adebt-r28-20260920a`
+   (AREnATasks `01f7a13`, digest `sha256:fcc52063...`) pushed to us-east-1,
+   replica visible in ap-south-1; reference set in `r28/workflow.yaml`.
 3. Manifest present: `aws s3 ls --profile arena-prod-bom-user s3://arena-scratch-prod-bom-ap-south-1/guparpit/data/agentic-debt/20260916-v1/` shows 151890 bytes.
 4. No silent resume: no directory under
    `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/rl-glm53f-adebt-r28`.

@@ -33,11 +33,11 @@ spec:
     - name: gym
       value: agentic-debt
     - name: ack-wait
-      value: '36000'
+      value: '86000'
     - name: agent-timeout-multiplier
-      value: '1'
+      value: '4'
     - name: trainer-task-deadline-secs
-      value: '39600'
+      value: '90000'
     - name: compaction-max
       value: '2'
     - name: step-cut-on-fail

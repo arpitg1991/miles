@@ -488,7 +488,7 @@ arena_truncated_turn_min_adv: -1.0  # shift: floor of the shifted advantage
 arena_train_segments: all
 log_passrate: false
 wandb_host: https://mega.wandb.agi.amazon.dev
-wandb_project: rl-snorkel27
+wandb_project: rl-glm53f-adebt
 wandb_team: arena
 wandb_always_use_train_step: false
 # wandb group = EXPERIMENT_NAME (rl-glm53f-gbash-r1), appended by the launcher

@@ -2,7 +2,7 @@ import re
 
 import torch
 
-from miles.utils.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_quantize_1d, nvfp4_quantize_1d_pair
+from miles.kernels.quant.nvfp4 import NVFP4_GROUP_SIZE, nvfp4_quantize_1d, nvfp4_quantize_1d_pair
 
 GATED_PAIR_SUFFIXES = {
     ".gate_proj.weight": "gate",

@@ -24,7 +24,7 @@ from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 imp
     quantize_nvfp4 as processor_quantize_nvfp4,
 )
 from miles.backends.megatron_utils.megatron_to_hf.processors.quantizer_nvfp4 import quantize_params_nvfp4
-from miles.utils.nvfp4 import (
+from miles.kernels.quant.nvfp4 import (
     NVFP4_GROUP_SIZE,
     nvfp4_global_decode_scale_te,
     nvfp4_quantize_1d_pair,

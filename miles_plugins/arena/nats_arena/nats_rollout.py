@@ -910,6 +910,13 @@ def _result_to_episodes_full_trajectory(
         # actions. An archived compaction segment carries no stop_reason
         # (AREnATasks ADR-0048), so only the final segment can set this and
         # truncation stays an episode property (ADR-0011).
+        # REPORTING RULE: report ``truncated_turn_shifted`` as the truncation
+        # signal. NEVER report ``truncated`` / ``truncated_ratio`` as the share
+        # of episodes that ended by truncation. This flag flips on any single
+        # clipped turn (finish_reason=="length", per-turn max_tokens cap) or any
+        # degenerate stop, so it over-counts and does not name the terminal
+        # reason. To explain why episodes end, tally the terminal
+        # agent_stop_reason / _finalize reasons, not this flag.
         any_step_truncated = any(
             "length" in str(st.get("stop_reason") or "").lower() for st in steps
         )

@@ -104,6 +104,12 @@ def _compute_metrics_from_samples(args, samples):
     log_dict |= _compute_prefix_cache_metrics(args, samples)
     log_dict |= _compute_reward_cat_metrics(args, samples)
     log_dict["repetition_frac"] = np.mean([int(has_repetition(s.response)) for s in samples]).item()
+    # REPORTING RULE: report ``truncated_turn_shifted`` as the truncation
+    # signal. NEVER report this ``truncated_ratio`` as the share of episodes
+    # that ended by truncation. The TRUNCATED status flips on any single clipped
+    # turn or any degenerate stop, so it over-counts and does not name the
+    # terminal reason. To explain why episodes end, tally the terminal
+    # agent_stop_reason / _finalize reasons, not this flag.
     log_dict["truncated_ratio"] = np.mean([int(s.status == Sample.Status.TRUNCATED) for s in samples]).item()
 
     oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]

@@ -1,7 +1,9 @@
 # ADR-0009: Salvage a final-turn-clipped trajectory by masking only the clipped turn
 
-**Status:** Accepted
+**Status:** Superseded by ADR-0013
 **Date:** 2026-09-02
+
+The code paths this ADR describes were removed from the repo on 2026-09-23; ADR-0013 records the replacement.
 
 **Builds on:** ADR-0002 (wire contract: per-step `stop_reason`, degenerate
 agent-stop set), ADR-0004 (`remove_sample` / rollout-logprob semantics),

@@ -9,6 +9,7 @@ in `all` mode it carries the EPISODE id, never the group id)
 ADR-0009 (`--arena-mask-clipped-final-turn`), ADR-0010 (`--arena-keep-timeout-trajectories`)
 **Pairs with:** AREnATasks ADR-0048 (Vulcan context compaction and rollout
 segments; the gym side of this contract)
+**Amended by:** ADR-0013 (the "Truncation stays an episode property" and "Harbor chain step" bullets describe flags and `truncated_spans` removed on 2026-09-23; the segment stamping and the DP pad stand)
 
 ## Context
 

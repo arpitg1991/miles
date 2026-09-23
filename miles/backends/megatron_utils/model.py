@@ -507,7 +507,6 @@ def train_one_step(
                 "witness_ids",
                 "opd_reverse_kl",
                 "rollout_mask_sums",
-                "truncated_turn_shifted",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,

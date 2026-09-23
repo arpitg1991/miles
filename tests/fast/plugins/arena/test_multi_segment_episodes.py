@@ -105,12 +105,7 @@ def _three_segments(stop_reason: str = "stop", final: list[int] | None = None) -
 
 
 def _args(mode: str = "final", **overrides) -> pytypes.SimpleNamespace:
-    fields = {
-        "arena_train_segments": mode,
-        "arena_mask_clipped_final_turn": False,
-        "arena_keep_timeout_trajectories": False,
-        "arena_keep_context_error_trajectories": False,
-    }
+    fields = {"arena_train_segments": mode}
     fields.update(overrides)
     return pytypes.SimpleNamespace(**fields)
 
@@ -217,66 +212,32 @@ def test_closed_segment_has_no_stop_reason_so_no_truncation():
     assert all(not s.remove_sample for s in samples)
 
 
-def test_final_length_truncates_every_segment_flag_off():
-    samples = _result_to_samples_full_trajectory(
-        _result([_traj(_three_segments(stop_reason="length"))]),
-        tokenizer=None,
-        args=_args("all", arena_mask_clipped_final_turn=False),
-    )
-    assert len(samples) == 3
-    assert all(s.status == Sample.Status.TRUNCATED for s in samples)
-    assert all(s.remove_sample is True for s in samples)
-    assert all(s.metadata["removal_reason"] == "length" for s in samples)
-
-
-def test_final_length_mask_flag_salvages_earlier_segments():
+def test_final_length_keeps_every_segment_with_the_gym_mask():
+    # A clipped final generate is telemetry: the gym already masked its tokens,
+    # so every segment trains with its loss_mask untouched.
     a, b, f = _result_to_samples_full_trajectory(
         _result([_traj(_three_segments(stop_reason="length", final=_FINAL_MULTI_TURN))]),
         tokenizer=None,
-        args=_args("all", arena_mask_clipped_final_turn=True),
+        args=_args("all"),
     )
-    # Truncation is an episode property: status TRUNCATED everywhere ...
-    assert all(s.status == Sample.Status.TRUNCATED for s in (a, b, f))
-    # ... but only the FINAL segment's trailing run is zeroed.
-    assert f.loss_mask == [1, 1, 0, 0, 0, 0]
-    assert f.response_length == len(f.loss_mask) == len(f.rollout_log_probs)
-    assert a.loss_mask == [1, 0, 1, 1]
-    assert b.loss_mask == [1, 1, 1]
+    assert all(s.status == Sample.Status.COMPLETED for s in (a, b, f))
     assert all(not s.remove_sample for s in (a, b, f))
     assert all("removal_reason" not in s.metadata for s in (a, b, f))
+    assert f.loss_mask == [1, 1, 0, 1, 1, 1]
+    assert a.loss_mask == [1, 0, 1, 1]
+    assert b.loss_mask == [1, 1, 1]
 
 
-def test_context_error_removes_all_segments_unless_kept():
-    result = _result([_traj(_three_segments(), agent_stop_reason="context_error")])
-    removed = _result_to_samples_full_trajectory(result, tokenizer=None, args=_args("all"))
-    assert len(removed) == 3
-    assert all(s.status == Sample.Status.TRUNCATED for s in removed)
-    assert all(s.remove_sample is True for s in removed)
-    assert all(s.metadata["removal_reason"] == "context_error" for s in removed)
-
+@pytest.mark.parametrize("reason", ["context_error", "timeout"])
+def test_agent_stop_reason_is_telemetry_on_every_segment(reason):
     kept = _result_to_samples_full_trajectory(
-        result, tokenizer=None, args=_args("all", arena_keep_context_error_trajectories=True)
-    )
-    assert all(s.status == Sample.Status.TRUNCATED for s in kept)
-    assert all(not s.remove_sample for s in kept)
-    assert all(s.metadata["kept_context_error"] is True for s in kept)
-    assert all(s.metadata["agent_stop_reason"] == "context_error" for s in kept)
-    assert all("removal_reason" not in s.metadata for s in kept)
-
-
-def test_timeout_salvage_keeps_every_segment():
-    result = _result([_traj(_three_segments(), agent_stop_reason="timeout")])
-    removed = _result_to_samples_full_trajectory(result, tokenizer=None, args=_args("all"))
-    assert all(s.remove_sample is True for s in removed)
-    assert all(s.metadata["removal_reason"] == "timeout" for s in removed)
-
-    kept = _result_to_samples_full_trajectory(
-        result, tokenizer=None, args=_args("all", arena_keep_timeout_trajectories=True)
+        _result([_traj(_three_segments(), agent_stop_reason=reason)]), tokenizer=None, args=_args("all")
     )
     assert len(kept) == 3
-    assert all(s.status == Sample.Status.TRUNCATED for s in kept)
+    assert all(s.status == Sample.Status.COMPLETED for s in kept)
     assert all(not s.remove_sample for s in kept)
-    assert all(s.metadata["kept_timeout"] is True for s in kept)
+    assert all(s.metadata["agent_stop_reason"] == reason for s in kept)
+    assert all("removal_reason" not in s.metadata for s in kept)
     assert [s.loss_mask for s in kept] == [[1, 0, 1, 1], [1, 1, 1], [1, 1]]
 
 
@@ -416,21 +377,21 @@ def test_grpo_normalizes_per_episode_and_mask_sums_span_segments():
 
 
 @pytest.mark.parametrize(
-    ("final_step", "mask_flag", "reason", "truncated_ratio"),
+    ("final_step", "max_ctx", "reason"),
     [
-        # The final segment is ONE clipped turn: nothing to salvage there, so it
-        # is removed alone while the earlier segments keep their masks.
-        (_step(_FINAL, stop_reason="length", tag=9), True, "length", 1.0),
+        # The final segment alone overflows max_ctx: it is removed while the
+        # earlier segments keep their masks.
+        (_step([0, 0, 0, 1, 1, 1, 1], tag=9), 6, "context_overflow"),
         # A rejected final generate: log_probs short on the final segment only.
-        ({**_step(_FINAL, tag=9), "log_probs": [-0.1] * (len(_FINAL) - 1)}, False, "bad_logprobs", 0.0),
+        ({**_step(_FINAL, tag=9), "log_probs": [-0.1] * (len(_FINAL) - 1)}, 131072, "bad_logprobs"),
     ],
-    ids=["clipped_only_final", "bad_logprobs_final"],
+    ids=["overflow_final", "bad_logprobs_final"],
 )
-def test_per_segment_removal_counts_the_episode_once(final_step, mask_flag, reason, truncated_ratio):
+def test_per_segment_removal_counts_the_episode_once(final_step, max_ctx, reason):
     telemetry = {}
     for mode in ("all", "final"):
         worker = _make_worker(
-            _make_args(n_samples_per_prompt=1, arena_train_segments=mode, arena_mask_clipped_final_turn=mask_flag)
+            _make_args(n_samples_per_prompt=1, arena_train_segments=mode, rollout_max_context_len=max_ctx)
         )
         steps = [_segment(_SEG_A, tag=1), _segment(_SEG_B, tag=2), dict(final_step)]
         worker._process_group("t.g0.", [_result([_traj(steps)])])
@@ -444,7 +405,6 @@ def test_per_segment_removal_counts_the_episode_once(final_step, mask_flag, reas
             assert a.loss_mask == [1, 0, 1, 1] and b.loss_mask == [1, 1, 1]
     # The episode is removed once, exactly like its single sample under ``final``.
     assert telemetry["all"]["removed_frac"] == telemetry["final"]["removed_frac"] == 1.0
-    assert telemetry["all"]["truncated_ratio"] == telemetry["final"]["truncated_ratio"] == truncated_ratio
     assert telemetry["all"]["total_episodes"] == telemetry["final"]["total_episodes"] == 1
 
 
@@ -552,16 +512,15 @@ def test_partial_batch_guard_raises_in_all_mode(monkeypatch):
 
 
 def test_generate_rollout_removal_breakdown_is_per_episode(monkeypatch, caplog):
-    truncated = Sample.Status.TRUNCATED
     groups = [
-        # Whole episode removed (flag off): "length" on both segments.
-        _segments(0, 2, status=truncated, remove=True, removal_reason="length"),
-        # Only the FINAL segment removed (one clipped turn under the mask flag).
-        _segments(1, 3, status=truncated, remove=[False, False, True], removal_reason=[None, None, "length"]),
+        # Whole episode removed: a hard context overflow on both segments.
+        _segments(0, 2, status=Sample.Status.TRUNCATED, remove=True, removal_reason="context_overflow"),
+        # Only the FINAL segment removed (a rejected final generate).
+        _segments(1, 3, remove=[False, False, True], removal_reason=[None, None, "bad_logprobs"]),
         # Gym-side pad.
         [_sample(group_index=2, index=2, rollout_id=2, reward=0.0, response_length=2, remove=True, mode="failed")],
-        # Salvaged timeout episode: kept_timeout on every segment, none removed.
-        _segments(3, 2, status=truncated, kept_timeout=True),
+        # A timeout episode is telemetry only: every segment trains.
+        _segments(3, 2, agent_stop_reason="timeout"),
     ]
     monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker(groups, "all"))
     with caplog.at_level(logging.INFO, logger=_LOGGER):
@@ -569,7 +528,7 @@ def test_generate_rollout_removal_breakdown_is_per_episode(monkeypatch, caplog):
     assert len(data) == 4
     lines = [r.getMessage() for r in caplog.records]
     assert "Failed-sample distribution: failed=1/4 (0.250), removed_total=3/4 (0.750)" in lines
-    assert "Removal reasons: length=2, failed=1 (kept_timeout=1, kept_context_error=0)" in lines
+    assert "Removal reasons: bad_logprobs=1, context_overflow=1, failed=1" in lines
 
 
 def test_telemetry_counts_episodes_not_segments():
@@ -592,7 +551,6 @@ def test_telemetry_counts_episodes_not_segments():
     for key in (
         "total_episodes",
         "avg_reward",
-        "truncated_ratio",
         "reward_nonzero_frac",
         "avg_response_length",
         "failed_frac",
@@ -621,7 +579,6 @@ def test_telemetry_counts_episodes_not_segments():
     assert mixed["reward_nonzero_frac"] == pytest.approx(0.5)
     assert mixed["failed_frac"] == pytest.approx(0.5)
     assert mixed["removed_frac"] == pytest.approx(0.5)
-    assert mixed["truncated_ratio"] == pytest.approx(0.5)
     assert mixed["mean_group_std"] == pytest.approx(0.5)  # std over episode rewards [1, 0]
 
 
@@ -704,7 +661,6 @@ def test_pad_rows_to_dp_alignment_pads_odd_rows_with_shortest_kept_sibling(caplo
     tm = _batch_telemetry(groups, groups)
     assert tm["total_episodes"] == 8
     assert tm["removed_frac"] == pytest.approx(1 / 8)  # episode 1
-    assert tm["truncated_ratio"] == pytest.approx(1 / 8)  # episode 3; the pad adds no second count
     assert tm["avg_reward"] == pytest.approx(7 / 8)
     (record,) = caplog.records
     assert record.levelno == logging.WARNING

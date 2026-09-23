@@ -5,7 +5,6 @@ from torch.utils.checkpoint import checkpoint
 from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import (
     apply_advantage_scale,
-    apply_truncated_turn_shift,
     compute_advantages,
     normalize_advantages,
 )
@@ -112,29 +111,12 @@ def compute_advantages_and_returns(
         values=values,
     )
 
-    # Per-token advantage scale from the rollout side (arena continued clipped
-    # turns). Applied before OPD and before whitening; loss_mask stays untouched
-    # because it feeds the loss denominators. ``mask`` and ``flip`` are a plain
-    # multiply; ``flip_positive`` and ``shift`` need the advantage sign, so the
-    # rule name is read here.
+    # Per-token advantage scale from the rollout side; None means all ones.
+    # Applied before OPD and before whitening; loss_mask stays untouched
+    # because it feeds the loss denominators.
     advantage_scale = rollout_data.get("advantage_scale")
     if advantage_scale is not None:
-        rule = getattr(args, "arena_truncated_turn_rule", None)
-        if rule == "shift":
-            # Record the tokens the shift changes before the values move; the
-            # loss sums the mask into train/truncated_turn_shifted_tokens.
-            rollout_data["truncated_turn_shifted"] = [
-                ((torch.as_tensor(scale, device=adv.device) < 0) & (adv > 0)).to(adv.dtype)
-                for adv, scale in zip(advantages, advantage_scale, strict=True)
-            ]
-            apply_truncated_turn_shift(
-                advantages,
-                advantage_scale,
-                lam=getattr(args, "arena_truncated_turn_lambda", 0.5),
-                min_adv=getattr(args, "arena_truncated_turn_min_adv", -1.0),
-            )
-        else:
-            apply_advantage_scale(advantages, advantage_scale, positive_only=rule == "flip_positive")
+        apply_advantage_scale(advantages, advantage_scale)
 
     # Apply on-policy distillation KL penalty to advantages (orthogonal to advantage estimator)
     if args.use_opd:

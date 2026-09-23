@@ -5,6 +5,7 @@
 
 **Builds on:** ADR-0001 (port scope and module mapping); AREnATasks
 ADR-0039 (Harbor NATS gym worker — the worker side of the same contract)
+**Amended by:** ADR-0013 (the "Degenerate stops" row is history: `_DEGENERATE_AGENT_STOP` was removed on 2026-09-23 and no agent stop removes a sample)
 
 ## Summary
 

@@ -1,7 +1,6 @@
-"""Unit tests for rollout metrics: truncated_ratio and group_metrics aggregation.
+"""Unit tests for rollout metrics: group_metrics aggregation.
 
 Covers:
-  - truncated_ratio computation from nats_rollout.py (lines ~1498-1505)
   - compute_group_metrics_from_samples from rollout_metrics.py
 
 Run: python -m pytest tests/fast/plugins/arena/test_rollout_metrics.py -v
@@ -52,78 +51,6 @@ class MockArgs:
     update_weights_interval: int = 1
     reward_key: str | None = None
     custom_reward_post_process_path: str | None = None
-
-
-# ===========================================================================
-# 1. truncated_ratio computation
-# ===========================================================================
-
-
-def _compute_truncated_ratio(all_data: list[list[MockSample]], Sample=MockSample) -> float:
-    """Replicate the truncated_ratio logic from nats_rollout.py (~lines 1498-1505).
-
-    The plugin logs this pre-filter value as rollout/truncated_ratio_prefilter;
-    miles-native log_rollout_data owns the post-filter rollout/truncated_ratio.
-    This is a faithful extraction so we can unit-test it without importing the
-    full nats_rollout module (which pulls torch, miles, nats, etc.). Keep in
-    sync with miles_plugins/arena/nats_arena/nats_rollout.py by hand.
-    """
-    truncated_count = sum(
-        1 for g in all_data for s in g
-        if getattr(s, "status", None) == Sample.Status.TRUNCATED
-    )
-    all_data_total = sum(len(g) for g in all_data)
-    return truncated_count / max(all_data_total, 1)
-
-
-class TestTruncatedRatio:
-    def test_truncated_ratio_counts_truncated_status(self):
-        """Groups with TRUNCATED samples are counted; ratio = truncated / total."""
-        all_data = [
-            [MockSample(status=MockSample.Status.TRUNCATED),
-             MockSample(status=MockSample.Status.COMPLETED)],
-            [MockSample(status=MockSample.Status.TRUNCATED),
-             MockSample(status=MockSample.Status.TRUNCATED)],
-            [MockSample(status=MockSample.Status.COMPLETED),
-             MockSample(status=MockSample.Status.COMPLETED)],
-        ]
-        # 3 truncated out of 6 total
-        ratio = _compute_truncated_ratio(all_data)
-        assert ratio == pytest.approx(3.0 / 6.0)
-
-    def test_truncated_ratio_zero_when_none_truncated(self):
-        """All COMPLETED samples yield truncated_ratio = 0."""
-        all_data = [
-            [MockSample(status=MockSample.Status.COMPLETED) for _ in range(4)],
-            [MockSample(status=MockSample.Status.COMPLETED) for _ in range(3)],
-        ]
-        ratio = _compute_truncated_ratio(all_data)
-        assert ratio == 0.0
-
-    def test_truncated_ratio_all_truncated(self):
-        """When every sample is TRUNCATED, ratio should be 1.0."""
-        all_data = [
-            [MockSample(status=MockSample.Status.TRUNCATED) for _ in range(5)],
-        ]
-        ratio = _compute_truncated_ratio(all_data)
-        assert ratio == 1.0
-
-    def test_truncated_ratio_empty_data(self):
-        """Empty all_data (no samples) should return 0 (no division by zero)."""
-        ratio = _compute_truncated_ratio([])
-        assert ratio == 0.0
-
-    def test_truncated_ratio_mixed_statuses(self):
-        """ABORTED and FAILED samples are not counted as truncated."""
-        all_data = [
-            [MockSample(status=MockSample.Status.TRUNCATED),
-             MockSample(status=MockSample.Status.ABORTED),
-             MockSample(status=MockSample.Status.FAILED),
-             MockSample(status=MockSample.Status.COMPLETED)],
-        ]
-        # Only 1 truncated out of 4
-        ratio = _compute_truncated_ratio(all_data)
-        assert ratio == pytest.approx(0.25)
 
 
 # ===========================================================================

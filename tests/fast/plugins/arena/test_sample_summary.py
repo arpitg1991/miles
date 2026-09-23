@@ -1,8 +1,7 @@
 """--arena-sample-summary-dir: one JSONL row per training sample, no tensors.
 
 ``_write_sample_summary`` decodes the ADR-0011 packed ``index`` with
-``_SEGMENT_INDEX_STRIDE``, counts the ``advantage_scale`` entries a
-truncated-turn rule rewrote, and writes through a ``.tmp`` rename. It is a
+``_SEGMENT_INDEX_STRIDE`` and writes through a ``.tmp`` rename. It is a
 diagnostics path, so a failure logs a warning and never raises.
 
 Run: python -m pytest tests/fast/plugins/arena/test_sample_summary.py -v
@@ -32,7 +31,6 @@ def _samples() -> list[Sample]:
             tokens=[1, 2, 3, 4, 5],
             response_length=3,
             reward=0.5,
-            advantage_scale=[1.0, 0.0, 0.0],
             status=Sample.Status.COMPLETED,
             metadata={"raw_reward": 0.5, "agent_stop_reason": "submit"},
         ),
@@ -42,7 +40,6 @@ def _samples() -> list[Sample]:
             tokens=[1, 2, 3],
             response_length=1,
             reward=None,
-            advantage_scale=[1.0],
             status=Sample.Status.TRUNCATED,
         ),
         Sample(
@@ -51,14 +48,13 @@ def _samples() -> list[Sample]:
             tokens=[1, 2],
             response_length=1,
             reward=1,
-            advantage_scale=None,
             remove_sample=True,
             status=Sample.Status.COMPLETED,
         ),
     ]
 
 
-def test_rows_decode_segment_index_and_span_tokens(tmp_path: Path) -> None:
+def test_rows_decode_segment_index(tmp_path: Path) -> None:
     _write_sample_summary(SimpleNamespace(arena_sample_summary_dir=tmp_path), 42, _samples())
 
     rows = [json.loads(line) for line in (tmp_path / "rollout_42.jsonl").read_text().splitlines()]
@@ -71,8 +67,8 @@ def test_rows_decode_segment_index_and_span_tokens(tmp_path: Path) -> None:
     assert first["segment_k"] == 2
     assert first["episode_index"] == 5
     assert first["sample_rollout_id"] == 5
-    assert first["span_tokens"] == 2
-    assert first["has_advantage_scale"] is True
+    assert "span_tokens" not in first
+    assert "has_advantage_scale" not in first
     assert first["reward"] == 0.5
     assert first["raw_reward"] == 0.5
     assert first["total_length"] == 5
@@ -83,13 +79,10 @@ def test_rows_decode_segment_index_and_span_tokens(tmp_path: Path) -> None:
     assert second["reward"] is None
     assert second["raw_reward"] is None
     assert second["segment_k"] == 0
-    assert second["span_tokens"] == 0
     assert second["stop_reason"] is None
     assert second["status"] == "truncated"
 
     assert third["reward"] == 1.0
-    assert third["has_advantage_scale"] is False
-    assert third["span_tokens"] == 0
     assert third["remove_sample"] is True
 
 

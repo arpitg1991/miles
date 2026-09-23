@@ -1,7 +1,9 @@
 # ADR-0010: Keep Harbor agent-timeout trajectories as training samples, opt-in, only when the timeout is the sole defect
 
-**Status:** Accepted
+**Status:** Superseded by ADR-0013
 **Date:** 2026-09-03
+
+The code paths this ADR describes were removed from the repo on 2026-09-23; ADR-0013 records the replacement.
 
 **Builds on:** ADR-0002 (`success` and `truncated` envelopes are both salvageable), ADR-0007 (plain stack: removed samples' rewards already enter the group baseline), ADR-0009 (`--arena-mask-clipped-final-turn`)
 

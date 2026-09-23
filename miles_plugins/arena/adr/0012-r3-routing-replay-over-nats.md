@@ -115,7 +115,7 @@ The table names the source of each piece and the reason for that choice.
 | 9 | Feed routing into the model forward and backward | Done (Megatron hook, replay queues) | Used as-is | Nothing to do. Set use_rollout_routing_replay: true. | Works once the sample field is filled. |
 | 10 | Indexer (attention) replay | Exists, marked debug-only, 60x larger | Not done | Skip. Keep TIS to cover the residual. | 3.6 GB per episode, and the router strips the request field. |
 
-Rows 1 to 3 live in AREnATasks (ADR-0049 there). Rows 4 to 9 live in this
+Rows 1 to 3 live in AREnATasks (ADR-0064 there). Rows 4 to 9 live in this
 plugin. Row 10 is a non-goal.
 
 ### Why not the upstream session server
@@ -136,7 +136,7 @@ Gym side (AREnATasks, new image):
 
 - G1 `sglang_rollout.py:136-171` `RolloutState.begin_segment`: snapshot
   `self.routed_experts` into the archived segment. Today only the final
-  trajectory-level blob survives (ADR-0048 in AREnATasks, line 358).
+  trajectory-level blob survives (ADR-0063 in AREnATasks, line 358).
 - G2 `gym_worker.py:320-333` `trial_to_trajectory`: after `_rollout_steps`,
   call `prepare_routed_experts_for_transport` per step when
   `ARENA_ROUTING_DIR` is set. Port from the streaming worker; the Harbor
@@ -207,5 +207,5 @@ Trainer side (miles fork, new image):
 ## References
 
 - AGISlime `origin/mainline-0.3.1` `nats_rollout.py` L66-263 (`_decode_routed_experts`, `_materialize_group_routing`).
-- AREnATasks `0bd5e57` (streaming capture, `routing.py`), ADR-0036, ADR-0039 L204 (offload deferred), ADR-0048 L358.
+- AREnATasks `0bd5e57` (streaming capture, `routing.py`), ADR-0036, ADR-0039 L204 (offload deferred), ADR-0063 L358.
 - miles fork commits `cee16d9d0`, `0dd04cc2a`, `4ac3f4b7f`; upstream `73e0f87b8`.

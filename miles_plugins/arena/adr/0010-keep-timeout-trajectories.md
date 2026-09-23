@@ -112,4 +112,4 @@ another defect".
   passes both knobs explicitly.
 - Not a fix for the wall clock: the gym-side levers (timeout multiplier,
   reasoning effort, SGLang request timeout) are recorded in AREnATasks
-  (ADR-0047) and in `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`.
+  (ADR-0062, formerly 0047) and in `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`.

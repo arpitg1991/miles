@@ -13,7 +13,7 @@ episode property" and "Harbor chain step" bullets: no per-segment salvage, no
 **Builds on:** ADR-0004 (`remove_sample` and rollout-logprob semantics),
 ADR-0007 (a removed sample's reward still enters the group baseline),
 ADR-0011 (one `Sample` per segment)
-**Pairs with:** AREnATasks ADR-0065 (the gym side of this contract, same date)
+**Pairs with:** AREnATasks ADR-0066 (the gym side of this contract, same date)
 
 ## Summary
 
@@ -58,7 +58,7 @@ to clipped turns. The code paths of ADR-0009 and ADR-0010 and the
   2026-09-23) showed that the `shift` rule touched about 0.3 percent of
   response tokens. The run already kept timeouts and context errors through
   both salvage flags. The ladder changed nothing the loss could see.
-- **Gym side.** AREnATasks ADR-0065 (2026-09-23) moves the mask into the
+- **Gym side.** AREnATasks ADR-0066 (2026-09-23) moves the mask into the
   gym: `mask_last_output()` zeroes every clipped generate and every empty
   un-clipped generate, `truncated_spans` leaves the payload, and
   `masked_output_tokens` enters it.
@@ -163,7 +163,7 @@ counts hard overflows only.
 
 ### 6. Contract with the gym
 
-AREnATasks ADR-0065 (2026-09-23) is the gym side. Per trajectory the gym
+AREnATasks ADR-0066 (2026-09-23) is the gym side. Per trajectory the gym
 ships `agent_stop_reason`, `truncated_turns`, `masked_output_tokens`,
 `compactions` and `steps[*].stop_reason`. `truncated_turns` and
 `masked_output_tokens` are present only when non-zero; a missing field reads
@@ -197,7 +197,7 @@ trainer trusts the gym mask and the gym verdict.
   the new trainer trains its clipped turns at full weight (it sent
   `truncated_spans`, which the trainer ignores) and reports
   `rollout/masked_output_tokens = 0`. Pair the trainer with a gym image that
-  carries AREnATasks ADR-0065.
+  carries AREnATasks ADR-0066.
 - Trained-on samples now include every timed-out, context-ended,
   empty-response and budget-capped episode. Their reward is the verifier's
   verdict on the partial work.

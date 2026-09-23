@@ -2039,3 +2039,22 @@ Other notes:
   `rl-glm53f27-vq6mb` (4 h) were Running throughout.
 - Expected trainer shape: one optimizer step per 256 episodes; rows per
   step ~837 mean (8 x K segments per group, K mean 3.3) vs 310 in r27.
+
+## 2026-09-23 — AREnATasks ADR numbers moved on the mainline rebase
+
+The AREnATasks branch `arpit-glm-53` was rebased onto mainline on
+2026-09-23 and its ADRs took new numbers. Entries above this line use the
+numbers that were current when they were written. Map them as follows:
+
+| Record | Old number | Current number |
+| --- | --- | --- |
+| Gym-worker rollout knobs for long-thinking policies | 0047, then 0061 | 0062 |
+| Vulcan context compaction and rollout segments | 0048, then 0062 | 0063 |
+| R3 routing replay on the Harbor gym path | 0049, then 0063 | 0064 |
+| Harbor chain steps ride the rollout segment list | 0064 | 0065 |
+| Mask clipped and empty generates; train every verified episode | 0065 | 0066 |
+| Publish training trajectories per run, task, and weight version | 0066 | 0067 |
+| AREnATasksApps miles-deployer workflow | 0008, then 0015 | 0016 |
+
+The miles ADRs 0010 to 0013 now cite the current numbers. The per-run
+`rN/` directories keep their original comments as a record of that run.

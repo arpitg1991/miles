@@ -7,13 +7,13 @@
 in `all` mode it carries the EPISODE id, never the group id)
 **Builds on:** ADR-0004 (per-trajectory loss weighting keyed on `rollout_ids`),
 ADR-0009 (`--arena-mask-clipped-final-turn`), ADR-0010 (`--arena-keep-timeout-trajectories`)
-**Pairs with:** AREnATasks ADR-0048 (Vulcan context compaction and rollout
+**Pairs with:** AREnATasks ADR-0063 (Vulcan context compaction and rollout
 segments; the gym side of this contract)
 **Amended by:** ADR-0013 (the "Truncation stays an episode property" and "Harbor chain step" bullets describe flags and `truncated_spans` removed on 2026-09-23; the segment stamping and the DP pad stand)
 
 ## Context
 
-- AREnATasks ADR-0048 gives the Vulcan agent token-aware context compaction
+- AREnATasks ADR-0063 gives the Vulcan agent token-aware context compaction
   under `arena-sglang`. A compaction is a segment boundary:
   `RolloutState.begin_segment("compaction")` archives the live token stream
   and the next `/generate` re-renders the compacted history from scratch. The
@@ -177,7 +177,7 @@ callers keep the old behaviour). The default is byte-identical to today.
   segment.
 - **A Harbor chain step is a segment boundary.** For a harbor `[[steps]]`
   task the gym runs the chain in one container and ships one segment per
-  step with `segment_end="step"` (AREnATasks ADR-0064). Compaction segments
+  step with `segment_end="step"` (AREnATasks ADR-0065). Compaction segments
   inside a step keep `segment_end="compaction"`. The gym strips
   `stop_reason` from every non-final step, so the invariant above holds by
   gym-side stripping: only the final step can carry `stop_reason="length"`.

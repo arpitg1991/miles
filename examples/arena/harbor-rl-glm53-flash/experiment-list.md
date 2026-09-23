@@ -72,6 +72,20 @@ keeps starting new work past the point where it can finish inside the window.
 
 - **Change.** r25 with `arena_truncated_turn_rule: shift` (`arena_truncated_turn_lambda` 0.5, `arena_truncated_turn_min_adv` -1.0): a span token with a positive advantage A gets `max(A - 0.5, -1.0)`; trainer image `miles-glm53-r6-20260915a`. New gauges `train/adv_pos_mass`, `train/adv_neg_mass`, `train/adv_neg_pos_ratio`, `train/truncated_turn_shifted_tokens`. Assets: `r26/`, launch steps in `r26/BUILD.md`.
 
+### 10. Gym-owned masking, every verified episode trains — IMPLEMENTED
+
+- **Change.** Two rules replace `arena_mask_clipped_final_turn`,
+  `arena_keep_timeout_trajectories`, `arena_keep_context_error_trajectories`
+  and `arena_truncated_turn_*` (items 8 and 9 ran with them). (1) Every
+  episode whose verifier ran trains, whatever `agent_stop_reason` says; only
+  a broken token stream is removed (`context_overflow`, `bad_logprobs`).
+  (2) The gym masks a clipped or empty generate in `loss_mask`; the trainer
+  applies no advantage transform and trains whatever the mask says with the
+  episode advantage. Gauges: `rollout/stop/<reason>`, `rollout/clipped_turns`,
+  `rollout/masked_output_tokens`. Gone: `rollout/truncated_ratio_prefilter`,
+  `arena/truncated_turn_tokens`, `train/adv_*_mass`,
+  `train/truncated_turn_shifted_tokens`.
+
 ## Remaining candidates
 
 ### 2. Group-relative length penalty on passes (#1573 pattern)

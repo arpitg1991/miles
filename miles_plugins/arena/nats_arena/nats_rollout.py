@@ -65,31 +65,6 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["generate_rollout"]
 
-# Agent-loop terminal states (AREnABase vulcan_agent AgentResult.stop_reason)
-# that indicate a degenerate / incomplete trajectory which must NOT be trained
-# on as a clean COMPLETED rollout. Distinct from the per-turn SGLang
-# finish_reason ("stop"/"length"/"abort"): e.g. a trajectory whose context
-# overflowed 131k and failed drop-oldest recovery terminates with
-# ``context_error`` while its last turn's finish_reason is "stop". Flagged
-# TRUNCATED -> remove_sample=True so their tokens are masked out of the loss
-# (a final turn clipped by the per-turn cap can instead be partially salvaged
-# via --arena-mask-clipped-final-turn; degenerate stops never are -- with ONE
-# opt-in exception: ``timeout`` is the Harbor agent's per-task wall-clock
-# deadline (AgentTimeoutError), whose recorded turns all ended cleanly and
-# whose verifier still ran, so it can be kept via
-# --arena-keep-timeout-trajectories).
-# ``completed`` and ``max_iterations`` are intentionally NOT here (legitimate
-# finishes).
-_DEGENERATE_AGENT_STOP = frozenset({
-    "context_error",
-    "context_churn",
-    "empty_response",
-    "max_budget",
-    "timeout",
-    "no_choices",
-})
-
-
 
 # ---------------------------------------------------------------------------
 # Global worker (persists across generate_rollout calls within the
@@ -392,38 +367,26 @@ class _EpisodeContext:
     """Trajectory-level inputs of the per-step Sample conversion.
 
     One instance per trajectory. Every segment of a multi-segment episode is
-    converted against the same context, so reward, truncation and the salvage
-    flags stay EPISODE properties (ADR-0011).
+    converted against the same context, so reward and the stop telemetry stay
+    EPISODE properties (ADR-0011).
     """
 
     task_id: str
     gym_name: str
     reward: float
+    # Telemetry only (rollout/stop/<reason>, rollout/clipped_turns,
+    # rollout/masked_output_tokens). The gym masks a clipped or empty generate
+    # in loss_mask itself and its verifier ran on every trajectory it ships,
+    # so no stop reason removes a sample here.
     agent_stop_reason: str
-    agent_degenerate: bool
-    timeout_salvageable: bool
-    context_salvageable: bool
-    any_step_truncated: bool
+    truncated_turns: int
+    masked_output_tokens: int
     max_ctx: int | None
     args: Any
     weight_versions: list[str]
 
-    @property
-    def status(self) -> Sample.Status:
-        """Episode status before the per-step overflow and log-prob checks."""
-        if self.any_step_truncated or self.agent_degenerate:
-            return Sample.Status.TRUNCATED
-        return Sample.Status.COMPLETED
 
-
-def _finish_sample(
-    s: Sample,
-    ctx: _EpisodeContext,
-    *,
-    removal_reason: str | None,
-    kept_timeout: bool,
-    kept_context_error: bool,
-) -> Sample:
+def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | None) -> Sample:
     """Stamp the trajectory-level fields shared by the fast and slow paths."""
     # Per-turn SGLang weight versions for the off_policy_round metric: the
     # trajectory list on every segment, no per-segment slicing (ADR-0011).
@@ -437,100 +400,34 @@ def _finish_sample(
         "gym_name": ctx.gym_name,
         "segment": 0,
         "n_segments": 1,
+        "truncated_turns": ctx.truncated_turns,
+        "masked_output_tokens": ctx.masked_output_tokens,
     }
-    # Removal-reason bookkeeping for the per-rollout "Removal reasons"
-    # summary (generate_rollout). agent_stop_reason is recorded for every
-    # real sample; removal_reason only when remove_sample was set;
-    # kept_timeout only for --arena-keep-timeout-trajectories salvages.
+    # agent_stop_reason feeds rollout/stop/<reason>; removal_reason feeds the
+    # per-rollout "Removal reasons" summary and is set only with remove_sample.
     if ctx.agent_stop_reason:
         s.metadata["agent_stop_reason"] = ctx.agent_stop_reason
     if removal_reason:
         s.metadata["removal_reason"] = removal_reason
-    if kept_timeout:
-        s.metadata["kept_timeout"] = True
-    if kept_context_error:
-        s.metadata["kept_context_error"] = True
     return s
 
 
-# --arena-truncated-turn-rule -> the advantage_scale value written on a
-# continued clipped turn. ``flip_positive`` and ``shift`` also write -1: the
-# field is a span marker for those two rules, and the trainer loss reads the
-# advantage sign, which is known only after reward normalization.
-# flip_positive: apply_advantage_scale -> ``where(adv > 0, -1, 0)``.
-# shift: apply_truncated_turn_shift -> ``max(adv - lambda, min_adv)`` where
-# adv > 0 (--arena-truncated-turn-lambda, --arena-truncated-turn-min-adv).
-_TRUNCATED_TURN_RULE_SCALE = {"mask": 0.0, "flip": -1.0, "flip_positive": -1.0, "shift": -1.0}
-
-
-def _truncated_spans_scale(
-    spans: list[list[int]],
-    prompt_len: int,
-    response_length: int,
-    args: Any,
-) -> tuple[list[float] | None, int]:
-    """Build ``Sample.advantage_scale`` for one step from the gym's ``truncated_spans``.
-
-    The gym ships every mid-episode generate that hit the per-turn cap as
-    ``[start, end)`` in the index space of the step's ``token_ids`` /
-    ``loss_mask`` (AREnATasks ``sglang_rollout.record_finish``), and leaves
-    the loss mask at 1. The response window starts at ``prompt_len`` (the
-    first 1), so a span is shifted by ``prompt_len`` and clipped to the
-    window. A span that starts before the window belongs to a turn the gym
-    did not train on and is a silent no-op.
-
-    Returns:
-        ``(scale, n_out_of_range)``. ``scale`` is None when no span lands in
-        the window, so an unused field costs nothing downstream.
-        ``n_out_of_range`` counts spans that reach past the token stream or
-        are malformed (``start >= end``, negative start); the caller reports
-        the count once per batch.
-    """
-    if not spans or response_length <= 0:
-        return None, 0
-    value = _TRUNCATED_TURN_RULE_SCALE[getattr(args, "arena_truncated_turn_rule", "mask")]
-    scale = [1.0] * response_length
-    filled = False
-    n_out_of_range = 0
-    for start, end in spans:
-        start, end = int(start), int(end)
-        if start < 0 or start >= end or end > prompt_len + response_length:
-            n_out_of_range += 1
-        lo = max(start - prompt_len, 0)
-        hi = min(end - prompt_len, response_length)
-        if lo < hi:
-            scale[lo:hi] = [value] * (hi - lo)
-            filled = True
-    return (scale if filled else None), n_out_of_range
-
-
-def _step_to_sample(step: dict, ctx: _EpisodeContext, *, is_final: bool) -> Sample:
+def _step_to_sample(step: dict, ctx: _EpisodeContext) -> Sample:
     """Convert one GenerateClient step (cumulative token arrays) into a Sample.
 
-    ``is_final`` marks the segment that produced the episode end. Only that
-    segment can carry a clipped final turn (an archived segment ends on a
-    completed turn, AREnATasks ADR-0048), so ``--arena-mask-clipped-final-turn``
-    zeroes a trailing 1-run there only; an earlier segment has nothing to mask
-    and stays trainable. Hard context overflow and the rollout-logprob check
-    are per step.
+    The gym owns the loss mask: a clipped or empty generate arrives with
+    ``loss_mask`` 0 on its tokens, and the agent stop reason is telemetry. A
+    sample leaves training only when its token stream is broken: a hard
+    context overflow or a rollout-logprob length mismatch, both per step.
     """
     task_id = ctx.task_id
     args = ctx.args
     max_ctx = ctx.max_ctx
-    any_step_truncated = ctx.any_step_truncated
-    agent_degenerate = ctx.agent_degenerate
-    agent_stop_reason = ctx.agent_stop_reason
-    timeout_salvageable = ctx.timeout_salvageable
-    stop_salvageable = ctx.timeout_salvageable or ctx.context_salvageable
-    # True when the agent stop alone makes the sample untrainable.
-    agent_blocks_training = agent_degenerate and not stop_salvageable
-    status = ctx.status
+    status = Sample.Status.COMPLETED
     # Why the sample was dropped from the loss (None when trained on);
     # stamped into Sample.metadata for the per-rollout "Removal reasons"
     # summary log. Set alongside every ``remove_sample = True`` below.
     removal_reason = None
-    kept_timeout = False
-    kept_context_error = False
     s = Sample()
     token_ids = step["token_ids"]
     loss_mask = step["loss_mask"]
@@ -604,114 +501,10 @@ def _step_to_sample(step: dict, ctx: _EpisodeContext, *, is_final: bool) -> Samp
     # empty list, which aligns with response_length==0.
     s.rollout_log_probs = resp_log_probs
     s.status = status
-    # Continued clipped turns: a mid-episode generate hit the per-turn cap and
-    # the episode went on. The gym keeps those tokens in the loss mask and
-    # ships ``truncated_spans``; --arena-truncated-turn-rule decides what the
-    # loss does with them through Sample.advantage_scale. An older gym image
-    # omits the field, which reads as no spans (byte-identical behaviour).
-    s.advantage_scale, spans_out_of_range = _truncated_spans_scale(
-        step.get("truncated_spans") or [], prompt_len, response_length, args
-    )
-    # --arena-mask-clipped-final-turn: the gym ships ONE step whose
-    # stop_reason is "length" exactly when the FINAL generate hit the
-    # per-turn cap, and that final turn's output tokens are the
-    # trailing run of 1s in the cumulative loss_mask (no prompt/tool
-    # tokens follow the last generate). Zero only that run and keep
-    # the earlier, cleanly-stopped turns trainable — instead of the
-    # r5-lineage default of removing the whole sample. Degenerate
-    # agent stops (except a "timeout" admitted by
-    # --arena-keep-timeout-trajectories), hard context overflows, and
-    # zero-filled logprobs are NOT salvageable and keep the old
-    # removal behavior. Status stays TRUNCATED so truncated_ratio
-    # remains an honest metric.
-    final_clip_masked = False
-    if (
-        getattr(args, "arena_mask_clipped_final_turn", False)
-        and status == Sample.Status.TRUNCATED
-        and any_step_truncated
-        and not agent_blocks_training
-        and not hard_overflow
-        and not bad_logprobs
-    ):
-        if not is_final:
-            # An archived segment closed on a completed turn: the clipped
-            # tokens live in the FINAL segment only, so there is nothing to
-            # mask here and the segment stays trainable (ADR-0011).
-            final_clip_masked = has_response
-        else:
-            tail = len(resp_loss_mask)
-            while tail > 0 and resp_loss_mask[tail - 1] == 1:
-                tail -= 1
-            clipped_len = len(resp_loss_mask) - tail
-            if clipped_len and any(m == 1 for m in resp_loss_mask[:tail]):
-                s.loss_mask = resp_loss_mask[:tail] + [0] * clipped_len
-                final_clip_masked = True
-                logger.info(
-                    "Task %s: masked clipped final turn (%d of %d response "
-                    "tokens); earlier turns stay trainable.",
-                    task_id, clipped_len, len(resp_loss_mask),
-                )
-    # --arena-keep-timeout-trajectories: keep the sample, loss_mask
-    # untouched, when the ONLY thing flagging it TRUNCATED is the
-    # agent-loop "timeout" stop -- no per-turn length clip, no hard
-    # context overflow, no zero-filled logprobs, and at least one
-    # trainable token. Precedence when a timeout trajectory ALSO has
-    # a clipped final turn (any_step_truncated): the
-    # --arena-mask-clipped-final-turn salvage above applies if that
-    # flag is on (the timeout no longer blocks it); otherwise the
-    # sample stays removed -- this branch never keeps a trajectory
-    # with a clipped turn. Slow-path (messages-only) trajectories are
-    # out of scope, exactly like the mask-clipped salvage.
-    if (
-        stop_salvageable
-        and status == Sample.Status.TRUNCATED
-        and not any_step_truncated
-        and not hard_overflow
-        and not bad_logprobs
-        and has_response
-    ):
-        if timeout_salvageable:
-            kept_timeout = True
-        else:
-            kept_context_error = True
-        # #turns == number of 1-runs in the response loss_mask (each
-        # assistant turn is one run, separated by tool/user 0s).
-        n_turns = sum(
-            1 for i, m in enumerate(resp_loss_mask)
-            if m == 1 and (i == 0 or resp_loss_mask[i - 1] == 0)
-        )
-        logger.info(
-            "Task %s: kept %s trajectory (%d turns, %d response "
-            "tokens); agent %s but every turn ended cleanly.",
-            task_id,
-            "timeout" if kept_timeout else "context_error",
-            n_turns, len(resp_loss_mask),
-            "hit its wall-clock deadline" if kept_timeout
-            else "ran out of context window",
-        )
-    if (
-        status == Sample.Status.TRUNCATED
-        and not final_clip_masked
-        and not kept_timeout
-        and not kept_context_error
-    ) or bad_logprobs:
+    if hard_overflow or bad_logprobs:
         s.remove_sample = True
-        removal_reason = (
-            "bad_logprobs" if bad_logprobs
-            else "context_overflow" if hard_overflow
-            else agent_stop_reason if agent_degenerate
-            else "length" if any_step_truncated
-            else "other"
-        )
-    s = _finish_sample(
-        s, ctx,
-        removal_reason=removal_reason,
-        kept_timeout=kept_timeout,
-        kept_context_error=kept_context_error,
-    )
-    if spans_out_of_range:
-        # Summed and reported once per batch by generate_rollout.
-        s.metadata["truncated_spans_out_of_range"] = spans_out_of_range
+        removal_reason = "bad_logprobs" if bad_logprobs else "context_overflow"
+    s = _finish_sample(s, ctx, removal_reason=removal_reason)
     if replay_enabled(args):
         # R3 (ADR-0012): keep only the {path,bytes,sha256} pointer (or the
         # inline base64) while the group waits in the output queue; the
@@ -728,7 +521,7 @@ def _messages_to_sample(messages: list[dict], ctx: _EpisodeContext, tokenizer) -
 
     task_id = ctx.task_id
     args = ctx.args
-    status = ctx.status
+    status = Sample.Status.COMPLETED
     removal_reason = None
     s = Sample()
     clean_messages = []
@@ -762,9 +555,7 @@ def _messages_to_sample(messages: list[dict], ctx: _EpisodeContext, tokenizer) -
         )
         raise
 
-    slow_overflow = False
     if ctx.max_ctx and len(token_ids) > ctx.max_ctx:
-        slow_overflow = True
         # Context overflow: hard-truncate token_ids/loss_mask (and any
         # parallel per-token field) to max_ctx. We don't bother dropping
         # the final assistant turn to keep the conversation well-formed —
@@ -827,15 +618,8 @@ def _messages_to_sample(messages: list[dict], ctx: _EpisodeContext, tokenizer) -
     s.status = status
     if status == Sample.Status.TRUNCATED:
         s.remove_sample = True
-        removal_reason = (
-            "context_overflow" if slow_overflow
-            else ctx.agent_stop_reason if ctx.agent_degenerate
-            else "length" if ctx.any_step_truncated
-            else "other"
-        )
-    return _finish_sample(
-        s, ctx, removal_reason=removal_reason, kept_timeout=False, kept_context_error=False,
-    )
+        removal_reason = "context_overflow"
+    return _finish_sample(s, ctx, removal_reason=removal_reason)
 
 
 def _result_to_episodes_full_trajectory(
@@ -902,54 +686,12 @@ def _result_to_episodes_full_trajectory(
             )
             continue
 
-        # Mark TRUNCATED when EITHER the last turn or any intermediate turn
-        # hit ``finish_reason="length"`` — same logic as the slow path. A
-        # multi-turn agent often ends its terminal turn cleanly while an
-        # earlier turn truncated mid-tool-call; flagging only the last step
-        # would under-count truncated_ratio and silently reward cut-off
-        # actions. An archived compaction segment carries no stop_reason
-        # (AREnATasks ADR-0048), so only the final segment can set this and
-        # truncation stays an episode property (ADR-0011).
-        # REPORTING RULE: report ``truncated_turn_shifted`` as the truncation
-        # signal. NEVER report ``truncated`` / ``truncated_ratio`` as the share
-        # of episodes that ended by truncation. This flag flips on any single
-        # clipped turn (finish_reason=="length", per-turn max_tokens cap) or any
-        # degenerate stop, so it over-counts and does not name the terminal
-        # reason. To explain why episodes end, tally the terminal
-        # agent_stop_reason / _finalize reasons, not this flag.
-        any_step_truncated = any(
-            "length" in str(st.get("stop_reason") or "").lower() for st in steps
-        )
-        # Agent-loop degenerate terminal states (context_error, context_churn,
-        # empty_response, max_budget, timeout, no_choices) are NOT length-
-        # truncations — the per-turn stop_reason is "stop" — so the check above
-        # misses them. The trajectory is a mangled/incomplete conversation (e.g.
-        # context-overflow recovery failed) that must not be trained on as
-        # COMPLETED. Flag TRUNCATED so remove_sample fires below.
+        # Stop telemetry (rollout/stop/<reason>, rollout/clipped_turns,
+        # rollout/masked_output_tokens). The gym already masked every clipped
+        # or empty generate in loss_mask and its verifier ran, so none of these
+        # removes a sample. An older gym image omits the counters, which reads
+        # as 0; ``truncated_spans`` from that image is ignored.
         agent_stop_reason = str(traj.get("agent_stop_reason") or "").lower()
-        agent_degenerate = agent_stop_reason in _DEGENERATE_AGENT_STOP
-        # --arena-keep-timeout-trajectories: the Harbor gym worker maps its
-        # per-task wall-clock AgentTimeoutError to agent_stop_reason
-        # "timeout" even though every recorded turn ended with finish_reason
-        # "stop", the token stream ends at the model's turn-close token (no
-        # partial turn) and the verifier still ran, so the reward is real.
-        # With the flag on, a "timeout" stop no longer disqualifies the
-        # sample on its own (nor blocks --arena-mask-clipped-final-turn
-        # salvage); every other degenerate stop is unaffected. Status stays
-        # TRUNCATED either way so truncated_ratio remains an honest metric.
-        timeout_salvageable = (
-            bool(getattr(args, "arena_keep_timeout_trajectories", False))
-            and agent_stop_reason == "timeout"
-        )
-        # --arena-keep-context-error-trajectories: same shape for
-        # "context_error". The arena Terminus-2 agent ends the episode when
-        # the engine rejects the NEXT turn's prompt as too long; the recorded
-        # turns all ended cleanly, the token stream is the complete episode
-        # up to that point and the verifier still ran. Status stays TRUNCATED.
-        context_salvageable = (
-            bool(getattr(args, "arena_keep_context_error_trajectories", False))
-            and agent_stop_reason == "context_error"
-        )
         # Per-turn SGLang weight versions for the off_policy_round metric.
         # Prefer the explicit parallel list emitted by the gym; fall back to
         # the per-step ``weight_version`` keys for older gym builds. Empty
@@ -962,10 +704,8 @@ def _result_to_episodes_full_trajectory(
             gym_name=gym_name,
             reward=reward,
             agent_stop_reason=agent_stop_reason,
-            agent_degenerate=agent_degenerate,
-            timeout_salvageable=timeout_salvageable,
-            context_salvageable=context_salvageable,
-            any_step_truncated=any_step_truncated,
+            truncated_turns=int(traj.get("truncated_turns") or 0),
+            masked_output_tokens=int(traj.get("masked_output_tokens") or 0),
             max_ctx=max_ctx,
             args=args,
             weight_versions=[str(v) for v in wvs if v is not None],
@@ -982,10 +722,7 @@ def _result_to_episodes_full_trajectory(
         # cumulative token_ids/loss_mask/log_probs built from /generate
         # responses. Skip re-tokenization entirely.
         if training and training[-1].get("has_generate_tokens"):
-            episode = [
-                _step_to_sample(st, ctx, is_final=(k == len(training) - 1))
-                for k, st in enumerate(training)
-            ]
+            episode = [_step_to_sample(st, ctx) for st in training]
         else:
             if not messages:
                 logger.warning("Trajectory for %s has no messages, skipping", task_id)
@@ -1068,9 +805,9 @@ def _episode_representatives(groups: list[list[Sample]]) -> list[Sample]:
     ``reward`` and ``weight_versions`` are identical on every segment, and the
     first segment of a group's first episode carries ``group_metrics``, so
     episode-level reductions of those read this sample. ``remove_sample``,
-    ``removal_reason``, ``status`` and the ``kept_*`` flags are per segment
-    (``hard_overflow``, ``bad_logprobs``, a final segment that is one clipped
-    turn): reduce them over ``_episodes`` or read ``_removal_representative``.
+    ``removal_reason`` and ``status`` are per segment (``hard_overflow``,
+    ``bad_logprobs``): reduce them over ``_episodes`` or read
+    ``_removal_representative``.
     """
     return [e[0] for e in _episodes(groups)]
 
@@ -1172,10 +909,10 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
 
     ``data`` is the post-filter batch that trains; ``all_data`` the pre-filter
     population (see ``generate_rollout``). A multi-segment episode (ADR-0011)
-    is one unit everywhere: its reward is read once, it counts as removed or
-    truncated when ANY segment is, and its response length is the sum over its
-    segments. Sample-level counts (``rollout/num_training_samples``) come from
-    miles ``log_rollout_data``, not from here.
+    is one unit everywhere: its reward is read once, it counts as removed when
+    ANY segment is, and its response length is the sum over its segments.
+    Sample-level counts (``rollout/num_training_samples``) come from miles
+    ``log_rollout_data``, not from here.
     """
     data_episodes = _episodes(data)
     episodes = [e[0] for e in data_episodes]
@@ -1195,17 +932,11 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
     #       top of the failed ones. This is the true "lost training signal"
     #       fraction; removed_frac >= failed_frac by construction.
     failed_count = sum(1 for s in episodes if (s.metadata or {}).get("mode") == "failed")
-    # remove_sample and status are per segment: an episode is removed when ANY
-    # segment is dropped (a final segment that is one clipped turn under
-    # --arena-mask-clipped-final-turn, a per-segment bad_logprobs or
-    # hard_overflow) and truncated when ANY segment is TRUNCATED. Under
-    # ``final`` the episode is its single sample, so the numbers match.
+    # remove_sample is per segment: an episode is removed when ANY segment is
+    # dropped (a per-segment bad_logprobs or hard_overflow). Under ``final``
+    # the episode is its single sample, so the numbers match.
     removed_count = sum(1 for e in data_episodes if any(getattr(s, "remove_sample", False) for s in e))
-    all_data_episodes = _episodes(all_data)
-    all_episodes = [e[0] for e in all_data_episodes]
-    truncated_count = sum(
-        1 for e in all_data_episodes if any(getattr(s, "status", None) == Sample.Status.TRUNCATED for s in e)
-    )
+    all_episodes = _episode_representatives(all_data)
     all_data_total = len(all_episodes)
 
     # ---- reward-collapse telemetry ----------------------------------------
@@ -1259,21 +990,8 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
     # Per-episode response length (loss_mask window), summed over segments.
     response_lens = _episode_response_lengths(all_data)
 
-    # ---- continued clipped turns (--arena-truncated-turn-rule) -------------
-    # truncated_turn_tokens: fraction of response tokens whose advantage_scale
-    # is not 1 (the spans), over the pre-filter population. truncated_ratio
-    # keeps its meaning (the final generate hit the cap).
     all_samples = [s for g in all_data for s in g]
-    scaled_tokens = sum(
-        sum(1 for v in s.advantage_scale if v != 1.0)
-        for s in all_samples
-        if getattr(s, "advantage_scale", None) is not None
-    )
-    response_tokens = sum(
-        s.response_length for s in all_samples if isinstance(getattr(s, "response_length", None), int)
-    )
     zero_mask_dropped = sum(int((s.metadata or {}).get("zero_mask_steps_dropped", 0)) for s in all_samples)
-    spans_out_of_range = sum(int((s.metadata or {}).get("truncated_spans_out_of_range", 0)) for s in all_samples)
 
     return {
         "total_episodes": total_episodes,
@@ -1283,11 +1001,9 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
         "nonzero_groups": nonzero_groups,
         "failed_count": failed_count,
         "removed_count": removed_count,
-        "truncated_count": truncated_count,
         "all_data_total": all_data_total,
         "failed_frac": failed_count / max(total_episodes, 1),
         "removed_frac": removed_count / max(total_episodes, 1),
-        "truncated_ratio": truncated_count / max(all_data_total, 1),
         "reward_nonzero_frac": all_data_nonzero_count / max(all_data_total, 1),
         "zero_reward_groups_frac": zero_reward_groups / max(len(all_data), 1),
         "mean_group_std": sum(group_stds) / max(len(group_stds), 1),
@@ -1296,9 +1012,7 @@ def _batch_telemetry(data: list[list[Sample]], all_data: list[list[Sample]]) -> 
         "reward_p75": _pct(all_data_rewards, 75),
         "reward_p90": _pct(all_data_rewards, 90),
         "avg_response_length": sum(response_lens) / max(len(response_lens), 1),
-        "truncated_turn_tokens": scaled_tokens / max(response_tokens, 1),
         "zero_mask_steps_dropped": zero_mask_dropped,
-        "truncated_spans_out_of_range": spans_out_of_range,
     }
 
 
@@ -1325,6 +1039,31 @@ def _group_reward_stats(groups: list[list[Sample]]) -> dict[str, float]:
     }
 
 
+def _stop_metrics(all_data: list[list[Sample]]) -> dict[str, float]:
+    """Stop telemetry over the pre-filter episodes that came from a real trajectory.
+
+    ``rollout/stop/<reason>`` is the fraction of episodes per lowercase
+    ``agent_stop_reason`` (``unknown`` when the gym sent none).
+    ``rollout/clipped_turns`` and ``rollout/masked_output_tokens`` are the means
+    of the gym's per-trajectory counters, 0 on an older gym image. A failed-slot
+    pad copies a sibling's tokens and has no agent loop behind it, so it is not
+    a stop; ``rollout/failed_frac`` counts it.
+    """
+    reps = [s for s in _episode_representatives(all_data) if (s.metadata or {}).get("mode") != "failed"]
+    if not reps:
+        return {}
+    n = len(reps)
+    counts: dict[str, int] = {}
+    for s in reps:
+        reason = str((s.metadata or {}).get("agent_stop_reason") or "unknown").lower()
+        counts[reason] = counts.get(reason, 0) + 1
+    out = {f"rollout/stop/{reason}": c / n for reason, c in counts.items()}
+    counters = {"rollout/clipped_turns": "truncated_turns", "rollout/masked_output_tokens": "masked_output_tokens"}
+    for key, field in counters.items():
+        out[key] = sum(int((s.metadata or {}).get(field) or 0) for s in reps) / n
+    return out
+
+
 def _prompt_mean_rewards(groups: list[list[Sample]]) -> dict[str, float]:
     """instance_id -> mean reward over the group's episodes (one reward per episode)."""
     out: dict[str, float] = {}
@@ -1337,34 +1076,26 @@ def _prompt_mean_rewards(groups: list[list[Sample]]) -> dict[str, float]:
     return out
 
 
-def _removal_reason_counts(groups) -> tuple[dict[str, int], int, int]:
+def _removal_reason_counts(groups) -> dict[str, int]:
     """Aggregate why samples were removed from the loss, for the per-rollout
     "Removal reasons" summary log.
 
-    Returns ``(reason -> count over samples with remove_sample=True,
-    number of samples kept by --arena-keep-timeout-trajectories,
-    number kept by --arena-keep-context-error-trajectories)``. Reasons
-    come from ``Sample.metadata["removal_reason"]`` as stamped by
-    ``_result_to_samples_full_trajectory``; gym-side pads (``mode="failed"``)
+    Returns ``reason -> count`` over samples with ``remove_sample=True``.
+    Reasons come from ``Sample.metadata["removal_reason"]`` as stamped by
+    ``_result_to_episodes_full_trajectory``; gym-side pads (``mode="failed"``)
     count as ``failed``; anything else unattributed is ``other``.
     """
     removal_reasons: dict[str, int] = {}
-    kept_timeout_count = 0
-    kept_context_error_count = 0
     for g in groups:
         for s in g:
-            meta = s.metadata or {}
-            if meta.get("kept_timeout"):
-                kept_timeout_count += 1
-            if meta.get("kept_context_error"):
-                kept_context_error_count += 1
             if not getattr(s, "remove_sample", False):
                 continue
+            meta = s.metadata or {}
             reason = meta.get("removal_reason") or (
                 "failed" if meta.get("mode") == "failed" else "other"
             )
             removal_reasons[reason] = removal_reasons.get(reason, 0) + 1
-    return removal_reasons, kept_timeout_count, kept_context_error_count
+    return removal_reasons
 
 
 # ---------------------------------------------------------------------------
@@ -2102,9 +1833,9 @@ class NATSRolloutWorker:
         n_failed = 0
 
         for result in task_results:
-            # "truncated" envelopes stay usable: per-step stop_reason already
-            # marks the affected samples TRUNCATED (remove_sample), so
-            # dropping the whole envelope would discard the clean siblings.
+            # "truncated" envelopes stay usable: the gym masked the clipped
+            # generate in loss_mask and its verifier ran, so every trajectory
+            # in the envelope trains.
             if result.get("status") not in SALVAGEABLE_RESULT_STATUSES:
                 logger.warning("Task %s failed: %s", task_id, result.get("error"))
                 n_failed += 1
@@ -2373,8 +2104,7 @@ def _write_sample_summary(args: Any, rollout_id: int, samples: list[Sample]) -> 
     length fields only, no token tensors, so a production run can measure the
     within-group advantage-vs-episode-length correlation offline. ``index`` is
     decoded with ``_SEGMENT_INDEX_STRIDE`` into ``episode_index`` and
-    ``segment_k`` (ADR-0011). ``span_tokens`` counts the ``advantage_scale``
-    entries that a truncated-turn rule rewrote.
+    ``segment_k`` (ADR-0011).
     """
     # Diagnostics-only path: a failure here MUST never end a production run.
     # That is the justification for the broad except.
@@ -2385,7 +2115,6 @@ def _write_sample_summary(args: Any, rollout_id: int, samples: list[Sample]) -> 
         for s in samples:
             meta = s.metadata or {}
             index = None if s.index is None else int(s.index)
-            scale = s.advantage_scale
             rows.append(
                 {
                     "rollout_id": rollout_id,
@@ -2402,8 +2131,6 @@ def _write_sample_summary(args: Any, rollout_id: int, samples: list[Sample]) -> 
                     "raw_reward": meta.get("raw_reward"),
                     "response_length": s.response_length,
                     "total_length": len(s.tokens),
-                    "span_tokens": 0 if scale is None else sum(1 for v in scale if v != 1.0),
-                    "has_advantage_scale": scale is not None,
                     "stop_reason": meta.get("agent_stop_reason") or meta.get("stop_reason") or None,
                 }
             )
@@ -2618,12 +2345,6 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     # Every count below is per EPISODE (ADR-0011): a multi-segment episode under
     # --arena-train-segments all is one unit, so the numbers match ``final``.
     tm = _batch_telemetry(data, all_data)
-    if tm["truncated_spans_out_of_range"]:
-        logger.warning(
-            "truncated_spans: %d span(s) reached past the token stream or were "
-            "malformed; clipped to the response window.",
-            tm["truncated_spans_out_of_range"],
-        )
     total_episodes = int(tm["total_episodes"])
     avg_reward = tm["avg_reward"]
     logger.info(
@@ -2632,7 +2353,6 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     )
     failed_frac = tm["failed_frac"]
     removed_frac = tm["removed_frac"]
-    truncated_ratio = tm["truncated_ratio"]
     logger.info(
         "Failed-sample distribution: failed=%d/%d (%.3f), removed_total=%d/%d (%.3f)",
         tm["failed_count"], total_episodes, failed_frac,
@@ -2641,26 +2361,19 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     # Per-reason breakdown of removed_total so a rollout log shows WHY
     # training signal was lost without a post-hoc investigation. Reasons are
     # stamped into Sample.metadata["removal_reason"] by
-    # _result_to_episodes_full_trajectory: the degenerate agent stop
-    # ("timeout", "context_error", ...), "length" (per-turn clip),
-    # "context_overflow", "bad_logprobs"/"no_logprobs"; gym-side pads carry
-    # mode="failed". kept_timeout counts the (non-removed) samples salvaged
-    # by --arena-keep-timeout-trajectories; timeout=N under the flag then
-    # means "timeout AND another defect" (see precedence note there).
-    # Counted per EPISODE (ADR-0011) so the breakdown sums to removed_total
-    # above: one sample per episode, the removed segment when there is one,
-    # because the first segment can train while a later one is dropped.
-    removal_reasons, kept_timeout_count, kept_context_error_count = _removal_reason_counts(
-        [[_removal_representative(e) for e in _episodes(data)]]
-    )
+    # _result_to_episodes_full_trajectory: "context_overflow",
+    # "bad_logprobs"/"no_logprobs"/"no_routing"; gym-side pads carry
+    # mode="failed". Counted per EPISODE (ADR-0011) so the breakdown sums to
+    # removed_total above: one sample per episode, the removed segment when
+    # there is one, because the first segment can train while a later one is
+    # dropped.
+    removal_reasons = _removal_reason_counts([[_removal_representative(e) for e in _episodes(data)]])
     logger.info(
-        "Removal reasons: %s (kept_timeout=%d, kept_context_error=%d)",
+        "Removal reasons: %s",
         ", ".join(
             f"{k}={v}"
             for k, v in sorted(removal_reasons.items(), key=lambda kv: (-kv[1], kv[0]))
         ) or "none",
-        kept_timeout_count,
-        kept_context_error_count,
     )
     # -----------------------------------------------------------------------
 
@@ -2751,12 +2464,13 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 # failed/dropped-sample telemetry
                 "rollout/failed_frac": failed_frac,
                 "rollout/removed_sample_frac": removed_frac,
-                # Pre-filter population (all_data); miles-native log_rollout_data
-                # logs the post-filter rollout/truncated_ratio at the same step.
-                "rollout/truncated_ratio_prefilter": truncated_ratio,
-                # Continued clipped turns (--arena-truncated-turn-rule) and the
-                # all-zero loss_mask guard in _result_to_episodes_full_trajectory.
-                "arena/truncated_turn_tokens": tm["truncated_turn_tokens"],
+                # Stop telemetry over the pre-filter population: why episodes
+                # ended, how many generates the per-turn cap clipped, how many
+                # output tokens the gym masked. TRUNCATED now marks only a
+                # sample removed for a hard context overflow, so miles-native
+                # rollout/truncated_ratio is that removal fraction.
+                **_stop_metrics(all_data),
+                # The all-zero loss_mask guard in _result_to_episodes_full_trajectory.
                 "arena/zero_mask_steps_dropped": tm["zero_mask_steps_dropped"],
                 # Segment counts: miles log_rollout_data logs
                 # rollout/num_training_samples and rollout/episode_raw_reward
@@ -2847,8 +2561,7 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             logger.warning("Failed to log queue metrics to W&B: %s", exc)
 
     # Training rollouts only: the evaluation branch raised at the top. The
-    # rows reflect the final batch: post dynamic-sampling, post DP padding,
-    # with advantage_scale already set by _step_to_sample.
+    # rows reflect the final batch: post dynamic-sampling, post DP padding.
     if getattr(args, "arena_sample_summary_dir", None) is not None:
         _write_sample_summary(args, rollout_id, [s for group in data for s in group])
 
@@ -2944,75 +2657,12 @@ def _add_arena_arguments(parser):
         "to the NAMESPACE env var, then 'default'.",
     )
     group.add_argument(
-        "--arena-mask-clipped-final-turn",
-        action="store_true",
-        default=False,
-        help="When a trajectory's final generate hit the per-turn token cap "
-        "(the gym stamps stop_reason=length only for the final turn), zero "
-        "only that clipped final turn's loss-mask tokens and keep the "
-        "earlier turns trainable, instead of removing the whole sample "
-        "(the r5-lineage default).",
-    )
-    group.add_argument(
         "--arena-sample-summary-dir",
         type=str,
         default=None,
         help="Directory for one JSONL file per training rollout "
         "(rollout_{rollout_id}.jsonl) with per-sample reward and length "
         "fields; no tensors. Decodes the ADR-0011 segment index. Default: off.",
-    )
-    group.add_argument(
-        "--arena-truncated-turn-rule",
-        choices=("mask", "flip", "flip_positive", "shift"),
-        default="mask",
-        help="What the loss does with a continued clipped turn: a mid-episode "
-        "generate that hit the per-turn token cap while the episode went on "
-        "(the gym ships those tokens as truncated_spans and keeps them in "
-        "the loss mask). Written per token into Sample.advantage_scale: "
-        "mask = 0 (no gradient on the span), flip = -1 (negate the "
-        "advantage), flip_positive = -1 where the episode advantage is "
-        "positive and 0 where it is negative, shift = max(adv - lambda, "
-        "min_adv) where the advantage is positive and unchanged otherwise "
-        "(--arena-truncated-turn-lambda, --arena-truncated-turn-min-adv). "
-        "Default: mask.",
-    )
-    group.add_argument(
-        "--arena-truncated-turn-lambda",
-        type=float,
-        default=0.5,
-        help="shift rule: the amount subtracted from a positive advantage on a continued clipped turn. Default: 0.5.",
-    )
-    group.add_argument(
-        "--arena-truncated-turn-min-adv",
-        type=float,
-        default=-1.0,
-        help="shift rule: the floor of the shifted advantage on a continued clipped turn. Default: -1.0.",
-    )
-    group.add_argument(
-        "--arena-keep-timeout-trajectories",
-        action="store_true",
-        default=False,
-        help="Keep token-level (GenerateClient) trajectories whose agent loop "
-        "stopped with agent_stop_reason=timeout (the Harbor agent hit its "
-        "per-task wall-clock deadline) as training samples when that is the "
-        "only defect: loss_mask untouched, remove_sample stays False, status "
-        "stays TRUNCATED. Timeout trajectories that also have a clipped "
-        "final turn, a hard context overflow or zero-filled logprobs are "
-        "still removed (a clipped final turn can be salvaged by "
-        "--arena-mask-clipped-final-turn). Default: remove them "
-        "(the r5-lineage default).",
-    )
-    group.add_argument(
-        "--arena-keep-context-error-trajectories",
-        action="store_true",
-        default=False,
-        help="Keep token-level (GenerateClient) trajectories whose agent loop "
-        "stopped with agent_stop_reason=context_error (the arena Terminus-2 "
-        "agent ended the episode because the next turn's prompt exceeded the "
-        "engine context window) as training samples when that is the only "
-        "defect: loss_mask untouched, remove_sample stays False, status stays "
-        "TRUNCATED. Same precedence rules as "
-        "--arena-keep-timeout-trajectories. Default: remove them.",
     )
     group.add_argument("--gym-autoscale", action="store_true", default=False)
     group.add_argument(

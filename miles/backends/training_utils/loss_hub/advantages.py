@@ -185,22 +185,16 @@ def normalize_advantages(
 def apply_advantage_scale(
     advantages: list[torch.Tensor],
     scales: list[torch.Tensor],
-    *,
-    positive_only: bool = False,
 ) -> list[torch.Tensor]:
     """Multiply a per-token scale into the per-token advantages, in place.
 
-    The rollout side fills ``advantage_scale`` with one per token and a rule
-    value on selected spans (0 masks, -1 flips). With ``positive_only`` a
-    negative scale acts only where the advantage is positive; a token with a
-    negative advantage under a negative scale gets zero. The sign of the
-    advantage is known only here, after reward normalization, so this is the
-    one branch the ``flip_positive`` rule needs.
+    ``Sample.advantage_scale`` is None (all ones) unless a rollout path sets
+    it; the arena plugin sets none today. The scale is applied before OPD and
+    before whitening.
 
     Args:
         advantages: List of per-token advantage tensors, modified in place.
         scales: One tensor per sample, same shape as the advantages.
-        positive_only: Restrict a negative scale to positive advantages.
 
     Returns:
         The ``advantages`` list.
@@ -217,49 +211,5 @@ def apply_advantage_scale(
                 f"advantage_scale shape mismatch at sample {i}: advantages={tuple(adv.shape)}, "
                 f"scale={tuple(scale.shape)}."
             )
-        if positive_only:
-            scale = torch.where(scale < 0, torch.where(adv > 0, scale, torch.zeros_like(scale)), scale)
         advantages[i] = adv * scale
-    return advantages
-
-
-def apply_truncated_turn_shift(
-    advantages: list[torch.Tensor],
-    scales: list[torch.Tensor],
-    *,
-    lam: float,
-    min_adv: float,
-) -> list[torch.Tensor]:
-    """Shift a positive advantage down on a marked span, in place (``shift`` rule).
-
-    The rollout side marks a continued clipped turn with a negative
-    ``advantage_scale``. On a marked token with a positive advantage the new
-    value is ``max(adv - lam, min_adv)``. A marked token with an advantage
-    at or below zero, and every unmarked token, keep their advantage. The
-    caller runs this before OPD and before whitening, so ``adv`` is the
-    group-normalized episode advantage.
-
-    Args:
-        advantages: List of per-token advantage tensors, modified in place.
-        scales: One tensor per sample, same shape as the advantages; a value
-            below zero marks a span token.
-        lam: The amount subtracted from a positive advantage.
-        min_adv: The floor of the shifted advantage.
-
-    Returns:
-        The ``advantages`` list.
-    """
-    if len(advantages) != len(scales):
-        raise ValueError(f"advantage_scale length mismatch: advantages={len(advantages)}, scales={len(scales)}.")
-    for i, adv in enumerate(advantages):
-        scale = scales[i]
-        if not torch.is_tensor(scale):
-            scale = torch.tensor(scale, dtype=torch.float32)
-        scale = scale.detach().to(device=adv.device, dtype=adv.dtype)
-        if scale.shape != adv.shape:
-            raise ValueError(
-                f"advantage_scale shape mismatch at sample {i}: advantages={tuple(adv.shape)}, "
-                f"scale={tuple(scale.shape)}."
-            )
-        advantages[i] = torch.where((scale < 0) & (adv > 0), torch.clamp_min(adv - lam, min_adv), adv)
     return advantages

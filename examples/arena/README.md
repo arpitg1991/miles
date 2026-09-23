@@ -91,6 +91,13 @@ within hours. A row with a repository prefix lives in `arena-slime-dev`.
   (`user`, `cluster`, `experiment_name`, `project_name`, `agislime_dir`,
   `replicas`, `num_trainers`, `model_arch`) and appends `--wandb-group`,
   `--load/--save/--save-hf` and the node math from the pod env.
+- Clipped turns and stop reasons (2026-09-23): the gym masks a clipped or
+  empty generate in `loss_mask`; the trainer applies no advantage transform
+  and keeps every episode whose verifier ran, whatever `agent_stop_reason`
+  says. Only a broken token stream is removed (`context_overflow`,
+  `bad_logprobs`). The flags in the lineage tables above
+  (`--arena-mask-clipped-final-turn`, `--arena-keep-*-trajectories`,
+  `--arena-truncated-turn-*`) are history and no longer parse.
 - Cluster: kubectl context `arena-prod-bom-v2`, namespace `arena-tasks`, kueue
   queue `gpu.p6-b200-48xlarge`. Check for kueue TAS mis-pins within ~2 min of
   every apply (GLM README step 4); one NATS broker per run (JetStream stream

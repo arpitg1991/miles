@@ -66,9 +66,6 @@ def _args(**overrides: object) -> pytypes.SimpleNamespace:
         moe_router_topk=K,
         n_samples_per_prompt=N,
         arena_train_segments="final",
-        arena_mask_clipped_final_turn=False,
-        arena_keep_timeout_trajectories=False,
-        arena_keep_context_error_trajectories=False,
         use_rollout_logprobs=True,
         rollout_max_context_len=None,
         sglang_context_length=None,
@@ -304,12 +301,13 @@ def test_process_group_does_not_swallow_routing_error() -> None:
 
 
 def test_missing_payload_on_removed_sample_gets_zeros() -> None:
-    args = _args()
-    # stop_reason "length" -> TRUNCATED -> remove_sample; no payload shipped.
-    s = _one_sample(args, _traj(tok_n=8, stop_reason="length"))
+    # A hard context overflow (8 tokens > max_ctx 7) removes the sample; no payload shipped.
+    args = _args(rollout_max_context_len=7)
+    s = _one_sample(args, _traj(tok_n=8))
     assert s.remove_sample
+    assert s.metadata["removal_reason"] == "context_overflow"
     materialize_group_routing([s], args)
-    assert s.rollout_routed_experts.shape == (7, L, K)
+    assert s.rollout_routed_experts.shape == (6, L, K)
     assert (s.rollout_routed_experts == -1).all()
 
 
@@ -405,8 +403,9 @@ def test_ref_outside_root_on_removed_sample_gets_zeros_and_keeps_file(routing_ro
     outside = tmp_path / "checkpoints"
     outside.mkdir()
     ref = _ref(outside, _raw(7))
-    args = _args()
-    s = _one_sample(args, _traj(tok_n=8, stop_reason="length", routed_experts_ref=ref))
+    # A hard context overflow (8 tokens > max_ctx 7) removes the sample.
+    args = _args(rollout_max_context_len=7)
+    s = _one_sample(args, _traj(tok_n=8, routed_experts_ref=ref))
     assert s.remove_sample and REF_KEY not in s.metadata
     materialize_group_routing([s], args)
     assert (s.rollout_routed_experts == -1).all()

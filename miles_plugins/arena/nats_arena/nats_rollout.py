@@ -9,9 +9,10 @@ Sample conversion (``full_trajectory``): the entire multi-turn conversation
 becomes one Sample. When the gym used the GenerateClient, real token-level
 data (token_ids/loss_mask/log_probs) flows through directly; otherwise the
 conversation is tokenised locally via ``MultiTurnLossMaskGenerator``. Under
-``--arena-train-segments all`` a compacted episode (several self-contained
-``steps`` with ``segment_end`` markers) becomes one Sample per segment; the
-segments share one ``rollout_id`` and one reward (ADR-0011).
+``--arena-train-segments all`` (the default) a compacted episode (several
+self-contained ``steps`` with ``segment_end`` markers) becomes one Sample per
+segment; the segments share one ``rollout_id`` and one reward (ADR-0011).
+``final`` trains the last step only.
 
 Wired in via ``--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.generate_rollout``.
 """
@@ -340,22 +341,27 @@ async def _ensure_nats(cfg, existing_nc=None, *, purge_on_init=True, is_reconnec
 # episode keeps its exact identity in both modes (ADR-0011).
 _SEGMENT_INDEX_STRIDE = 1 << 40
 
+# ``--arena-train-segments`` default. The argparse hook and the no-hook
+# fallback below read the same constant, so the plugin has one default.
+_TRAIN_SEGMENTS_DEFAULT = "all"
+
 
 def _train_segments_mode(args) -> str:
-    """Return the ``--arena-train-segments`` value; ``final`` when the hook never ran."""
-    return str(getattr(args, "arena_train_segments", None) or "final")
+    """Return the ``--arena-train-segments`` value; the flag default when the hook never ran."""
+    return str(getattr(args, "arena_train_segments", None) or _TRAIN_SEGMENTS_DEFAULT)
 
 
 def _training_steps(steps: list[dict], args) -> list[dict]:
     """Select the trajectory steps that become training samples.
 
-    ``final`` (default) trains ``steps[-1]`` only, exactly as before. ``all``
-    trains one Sample per step, but ONLY when at least one step carries the
-    explicit ``segment_end`` marker that the Harbor gym stamps on an archived
-    compaction segment (AREnATasks ADR-0048). The Inspect ``sglang_perstep``
-    provider ships cumulative per-turn steps with ``has_generate_tokens`` on
-    every step and no marker, so it stays on the ``steps[-1]`` path in both
-    modes (ADR-0011).
+    ``all`` (default) trains one Sample per step, but ONLY when at least one
+    step carries the explicit ``segment_end`` marker that the Harbor gym stamps
+    on an archived compaction segment (AREnATasks ADR-0048). ``final`` trains
+    ``steps[-1]`` only. A step list without the marker, including every
+    single-step trajectory, takes the ``steps[-1]`` path in both modes. The
+    Inspect ``sglang_perstep`` provider ships cumulative per-turn steps with
+    ``has_generate_tokens`` on every step and no marker, so it stays on that
+    path too (ADR-0011).
     """
     if _train_segments_mode(args) == "all" and any(st.get("segment_end") for st in steps):
         return [st for st in steps if st.get("has_generate_tokens")]
@@ -1180,9 +1186,9 @@ class NATSRolloutWorker:
         self.concurrency = args.rollout_batch_size
         self.inflight_multiplier = int(getattr(args, "arena_inflight_multiplier", 2))
         self.max_in_flight = _publisher_max_in_flight(args)
-        # ``--arena-train-segments``: ``final`` (today) or ``all`` (one Sample
-        # per compaction segment, shared rollout_id; ADR-0011). Read by
-        # generate_rollout's partial-batch guard.
+        # ``--arena-train-segments``: ``all`` (default; one Sample per
+        # compaction segment, shared rollout_id; ADR-0011) or ``final`` (last
+        # step only). Read by generate_rollout's partial-batch guard.
         self._train_segments = _train_segments_mode(args)
 
         # Tokenizer is used by _result_to_samples_full_trajectory to tokenise
@@ -2600,10 +2606,12 @@ def _add_arena_arguments(parser):
         "--arena-train-segments",
         type=str,
         choices=("final", "all"),
-        default="final",
-        help="final = train the last step only (today); all = one Sample per "
-        "compaction segment sharing one rollout_id (ADR-0011). 'all' expands "
-        "a step list only when a step carries the gym's segment_end marker.",
+        default=_TRAIN_SEGMENTS_DEFAULT,
+        help="all (default) = one Sample per compaction segment, sharing one "
+        "rollout_id (ADR-0011); a step list expands only when a step carries "
+        "the gym's segment_end marker, so a single-step trajectory trains the "
+        "same in both modes. final = train the last step only (opt out of "
+        "segment training).",
     )
     group.add_argument(
         "--arena-inflight-multiplier",

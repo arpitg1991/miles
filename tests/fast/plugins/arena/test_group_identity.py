@@ -7,10 +7,11 @@ miles has no ``group_id`` and its ``rollout_id`` means something different
 port therefore stamps a shared ``group_index`` (keys miles' GRPO reward
 normalization segments), a unique ``index == gid * n_samples_per_prompt + i``
 (int64-packable, per-trajectory loss denominators), and deliberately leaves
-``rollout_id`` None. ADR-0011 amends this for ``--arena-train-segments all``:
-the EPISODE id (never the group id) is stamped on ``rollout_id`` so compaction
-segments of one episode share one reward; the default ``final`` mode keeps the
-assertions below byte-identical. A regression to ``rollout_id=gid`` would
+``rollout_id`` None. ADR-0011 amends this for ``--arena-train-segments all``
+(the flag default since 2026-09-24): the EPISODE id (never the group id) is
+stamped on ``rollout_id`` so compaction segments of one episode share one
+reward. ``_make_args`` pins ``final`` explicitly, which keeps the assertions
+below byte-identical. A regression to ``rollout_id=gid`` would
 crash the 27B job at step 1 with "all samples in rollout N must share one
 reward"; a dropped ``index`` stamp would crash int64 packing — both reproduced
 during verification, neither caught by the wire-format suite.
@@ -64,6 +65,9 @@ def _make_args(**overrides) -> pytypes.SimpleNamespace:
         rewards_normalization=True,
         grpo_std_normalization=True,
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
+        # The ADR-0003 pins below hold in ``final`` mode; ``all`` (the flag
+        # default) stamps the episode id on ``rollout_id`` (ADR-0011).
+        arena_train_segments="final",
         rollout_batch_size=2,
         global_batch_size=8,
         reward_key=None,

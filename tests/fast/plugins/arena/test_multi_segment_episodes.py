@@ -2,17 +2,18 @@
 
 The Harbor gym may ship a trajectory whose ``steps`` holds several
 self-contained compaction segments (AREnATasks ADR-0048): archived segments
-carry ``segment_end`` and no ``stop_reason``; the final segment is last. The
-default ``final`` mode trains ``steps[-1]`` only (byte-identical to today).
-``all`` trains one Sample per segment; every segment of an episode shares one
-``rollout_id`` (= today's ``index``) and the episode reward, ``index`` stays
-unique, truncation stays an episode property, and telemetry counts episodes.
+carry ``segment_end`` and no ``stop_reason``; the final segment is last.
+``all`` (the flag default) trains one Sample per segment; every segment of an
+episode shares one ``rollout_id`` (= the ``final``-mode ``index``) and the
+episode reward, ``index`` stays unique, truncation stays an episode property,
+and telemetry counts episodes. ``final`` trains ``steps[-1]`` only.
 
 Run: python -m pytest tests/fast/plugins/arena/test_multi_segment_episodes.py -v
 """
 
 from __future__ import annotations
 
+import argparse
 import logging
 import queue
 import types as pytypes
@@ -35,10 +36,12 @@ from miles_plugins.arena.nats_arena import nats_rollout
 from miles_plugins.arena.nats_arena.nats_rollout import (
     _SEGMENT_INDEX_STRIDE,
     NATSRolloutWorker,
+    _add_arena_arguments,
     _batch_telemetry,
     _pad_rows_to_dp_alignment,
     _result_to_episodes_full_trajectory,
     _result_to_samples_full_trajectory,
+    _train_segments_mode,
     _training_steps,
     generate_rollout,
 )
@@ -104,7 +107,7 @@ def _three_segments(stop_reason: str = "stop", final: list[int] | None = None) -
     ]
 
 
-def _args(mode: str = "final", **overrides) -> pytypes.SimpleNamespace:
+def _args(mode: str = "all", **overrides) -> pytypes.SimpleNamespace:
     fields = {"arena_train_segments": mode}
     fields.update(overrides)
     return pytypes.SimpleNamespace(**fields)
@@ -147,7 +150,16 @@ def _episodes_with_segments(counts: list[int], rewards: list[float] | None = Non
 # ===========================================================================
 
 
-def test_default_final_mode_reads_last_step_only():
+def test_argparse_default_is_all():
+    parser = argparse.ArgumentParser()
+    _add_arena_arguments(parser)
+    assert parser.parse_args([]).arena_train_segments == "all"
+    assert parser.parse_args(["--arena-train-segments", "final"]).arena_train_segments == "final"
+    # A namespace without the attribute (no argparse hook) reads the same default.
+    assert _train_segments_mode(pytypes.SimpleNamespace()) == "all"
+
+
+def test_final_mode_reads_last_step_only():
     episodes = _result_to_episodes_full_trajectory(
         _result([_traj(_three_segments())]), tokenizer=None, args=_args("final")
     )

@@ -10,6 +10,7 @@ ADR-0009 (`--arena-mask-clipped-final-turn`), ADR-0010 (`--arena-keep-timeout-tr
 **Pairs with:** AREnATasks ADR-0063 (Vulcan context compaction and rollout
 segments; the gym side of this contract)
 **Amended by:** ADR-0013 (the "Truncation stays an episode property" and "Harbor chain step" bullets describe flags and `truncated_spans` removed on 2026-09-23; the segment stamping and the DP pad stand)
+**Amended:** 2026-09-24 (`feat(arena): default --arena-train-segments to all`): the flag default is `all`; `final` stays as the opt-out. The Decision section below records the original `final` default.
 
 ## Context
 
@@ -69,9 +70,12 @@ onto the NATS path. It adds no core edit.
 
 ## Decision
 
-Add `--arena-train-segments {final,all}` (`type=str`, `default="final"`,
-registered in `_add_arena_arguments`, read via `getattr` so `args=None`
-callers keep the old behaviour). The default is byte-identical to today.
+Add `--arena-train-segments {final,all}` (`type=str`, registered in
+`_add_arena_arguments`, read via `getattr` so `args=None` callers get the
+default). The default was `final`, byte-identical to the pre-ADR shape, from
+r12 until 2026-09-24; since then the default is `all` and `final` is the
+opt-out (`_TRAIN_SEGMENTS_DEFAULT` in `nats_rollout.py`: one constant for the
+argparse default and the no-hook fallback).
 
 | Mode | Steps trained | Stamping per episode `e` of group `gid` (`base = gid*n + e`) |
 | --- | --- | --- |
@@ -81,7 +85,7 @@ callers keep the old behaviour). The default is byte-identical to today.
 - **One `Sample` per segment, one episode.** `_result_to_episodes_full_trajectory`
   returns `list[list[Sample]]`; `_step_to_sample` lifts the fast-path body and
   runs once per training step. `_result_to_samples_full_trajectory` flattens
-  it, so its signature and default-mode output are unchanged. `_process_group`
+  it, so its signature and `final`-mode output are unchanged. `_process_group`
   pads and trims in episodes, then flattens before `output_queue.put`.
 - **Gate on `segment_end`.** `all` expands a step list only when some step
   carries the explicit marker. Inspect `sglang_perstep` step lists never
@@ -208,7 +212,7 @@ callers keep the old behaviour). The default is byte-identical to today.
 | Alternative | Why rejected |
 | --- | --- |
 | Concatenate the segments into one sample | Breaks importance sampling. Each segment's `rollout_log_probs` were produced under that segment's exact prompt; the actor recomputes log-probs on the same `tokens`, so the ratios are exact only per segment. A concatenation changes the conditioning context of every post-compaction token. miles asserts prefix extension when it merges samples for this reason (`miles/rollout/generate_utils/sample_utils.py:138`). |
-| Train the final segment only (`steps[-1]`) | Kept as the default `final`. Loses the handoff note and every pre-compaction turn from the gradient; an old trainer on a new gym degrades to this path. |
+| Train the final segment only (`steps[-1]`) | Kept as the `final` opt-out (the default until 2026-09-24). Loses the handoff note and every pre-compaction turn from the gradient; an old trainer on a new gym degrades to this path. |
 | Stamp the group id on `rollout_id` | Rejected in ADR-0003 and still wrong: miles demands one reward per group. |
 | Per-segment truncation (mark only the clipped segment TRUNCATED) | Drifts from today's whole-episode semantics and from the `truncated_ratio` meaning "the agent loop did not finish". ADR-0009's final-turn salvage stays the only exception. |
 | Expand every multi-step trajectory without a marker | Inspect `sglang_perstep` cumulative steps train the same tokens once per turn. |
@@ -269,9 +273,9 @@ callers keep the old behaviour). The default is byte-identical to today.
     padded 10;
   - `final` mode never pads.
 
-  `test_group_identity.py` is unchanged and still pins `rollout_id=None`
-  under the default mode; its module docstring records this amendment.
-- **ADR-0003 status.** Its decision stands for the default mode and its
+  `test_group_identity.py` pins `rollout_id=None` under an explicit
+  `arena_train_segments="final"`; its module docstring records this amendment.
+- **ADR-0003 status.** Its decision stands for `final` mode and its
   rejection of the GROUP id stands in every mode. Read its sentence
   "`rollout_id` deliberately stays None" as scoped to `final` mode; its
   header carries an `Amended by` pointer to this ADR.

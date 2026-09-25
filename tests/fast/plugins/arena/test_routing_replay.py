@@ -11,13 +11,24 @@ lost-ref path (r27 and r28, 2026-09-20): a redelivered result keeps the refs
 of its queued group, and a group whose blob is gone leaves the batch without
 an exception.
 
+It also covers per-step token arrays by file reference (ADR-0014): the
+``token_arrays_by_ref`` task flag, inline and ref results that give equal
+Samples, bit-identical float64 decode, the sha256, byte-count and
+``n_tokens`` checks, a missing file, file deletion after the read, the
+containment check, the reap on every drop path, and the per-trajectory drop
+that never kills the run.
+
 Run: python -m pytest tests/fast/plugins/arena/test_routing_replay.py -v
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
+import json
+import logging
 import queue
+import struct
 import threading
 import types as pytypes
 from pathlib import Path
@@ -40,12 +51,17 @@ from miles_plugins.arena.nats_arena.routing_replay import (
     INLINE_KEY,
     REF_KEY,
     ROUTING_DIR_ENV,
+    TOKEN_BYTES_PER_TOKEN,
+    TOKEN_REF_KEY,
+    TOKEN_SUFFIX,
     RoutingRefLostError,
     RoutingReplayError,
+    TokenArraysRefError,
     decode_routing,
     materialize_group_routing,
     reap_result_refs,
     reap_sample_refs,
+    resolve_token_arrays,
 )
 
 register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
@@ -155,6 +171,30 @@ def test_sample_to_task_passes_flag_through() -> None:
     s.metadata = {"instance_id": "i", "lakefs_uri": "lakefs://r/b/i/", "lakefs_commit_id": "c"}
     assert "capture_routed_experts" not in sample_to_task(s)
     assert sample_to_task(s, capture_routed_experts=True)["capture_routed_experts"] is True
+
+
+def test_token_flag_off_is_byte_identical() -> None:
+    base = build_task_message("t", lakefs_uri="x", lakefs_commit_id="y", session="s", capture_routed_experts=True)
+    off = build_task_message(
+        "t", lakefs_uri="x", lakefs_commit_id="y", session="s", capture_routed_experts=True, token_arrays_by_ref=False
+    )
+    assert off == base
+    assert json.dumps(off) == json.dumps(base)
+    assert "token_arrays_by_ref" not in off
+
+
+def test_token_flag_on_is_top_level_true() -> None:
+    msg = build_task_message("t", lakefs_uri="x", lakefs_commit_id="y", token_arrays_by_ref=True)
+    assert msg["token_arrays_by_ref"] is True
+    # The gym contract reads raw.get("token_arrays_by_ref"), not metadata.
+    assert "token_arrays_by_ref" not in msg["metadata"]
+
+
+def test_sample_to_task_passes_token_flag_through() -> None:
+    s = Sample()
+    s.metadata = {"instance_id": "i", "lakefs_uri": "lakefs://r/b/i/", "lakefs_commit_id": "c"}
+    assert "token_arrays_by_ref" not in sample_to_task(s)
+    assert sample_to_task(s, token_arrays_by_ref=True)["token_arrays_by_ref"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -711,6 +751,25 @@ def test_redelivered_accepted_result_keeps_its_refs(tmp_path: Path) -> None:
     assert not Path(ref["path"]).exists()
 
 
+def test_redelivered_accepted_result_reaps_only_its_token_files(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A second run of an accepted task (a task redelivery after the gym
+    # published) writes new token files that nobody reads. The accepted-tid
+    # path deletes them and keeps the routing file (ADR-0014).
+    routing = _ref(tmp_path, _raw(7), name="rerun.routing")
+    wire = _by_ref(tmp_path, _chain(tok_n=8), "rerun")
+    wire["steps"][-1][REF_KEY] = routing
+    result = _result("t.g1.", [wire])
+    nats_rollout._discard_stale_result(result, "t.g1.", {"t.g1."})
+    assert list(tmp_path.iterdir()) == [Path(routing["path"])]
+    # A redelivery of the same message: the token files are already gone.
+    with caplog.at_level(logging.WARNING):
+        nats_rollout._discard_stale_result(result, "t.g1.", {"t.g1."})
+    assert list(tmp_path.iterdir()) == [Path(routing["path"])]
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
 def test_generate_rollout_drops_group_with_lost_ref_and_continues(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # Reap then read: the trainer accepted a result, queued its group, then a
     # redelivered copy of the same result went down the reap path. The whole
@@ -738,3 +797,292 @@ def test_generate_rollout_still_fails_on_corrupt_ref(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker([[bad]]))
     with pytest.raises(RoutingReplayError, match="sha256"):
         generate_rollout(_rollout_args(), 0, data_source=pytypes.SimpleNamespace())
+
+
+# ---------------------------------------------------------------------------
+# Token arrays by file reference (ADR-0014)
+# ---------------------------------------------------------------------------
+
+_ARRAY_KEYS = ("token_ids", "loss_mask", "log_probs")
+_ROLLOUT_LOGGER = "miles_plugins.arena.nats_arena.nats_rollout"
+
+
+def _token_ref(dir_: Path, step: dict, name: str = "seg.tokens", **overrides: object) -> dict:
+    """Write ``step``'s arrays in the gym layout; return the ``token_arrays_ref`` value."""
+    raw = (
+        np.asarray(step["log_probs"], dtype="<f8").tobytes()
+        + np.asarray(step["token_ids"], dtype="<i4").tobytes()
+        + np.asarray(step["loss_mask"], dtype="u1").tobytes()
+    )
+    path = dir_ / name
+    path.write_bytes(raw)
+    ref: dict = {
+        "path": str(path),
+        "bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "n_tokens": len(step["token_ids"]),
+    }
+    ref.update(overrides)
+    return ref
+
+
+def _by_ref(dir_: Path, traj: dict, name: str, **overrides: object) -> dict:
+    """The wire copy that a new gym sends: arrays in ``.tokens`` files, no ``messages``."""
+    wire = {k: v for k, v in copy.deepcopy(traj).items() if k != "messages"}
+    steps = []
+    for j, step in enumerate(wire["steps"]):
+        moved = {k: v for k, v in step.items() if k not in _ARRAY_KEYS}
+        moved[TOKEN_REF_KEY] = _token_ref(dir_, step, name=f"{name}-s{j}.tokens", **overrides)
+        steps.append(moved)
+    wire["steps"] = steps
+    return wire
+
+
+def _chain(tok_n: int = 8) -> dict:
+    """A two-segment episode: one archived compaction segment, then the final step."""
+    traj = _traj(tok_n=tok_n)
+    final = traj["steps"][0]
+    archived = {k: v for k, v in final.items() if k != "stop_reason"}
+    archived["segment_end"] = "compaction"
+    traj["steps"] = [archived, final]
+    return traj
+
+
+def _token_paths(traj: dict) -> list[Path]:
+    return [Path(st[TOKEN_REF_KEY]["path"]) for st in traj["steps"]]
+
+
+def test_token_ref_error_is_not_fatal() -> None:
+    # The worker loop stores any RoutingReplayError as fatal_error.
+    assert not issubclass(TokenArraysRefError, RoutingReplayError)
+
+
+def test_token_ref_resolves_bit_identical_and_deletes_file(tmp_path: Path) -> None:
+    step = _traj(tok_n=8)["steps"][0]
+    step["log_probs"] = [-0.0, float("nan"), 5e-324, 1e-300, -12.345678901234567, -0.1, 0.0, -3.5]
+    step["token_ids"] = [0, 1, 2**31 - 1, -(2**31), 151_000, 5, 6, 7]
+    inline = copy.deepcopy(step)
+    wire = {k: v for k, v in step.items() if k not in _ARRAY_KEYS}
+    wire[TOKEN_REF_KEY] = _token_ref(tmp_path, step)
+    path = Path(wire[TOKEN_REF_KEY]["path"])
+
+    resolve_token_arrays(wire)
+    assert wire["token_ids"] == inline["token_ids"]
+    assert wire["loss_mask"] == inline["loss_mask"]
+    # float64 keeps every value, NaN and -0.0 included, bit-identical to the
+    # double that json.loads gives for the inline list today.
+    today = json.loads(json.dumps(inline["log_probs"]))
+    assert np.array(wire["log_probs"], "<f8").tobytes() == np.array(today, "<f8").tobytes()
+    assert all(type(v) is int for v in wire["token_ids"] + wire["loss_mask"])
+    assert all(type(v) is float for v in wire["log_probs"])
+    assert TOKEN_REF_KEY not in wire
+    assert not path.exists(), "a consumed token file must be deleted"
+    assert {k: v for k, v in wire.items() if k != "log_probs"} == {
+        k: v for k, v in inline.items() if k != "log_probs"
+    }
+
+
+def test_token_wire_literals_match_the_gym(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Mirror of AREnATasks test_token_arrays_ref_shape_matches_trainer_decoder.
+    # The literals are the wire: a rename on this side breaks every new gym.
+    assert TOKEN_REF_KEY == "token_arrays_ref"
+    assert TOKEN_SUFFIX == ".tokens"
+    assert TOKEN_BYTES_PER_TOKEN == 13
+    assert ROUTING_DIR_ENV == "ARENA_ROUTING_DIR"
+    monkeypatch.setenv("ARENA_ROUTING_DIR", str(tmp_path))
+    raw = struct.pack("<4d", 0.0, 0.0, -0.25, -1.5) + struct.pack("<4i", 1, 2, 3, 901) + struct.pack("4B", 0, 0, 1, 1)
+    path = tmp_path / "t-0-0.tokens"
+    path.write_bytes(raw)
+    ref = {"path": str(path), "bytes": 52, "sha256": hashlib.sha256(raw).hexdigest(), "n_tokens": 4}
+    step = {"has_generate_tokens": True, "token_arrays_ref": ref}
+    resolve_token_arrays(step)
+    assert step == {
+        "has_generate_tokens": True,
+        "log_probs": [0.0, 0.0, -0.25, -1.5],
+        "token_ids": [1, 2, 3, 901],
+        "loss_mask": [0, 0, 1, 1],
+    }
+    assert not path.exists()
+
+
+def test_inline_step_is_left_unchanged() -> None:
+    step = _traj(tok_n=8)["steps"][0]
+    before = copy.deepcopy(step)
+    resolve_token_arrays(step)
+    assert step == before
+
+
+@pytest.mark.parametrize("mode", ["final", "all"])
+def test_process_group_ref_equals_inline(tmp_path: Path, mode: str) -> None:
+    args = _args(use_rollout_routing_replay=False, arena_train_segments=mode)
+    trajs = [_chain(tok_n=8), _traj(tok_n=6, prompt_n=2)]
+    trajs[0]["steps"][-1]["log_probs"] = [-0.5 - k / 7 for k in range(8)]
+    trajs[1]["reward"] = 0.0
+    wire = [_by_ref(tmp_path, t, f"t{i}") for i, t in enumerate(trajs)]
+    inline_worker, ref_worker = _make_worker(args), _make_worker(args)
+    inline_worker._process_group("t.g0.", [_result("t.g0.", copy.deepcopy(trajs))])
+    ref_worker._process_group("t.g0.", [_result("t.g0.", wire)])
+
+    inline_group = inline_worker.output_queue.get_nowait()
+    ref_group = ref_worker.output_queue.get_nowait()
+    assert len(ref_group) == len(inline_group) == (3 if mode == "all" else 2)
+    for a, b in zip(inline_group, ref_group, strict=True):
+        assert b.tokens == a.tokens
+        assert b.loss_mask == a.loss_mask
+        assert b.response_length == a.response_length
+        assert b.rollout_log_probs == a.rollout_log_probs
+        assert b.reward == a.reward
+        assert b.status == a.status and b.remove_sample == a.remove_sample
+        assert b.metadata == a.metadata
+    assert list(tmp_path.iterdir()) == [], "every token file is read and deleted, or reaped"
+
+
+def test_fast_path_without_messages_trains() -> None:
+    # The gym leaves out messages only when steps[-1] has has_generate_tokens.
+    traj = _traj(tok_n=8)
+    del traj["messages"]
+    s = _one_sample(_args(use_rollout_routing_replay=False), traj)
+    assert not s.remove_sample and s.response_length == 5
+
+
+@pytest.mark.parametrize("mode", ["final", "all"])
+def test_chain_without_messages_takes_the_token_path_in_both_modes(mode: str) -> None:
+    traj = _chain(tok_n=8)
+    del traj["messages"]
+    args = _args(use_rollout_routing_replay=False, arena_train_segments=mode)
+    episodes = _result_to_episodes_full_trajectory(_result("t.g0.", [traj]), None, args)
+    assert [len(e) for e in episodes] == [2 if mode == "all" else 1]
+    assert not any(s.remove_sample for s in episodes[0])
+
+
+@pytest.mark.parametrize(
+    ("override", "match"),
+    [
+        ({"sha256": "0" * 64}, "sha256 mismatch"),
+        ({"bytes": 4}, "byte count mismatch"),
+        ({"n_tokens": 5}, "n_tokens=5"),
+        ({"n_tokens": True}, "n_tokens=True"),
+        (None, "unreadable"),
+    ],
+    ids=["sha256", "bytes", "n_tokens", "n_tokens_bool", "missing_file"],
+)
+def test_bad_token_ref_drops_only_that_trajectory(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, override: dict | None, match: str
+) -> None:
+    args = _args()  # R3 on: the bad trajectory's routing file must be reaped too.
+    routing = _ref(tmp_path, _raw(7), name="bad.routing")
+    bad = _by_ref(tmp_path, _traj(tok_n=8, routed_experts_ref=routing), "bad", **(override or {}))
+    if override is None:
+        _token_paths(bad)[0].unlink()
+    good = _by_ref(tmp_path, _traj(tok_n=8, routed_experts=_b64(_raw(7))), "good")
+    worker = _make_worker(args)
+    with caplog.at_level(logging.WARNING, logger=_ROLLOUT_LOGGER):
+        worker._process_group("t.g0.", [_result("t.g0.", [bad, good])])
+
+    assert worker.fatal_error is None
+    real, pad = worker.output_queue.get_nowait()
+    assert not real.remove_sample and real.tokens == list(range(8))
+    assert pad.status == Sample.Status.FAILED
+    assert pad.metadata["failed_reason"] == "token_ref"
+    assert list(tmp_path.iterdir()) == [], "the bad file, its routing file and the good file are all gone"
+    skipped = [r.getMessage() for r in caplog.records if "skipping synthetic trajectory" in r.getMessage()]
+    assert len(skipped) == 1 and "reason=token_ref" in skipped[0] and match in skipped[0]
+    assert worker.pop_dropped_group_metrics()["rollout/dropped_groups/token_ref"] == 0
+
+
+def test_all_bad_token_refs_drop_the_group_as_token_ref(tmp_path: Path) -> None:
+    args = _args(use_rollout_routing_replay=False)
+    trajs = [_by_ref(tmp_path, _traj(tok_n=8), f"t{i}", sha256="0" * 64) for i in range(N)]
+    worker = _make_worker(args)
+    worker._process_group("t.g0.", [_result("t.g0.", trajs)])
+    assert worker.output_queue.empty()
+    assert worker.fatal_error is None
+    assert worker.pop_dropped_group_metrics()["rollout/dropped_groups/token_ref"] == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_token_ref_outside_root_or_wrong_suffix_is_not_read_or_deleted(routing_root: Path, tmp_path: Path) -> None:
+    outside = tmp_path / "checkpoints"
+    outside.mkdir()
+    step = _traj(tok_n=8)["steps"][0]
+    cases = ((outside, "x.tokens", "outside"), (routing_root, "model.safetensors", "does not end with"))
+    for dir_, name, match in cases:
+        ref = _token_ref(dir_, step, name=name)
+        with pytest.raises(TokenArraysRefError, match=match):
+            resolve_token_arrays({TOKEN_REF_KEY: ref})
+        assert Path(ref["path"]).exists(), "a rejected ref must never be read or deleted"
+        reap_result_refs([_result("t", [{"steps": [{TOKEN_REF_KEY: ref}]}])])
+        assert Path(ref["path"]).exists(), "reap must not unlink a rejected ref"
+
+    # Through the worker: the slot becomes a pad, the sibling trains, the file stays.
+    victim = _by_ref(outside, _traj(tok_n=8), "victim")
+    worker = _make_worker(_args(use_rollout_routing_replay=False))
+    worker._process_group("t.g0.", [_result("t.g0.", [victim, _by_ref(routing_root, _traj(tok_n=8), "ok")])])
+    real, pad = worker.output_queue.get_nowait()
+    assert not real.remove_sample and pad.metadata["failed_reason"] == "token_ref"
+    assert all(p.exists() for p in _token_paths(victim))
+    # The sibling's file is read and deleted; the rejected file from above stays.
+    assert [p.name for p in routing_root.iterdir()] == ["model.safetensors"]
+
+
+# Every drop path deletes the token files it owns.
+
+
+def test_reap_result_refs_deletes_token_and_routing_files(routing_root: Path) -> None:
+    routing = _ref(routing_root, _raw(7), name="a.routing")
+    wire = _by_ref(routing_root, _chain(tok_n=8), "a")
+    wire["steps"][-1]["routed_experts_ref"] = routing
+    reap_result_refs([_result("t", [wire])])
+    assert list(routing_root.iterdir()) == []
+
+
+def test_stale_result_reaps_token_files(tmp_path: Path) -> None:
+    wire = _by_ref(tmp_path, _traj(tok_n=8), "stale")
+    nats_rollout._discard_stale_result(_result("t.g5.", [wire]), "t.g5.", set())
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_failed_status_reaps_token_files(tmp_path: Path) -> None:
+    result = {**_result("t.g0.", [_by_ref(tmp_path, _chain(tok_n=8), f"f{i}") for i in range(N)]), "status": "failed"}
+    worker = _make_worker(_args(use_rollout_routing_replay=False))
+    worker._process_group("t.g0.", [result])
+    assert worker.output_queue.empty()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_unexpected_load_error_drops_the_result_and_reaps_every_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(step: dict) -> None:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(nats_rollout, "resolve_token_arrays", boom)
+    worker = _make_worker(_args(use_rollout_routing_replay=False))
+    worker._process_group("t.g0.", [_result("t.g0.", [_by_ref(tmp_path, _chain(tok_n=8), f"u{i}") for i in range(N)])])
+    assert worker.fatal_error is None
+    assert worker.output_queue.empty()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_conversion_error_reaps_unread_token_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Under final only the last step is read; the archived file waits unread
+    # until the conversion. A conversion error must still delete it.
+    def boom(result: dict, tokenizer: object, args: object) -> list:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(nats_rollout, "_result_to_episodes_full_trajectory", boom)
+    worker = _make_worker(_args(use_rollout_routing_replay=False))
+    worker._process_group("t.g0.", [_result("t.g0.", [_by_ref(tmp_path, _chain(tok_n=8), f"c{i}") for i in range(N)])])
+    assert worker.output_queue.empty()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_final_mode_reaps_untrained_token_refs(tmp_path: Path) -> None:
+    wire = _by_ref(tmp_path, _chain(tok_n=8), "final")
+    # A corrupt archived file proves that final mode never reads it.
+    wire["steps"][0][TOKEN_REF_KEY]["sha256"] = "0" * 64
+    worker = _make_worker(_args(use_rollout_routing_replay=False, n_samples_per_prompt=1))
+    worker._process_group("t.g0.", [_result("t.g0.", [wire])])
+    (sample,) = worker.output_queue.get_nowait()
+    assert not sample.remove_sample and sample.metadata["mode"] == "full_trajectory"
+    assert list(tmp_path.iterdir()) == [], "the archived step's file is reaped unread"

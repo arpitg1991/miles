@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import logging
 import queue
+import threading
 import types as pytypes
 
 import pytest
@@ -122,6 +123,9 @@ def _make_worker(args) -> NATSRolloutWorker:
     worker._output_group_counter = 0
     worker._tokenizer = None  # the fast path never touches it
     worker._train_segments = args.arena_train_segments
+    # A whole-group drop counts here (pop_dropped_group_metrics).
+    worker._dropped_groups = {}
+    worker._dropped_groups_lock = threading.Lock()
     return worker
 
 

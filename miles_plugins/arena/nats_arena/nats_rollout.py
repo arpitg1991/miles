@@ -345,6 +345,40 @@ _SEGMENT_INDEX_STRIDE = 1 << 40
 # fallback below read the same constant, so the plugin has one default.
 _TRAIN_SEGMENTS_DEFAULT = "all"
 
+# Why the gym dropped a trajectory, as a fixed set so the W&B keys
+# rollout/failed/<category> and rollout/dropped_groups/<category> stay bounded.
+# First match wins, on a lowercase substring of the gym reason text.
+# "chain aborted" comes from older gym images only.
+_FAILED_REASON_PATTERNS = (
+    ("cancellederror", "deadline"),
+    ("deadline", "deadline"),
+    ("no numeric reward", "no_reward"),
+    ("no verifier reward", "no_reward"),
+    ("rollout.json", "missing_rollout"),
+    ("chain aborted", "chain_abort"),
+)
+_FAILED_REASON_CATEGORIES = ("deadline", "no_reward", "missing_rollout", "chain_abort", "other", "unknown")
+
+
+def _failed_reason_category(text: Any) -> str:
+    """Map a gym drop reason (a trajectory or envelope ``error``) to a category."""
+    low = str(text or "").strip().lower()
+    if not low:
+        return "unknown"
+    return next((category for pattern, category in _FAILED_REASON_PATTERNS if pattern in low), "other")
+
+
+def _is_synthetic_trajectory(traj: dict[str, Any]) -> bool:
+    """True for a gym placeholder slot that has no real rollout behind it.
+
+    Newer gym builds set ``synthetic``; older ones send ``stop_reason`` "errored"
+    with empty ``messages`` and ``steps``. The conversion skip and the drop
+    reasons in ``_process_group`` both read this, so they always agree.
+    """
+    return bool(traj.get("synthetic")) or (
+        str(traj.get("stop_reason") or "").lower() == "errored" and not traj.get("messages") and not traj.get("steps")
+    )
+
 
 def _train_segments_mode(args) -> str:
     """Return the ``--arena-train-segments`` value; the flag default when the hook never ran."""
@@ -680,15 +714,14 @@ def _result_to_episodes_full_trajectory(
         steps = traj.get("steps") or []
         messages = traj.get("messages")
         reward = traj.get("reward") or 0.0
-        is_synthetic = bool(traj.get("synthetic")) or (
-            str(traj.get("stop_reason") or "").lower() == "errored"
-            and not messages and not steps
-        )
-        if is_synthetic:
-            logger.debug(
-                "Task %s: skipping synthetic/failed trajectory; "
+        if _is_synthetic_trajectory(traj):
+            error = traj.get("error")
+            logger.warning(
+                "Task %s: skipping synthetic trajectory, reason=%s error=%r; "
                 "_process_group will pad the slot with a sibling copy.",
                 task_id,
+                _failed_reason_category(error),
+                error,
             )
             continue
 
@@ -1072,6 +1105,24 @@ def _stop_metrics(all_data: list[list[Sample]]) -> dict[str, float]:
     return out
 
 
+def _failed_reason_metrics(data: list[list[Sample]]) -> dict[str, float]:
+    """``rollout/failed/<category>``: the failed-pad fraction per drop reason.
+
+    Same episodes and denominator as ``rollout/failed_frac`` in
+    ``_batch_telemetry``, so the values sum to it. Every category is present,
+    so a W&B line reads 0 on a rollout without that reason, not a gap.
+    """
+    reps = _episode_representatives(data)
+    counts = dict.fromkeys(_FAILED_REASON_CATEGORIES, 0)
+    for s in reps:
+        meta = s.metadata or {}
+        if meta.get("mode") == "failed":
+            category = meta.get("failed_reason", "unknown")
+            counts[category] = counts.get(category, 0) + 1
+    n = max(len(reps), 1)
+    return {f"rollout/failed/{category}": c / n for category, c in counts.items()}
+
+
 def _prompt_mean_rewards(groups: list[list[Sample]]) -> dict[str, float]:
     """instance_id -> mean reward over the group's episodes (one reward per episode)."""
     out: dict[str, float] = {}
@@ -1170,6 +1221,12 @@ class NATSRolloutWorker:
         # rationale. A single global worker (_global_worker) produces every
         # group, so this is process-unique.
         self._output_group_counter = 0
+        # Groups that _process_group dropped whole, per drop-reason category. No
+        # pad exists for them, so rollout/failed/* cannot count them. The worker
+        # thread writes and generate_rollout pops, so both hold the lock (the
+        # MixtureController counter pattern).
+        self._dropped_groups: dict[str, int] = {}
+        self._dropped_groups_lock = threading.Lock()
         logger.info("NATSRolloutWorker session token: %s", self.session)
 
         # Only ``full_trajectory`` is supported. The per_step path was removed
@@ -1839,17 +1896,39 @@ class NATSRolloutWorker:
         # compaction segment under --arena-train-segments all (ADR-0011).
         episodes: list[list[Sample]] = []
         n_failed = 0
+        # Raw gym reason text of each dropped trajectory, in order. The pads
+        # below and the dropped-group counter read their category.
+        dropped_reasons: list[Any] = []
 
         for result in task_results:
             # "truncated" envelopes stay usable: the gym masked the clipped
             # generate in loss_mask and its verifier ran, so every trajectory
             # in the envelope trains.
             if result.get("status") not in SALVAGEABLE_RESULT_STATUSES:
-                logger.warning("Task %s failed: %s", task_id, result.get("error"))
+                # Every trajectory of the envelope is dropped: one line each.
+                # The gym sends error None when every trajectory is synthetic,
+                # so a trajectory's own error comes first. An envelope without
+                # trajectories gives its own error once.
+                error = result.get("error")
+                reasons = [t.get("error") or error for t in result.get("trajectories") or []] or [error]
+                for k, text in enumerate(reasons):
+                    logger.warning(
+                        "Task %s failed: dropping trajectory %d/%d, reason=%s error=%r",
+                        task_id,
+                        k + 1,
+                        len(reasons),
+                        _failed_reason_category(text),
+                        text,
+                    )
+                dropped_reasons.extend(reasons)
                 n_failed += 1
                 reap_result_refs([result])
                 continue
 
+            # The conversion below skips these trajectories and logs each one.
+            dropped_reasons.extend(
+                t.get("error") for t in result.get("trajectories") or [] if _is_synthetic_trajectory(t)
+            )
             try:
                 episodes.extend(
                     _result_to_episodes_full_trajectory(result, self._tokenizer, self.args)
@@ -1865,7 +1944,10 @@ class NATSRolloutWorker:
                 reap_result_refs([result])
 
         if not episodes:
-            logger.warning("Group %s: all %d tasks failed, dropping", task_id, n_failed)
+            category = _failed_reason_category(dropped_reasons[0] if dropped_reasons else None)
+            logger.warning("Group %s: all %d tasks failed, dropping (reason=%s)", task_id, n_failed, category)
+            with self._dropped_groups_lock:
+                self._dropped_groups[category] = self._dropped_groups.get(category, 0) + 1
             return
 
         if n_failed > 0:
@@ -1877,6 +1959,9 @@ class NATSRolloutWorker:
         # Pad or trim to n_samples_per_prompt EPISODES with real sample copies.
         # The pad is a one-sample episode copied from the first episode's final
         # segment (the top-level rollout.json shape).
+        # Each pad takes the next drop reason; a pad past the known reasons (an
+        # all-zero loss_mask or no-messages skip) is "unknown".
+        pad_reasons = iter(dropped_reasons)
         while len(episodes) < self.n_per_prompt:
             src = episodes[0][-1]
             pad = Sample()
@@ -1913,6 +1998,8 @@ class NATSRolloutWorker:
             # returned above). A pad is a one-sample episode (ADR-0011).
             pad.metadata = {
                 "mode": "failed",
+                # rollout/failed/<category> counts it (_failed_reason_metrics).
+                "failed_reason": _failed_reason_category(next(pad_reasons, None)),
                 "task_id": task_id,
                 "gym_name": (src.metadata or {}).get("gym_name", "unknown"),
                 "segment": 0,
@@ -2003,6 +2090,16 @@ class NATSRolloutWorker:
 
     def get_queue_size(self) -> int:
         return self.output_queue.qsize()
+
+    def pop_dropped_group_metrics(self) -> dict[str, int]:
+        """``rollout/dropped_groups/<category>``: whole groups dropped since the last call.
+
+        The call resets the counts. When the W&B log that follows it fails, the
+        counts of that window are lost.
+        """
+        with self._dropped_groups_lock:
+            counts, self._dropped_groups = self._dropped_groups, {}
+        return {f"rollout/dropped_groups/{c}": counts.get(c, 0) for c in _FAILED_REASON_CATEGORIES}
 
 
 def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
@@ -2471,6 +2568,8 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 "rollout/avg_response_length": tm["avg_response_length"],
                 # failed/dropped-sample telemetry
                 "rollout/failed_frac": failed_frac,
+                # failed_frac per gym drop reason; the values sum to failed_frac.
+                **_failed_reason_metrics(data),
                 "rollout/removed_sample_frac": removed_frac,
                 # Stop telemetry over the pre-filter population: why episodes
                 # ended, how many generates the per-turn cap clipped, how many
@@ -2530,6 +2629,10 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                         1.0 if r >= 1.0 else 0.0 for r in raw_rewards
                     ) / len(raw_rewards)
 
+            # Whole groups dropped since the last rollout log (no pad exists,
+            # so failed_frac cannot count them). The pop resets the counts, so
+            # it runs last: a failure above keeps them for the next rollout.
+            metrics.update(worker.pop_dropped_group_metrics())
             _wandb_log(args, metrics, step_key="rollout/step")
 
             # Step <-> task mapping table: lets us go from a train step in the

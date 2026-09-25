@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import queue
+import threading
 import types as pytypes
 from pathlib import Path
 
@@ -118,6 +119,9 @@ def _make_worker(args: pytypes.SimpleNamespace) -> NATSRolloutWorker:
     worker._tokenizer = None
     worker._train_segments = args.arena_train_segments
     worker.fatal_error = None
+    # A whole-group drop counts here (pop_dropped_group_metrics).
+    worker._dropped_groups = {}
+    worker._dropped_groups_lock = threading.Lock()
     return worker
 
 

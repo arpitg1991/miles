@@ -12,6 +12,8 @@ Covers:
   - eval_coordinator.py: _row_to_task edge cases, env var parsing, _handle_result_msg
     dedup/DLQ state machine
   - gym_autoscaler.py: desired_replicas calculation without K8s
+  - nats_rollout.py: gym drop-reason categories, rollout/failed/* and
+    rollout/dropped_groups/* (requires torch)
 
 Run: python -m pytest tests/fast/plugins/arena/test_nats_arena.py -v
 """
@@ -1619,3 +1621,251 @@ class TestShapeGroupLengthReward:
         # 600k total beats 100k, so the single-segment episode is the short one.
         assert group[2].reward > group[0].reward
         assert group[0].reward == group[1].reward  # one reward per episode
+
+
+class TestFailedReasonTelemetry:
+    """Why the gym dropped a trajectory: log lines, pad tags, and W&B keys."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_without_torch(self):
+        pytest.importorskip("torch")
+
+    _LOGGER = "miles_plugins.arena.nats_arena.nats_rollout"
+
+    @staticmethod
+    def _traj(reward: float = 1.0, nseg: int = 1) -> dict:
+        """A real fast-path trajectory (GenerateClient token arrays) of ``nseg`` segments.
+
+        Each step before the last is an archived compaction segment
+        (``segment_end``), so ``all`` mode trains one Sample per step (ADR-0011).
+        """
+        arrays = {
+            "has_generate_tokens": True,
+            "token_ids": [1, 2, 3, 4],
+            "loss_mask": [0, 0, 1, 1],
+            "log_probs": [-0.1] * 4,
+        }
+        archived = [{**arrays, "segment_end": "compaction"} for _ in range(nseg - 1)]
+        return {"reward": reward, "steps": [*archived, {**arrays, "stop_reason": "stop"}]}
+
+    @staticmethod
+    def _synthetic(error: str | None) -> dict:
+        """The gym placeholder (amzn_arena_contract synthetic_trajectory)."""
+        return {
+            "synthetic": True,
+            "stop_reason": "errored",
+            "reward": 0.0,
+            "messages": [],
+            "steps": [],
+            "error": error,
+        }
+
+    @staticmethod
+    def _result(trajectories: list[dict], status: str = "success", error: str | None = None) -> dict:
+        result = {"task_id": "t.g0.", "gym_name": "g", "status": status, "trajectories": trajectories}
+        if error is not None:
+            result["error"] = error
+        return result
+
+    @staticmethod
+    def _worker(n: int = 4, mode: str = "final"):
+        """Bare worker from the shared test_group_identity helper: no NATS or thread."""
+        from tests.fast.plugins.arena.test_group_identity import _make_worker
+
+        return _make_worker(SimpleNamespace(arena_train_segments=mode, n_samples_per_prompt=n))
+
+    @staticmethod
+    def _drain(worker) -> list:
+        groups = []
+        while not worker.output_queue.empty():
+            groups.append(worker.output_queue.get_nowait())
+        return groups
+
+    @pytest.mark.parametrize(
+        "text, category",
+        [
+            ("CancelledError", "deadline"),
+            ("rollout deadline exceeded (43s)", "deadline"),
+            ("no numeric reward at chain step step-02", "no_reward"),
+            ("no numeric reward under key 'reward' (verifier keys: ['score'])", "no_reward"),
+            ("no verifier reward", "no_reward"),
+            ("missing rollout.json", "missing_rollout"),
+            ("unreadable rollout.json: Expecting value: line 1 column 1 (char 0)", "missing_rollout"),
+            ("chain aborted at segment-02: RuntimeError", "chain_abort"),
+            ("RuntimeError", "other"),
+            ("Docker compose command failed for environment t1. Command: docker compose up", "other"),
+            # Case-insensitive, and the first pattern wins: a cancel is a deadline.
+            ("CANCELLEDERROR", "deadline"),
+            ("Chain aborted at step-01: CancelledError", "deadline"),
+            ("", "unknown"),
+            (None, "unknown"),
+        ],
+    )
+    def test_category_of_real_gym_reasons(self, text, category):
+        from miles_plugins.arena.nats_arena.nats_rollout import (
+            _FAILED_REASON_CATEGORIES,
+            _failed_reason_category,
+        )
+
+        assert _failed_reason_category(text) == category
+        assert category in _FAILED_REASON_CATEGORIES
+
+    def test_pads_take_drop_reasons_in_order_then_unknown(self, caplog):
+        import logging
+
+        from miles_plugins.arena.nats_arena.nats_rollout import _result_to_episodes_full_trajectory
+
+        worker = self._worker(n=4)
+        # An older gym sends no synthetic flag: stop_reason "errored" with empty
+        # messages and steps. The conversion skips it, so it takes a reason too.
+        legacy = {"stop_reason": "errored", "messages": [], "steps": [], "error": "no verifier reward"}
+        result = self._result([self._traj(), self._synthetic("CancelledError"), legacy])
+        assert len(_result_to_episodes_full_trajectory(result, None, worker.args)) == 1
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER):
+            worker._process_group("t.g0.", [result])
+        (group,) = self._drain(worker)
+        pads = [s for s in group if (s.metadata or {}).get("mode") == "failed"]
+        # 3 pads for 2 known reasons: the shortfall slot is "unknown".
+        assert [p.metadata["failed_reason"] for p in pads] == ["deadline", "no_reward", "unknown"]
+        assert "failed_reason" not in group[0].metadata
+        # One WARNING line per skipped trajectory, with category and raw text.
+        skipped = [r for r in caplog.records if "skipping synthetic trajectory" in r.getMessage()]
+        assert [r.levelname for r in skipped] == ["WARNING", "WARNING"]
+        assert "reason=deadline error='CancelledError'" in skipped[0].getMessage()
+        assert "reason=no_reward error='no verifier reward'" in skipped[1].getMessage()
+
+    @pytest.mark.parametrize("mode, rows", [("final", 8), ("all", 13)])
+    def test_failed_reason_metrics_sum_to_failed_frac(self, mode, rows):
+        from miles_plugins.arena.nats_arena.nats_rollout import (
+            _FAILED_REASON_CATEGORIES,
+            _batch_telemetry,
+            _failed_reason_metrics,
+            _pad_rows_to_dp_alignment,
+        )
+
+        # Under ``all`` an episode of k segments is k rows, but both metrics
+        # count it once: 8 episodes in 13 rows (ADR-0011).
+        worker = self._worker(n=4, mode=mode)
+        dropped = [self._synthetic("CancelledError"), self._synthetic("missing rollout.json")]
+        worker._process_group("t.g0.", [self._result([self._traj(nseg=3), *dropped])])
+        worker._process_group("t.g1.", [self._result([self._traj(nseg=k) for k in (2, 2, 2, 1)])])
+        data = self._drain(worker)
+        assert sum(len(g) for g in data) == rows
+
+        def check() -> None:
+            metrics = _failed_reason_metrics(data)
+            assert set(metrics) == {f"rollout/failed/{c}" for c in _FAILED_REASON_CATEGORIES}
+            assert metrics["rollout/failed/deadline"] == pytest.approx(1 / 8)
+            assert metrics["rollout/failed/missing_rollout"] == pytest.approx(1 / 8)
+            assert metrics["rollout/failed/unknown"] == pytest.approx(1 / 8)
+            assert sum(metrics.values()) == pytest.approx(_batch_telemetry(data, data)["failed_frac"])
+            assert _batch_telemetry(data, data)["failed_frac"] == pytest.approx(3 / 8)
+
+        check()
+        if mode == "all":
+            # generate_rollout pads the rows for DP in ``all`` mode only. The
+            # zero-loss pad joins a kept episode, so no value changes.
+            dp2 = SimpleNamespace(
+                actor_num_nodes=1,
+                actor_num_gpus_per_node=2,
+                context_parallel_size=1,
+                use_dynamic_batch_size=True,
+                micro_batch_size=None,
+            )
+            assert _pad_rows_to_dp_alignment(data, dp2) == 1
+            check()
+
+    def test_failed_envelope_with_none_error_logs_trajectory_reasons(self, caplog):
+        import logging
+
+        worker = self._worker(n=2)
+        # The gym sends error None when every trajectory is synthetic.
+        result = self._result(
+            [self._synthetic("CancelledError"), self._synthetic("no numeric reward at chain step step-02")],
+            status="failed",
+        )
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER):
+            worker._process_group("t.g0.", [result])
+        assert self._drain(worker) == []
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Task t.g0. failed")]
+        assert lines == [
+            "Task t.g0. failed: dropping trajectory 1/2, reason=deadline error='CancelledError'",
+            "Task t.g0. failed: dropping trajectory 2/2, reason=no_reward "
+            "error='no numeric reward at chain step step-02'",
+        ]
+        assert not any("None" in line for line in lines)
+        messages = [r.getMessage() for r in caplog.records]
+        assert "Group t.g0.: all 1 tasks failed, dropping (reason=deadline)" in messages
+
+        # An envelope without trajectories logs its own error once.
+        caplog.clear()
+        failed = self._result([], status="failed", error="rollout deadline exceeded (43s)")
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER):
+            worker._process_group("t.g1.", [failed])
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Task t.g1. failed")]
+        assert lines == [
+            "Task t.g1. failed: dropping trajectory 1/1, reason=deadline error='rollout deadline exceeded (43s)'"
+        ]
+
+    def test_dropped_group_counter_emits_and_resets(self, monkeypatch):
+        from miles_plugins.arena import rollout_metrics
+        from miles_plugins.arena.nats_arena import nats_rollout
+
+        worker = self._worker(n=2)
+        failed = self._result([], status="failed", error="rollout deadline exceeded (43s)")
+        worker._process_group("t.g0.", [failed])
+        worker._process_group("t.g1.", [self._result([self._synthetic(None)] * 2, status="failed")])
+        # A kept group feeds the batch; the two groups above never reach the queue.
+        worker._process_group("t.g2.", [self._result([self._traj(), self._synthetic("no verifier reward")])])
+        worker._process_group("t.g3.", [self._result([self._traj(), self._traj(0.0)])])
+        worker._train_segments = "final"
+        worker.worker_thread = SimpleNamespace(is_alive=lambda: False)
+        worker.fatal_error = None
+
+        logged: list[dict] = []
+        monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: worker)
+        monkeypatch.setattr(
+            "miles.utils.tracking_utils.tracking.log", lambda args, metrics, step_key: logged.append(metrics)
+        )
+        args = SimpleNamespace(
+            rollout_global_dataset=True,
+            global_batch_size=4,
+            n_samples_per_prompt=2,
+            dynamic_sampling_filter_path=None,
+            arena_train_segments="final",
+            use_wandb=True,
+            wandb_always_use_train_step=False,
+        )
+        kept = self._drain(worker)
+        assert len(kept) == 2
+
+        def rollout() -> None:
+            for group in kept:
+                worker.output_queue.put(group)
+            nats_rollout.generate_rollout(args, 0, data_source=SimpleNamespace())
+
+        # A failure while the metrics dict is built logs nothing and keeps the
+        # counts for the next rollout.
+        real = rollout_metrics.compute_group_metrics_from_samples
+
+        def boom(samples):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(rollout_metrics, "compute_group_metrics_from_samples", boom)
+        rollout()
+        assert logged == []
+        monkeypatch.setattr(rollout_metrics, "compute_group_metrics_from_samples", real)
+        rollout()
+
+        metrics = logged[0]
+        assert metrics["rollout/dropped_groups/deadline"] == 1
+        assert metrics["rollout/dropped_groups/unknown"] == 1
+        assert sum(v for k, v in metrics.items() if k.startswith("rollout/dropped_groups/")) == 2
+        # Same dict as failed_frac, and the per-reason values sum to it.
+        assert metrics["rollout/failed_frac"] == pytest.approx(1 / 4)
+        assert metrics["rollout/failed/no_reward"] == pytest.approx(1 / 4)
+        failed_sum = sum(v for k, v in metrics.items() if k.startswith("rollout/failed/"))
+        assert failed_sum == pytest.approx(metrics["rollout/failed_frac"])
+        # The emit resets the counter: the next rollout starts from 0.
+        assert set(worker.pop_dropped_group_metrics().values()) == {0}

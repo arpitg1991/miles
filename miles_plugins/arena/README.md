@@ -56,9 +56,13 @@ NATS connectivity comes from the environment (`NATS_URL`, plus optional
 `NATS_RESULTS_SUBJECT` / `NATS_RESULTS_CONSUMER` / `ARENA_DEFAULT_GYM`
 overrides). Defaults match the AGISlime wire contract: streams
 `ARENA_TASKS` / `ARENA_RESULTS`, subjects `arena.tasks.<gym>` /
-`arena.results`, durable consumer `slime-trainer`. The wire format is
-bit-identical to the AGISlime original, so existing gym workers need no
-changes.
+`arena.results`, durable consumer `slime-trainer`. The wire format matches
+the AGISlime original except for the optional task keys
+`capture_routed_experts` (ADR-0012) and `token_arrays_by_ref` (ADR-0014). An
+old gym ignores both, so existing gym workers need no changes. Under
+`token_arrays_by_ref` a new gym sends the per-step token arrays in a
+`token_arrays_ref` file. The trainer also reads inline arrays, so every gym
+image keeps working.
 
 ## harbor-rl-27b usage
 

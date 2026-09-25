@@ -1697,6 +1697,13 @@ class TestFailedReasonTelemetry:
             # Case-insensitive, and the first pattern wins: a cancel is a deadline.
             ("CANCELLEDERROR", "deadline"),
             ("Chain aborted at step-01: CancelledError", "deadline"),
+            # The gym's 30 MiB failed envelope and the trainer's own token-file
+            # drop (ADR-0014). A Docker 413 text is not the gym guard.
+            ("result too large: 33554432 bytes > 31457280", "too_large"),
+            ("token_arrays_ref unusable: sha256 mismatch", "token_ref"),
+            ("413 request entity too large", "other"),
+            # The gym's other failed envelope: a write fault on the shared mount.
+            ("result staging failed: [Errno 5] Input/output error: '/mnt/r/.t-0-0.tokens.tmp'", "staging"),
             ("", "unknown"),
             (None, "unknown"),
         ],
@@ -1807,6 +1814,23 @@ class TestFailedReasonTelemetry:
         assert lines == [
             "Task t.g1. failed: dropping trajectory 1/1, reason=deadline error='rollout deadline exceeded (43s)'"
         ]
+
+    def test_oversize_failed_envelope_drops_group_as_too_large(self, caplog):
+        import logging
+
+        worker = self._worker(n=2)
+        # The gym guard (AREnATasks ADR-0071): status failed, n_samples pads
+        # that each carry the error, and the same error at the top level.
+        error = "result too large: 33554432 bytes > 31457280"
+        result = self._result([self._synthetic(error)] * 2, status="failed", error=error)
+        with caplog.at_level(logging.WARNING, logger=self._LOGGER):
+            worker._process_group("t.g0.", [result])
+        assert self._drain(worker) == []
+        messages = [r.getMessage() for r in caplog.records]
+        assert "Group t.g0.: all 1 tasks failed, dropping (reason=too_large)" in messages
+        metrics = worker.pop_dropped_group_metrics()
+        assert metrics["rollout/dropped_groups/too_large"] == 1
+        assert sum(metrics.values()) == 1
 
     def test_dropped_group_counter_emits_and_resets(self, monkeypatch):
         from miles_plugins.arena import rollout_metrics

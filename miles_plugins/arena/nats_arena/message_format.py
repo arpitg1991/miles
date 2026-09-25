@@ -31,6 +31,7 @@ def build_task_message(
     gym_name: str = "",
     session: str | None = None,
     capture_routed_experts: bool = False,
+    token_arrays_by_ref: bool = False,
 ) -> dict[str, Any]:
     """Build a task message for publishing to NATS.
 
@@ -56,6 +57,11 @@ def build_task_message(
             on the training step (ADR-0012, R3). The key is emitted only
             when True so the message stays byte-identical for runs
             without ``--use-rollout-routing-replay``.
+        token_arrays_by_ref: Ask the gym to stage the per-step token arrays
+            as files and send ``token_arrays_ref`` in their place. The gym
+            can then also leave out ``messages`` on a trajectory that takes
+            the token path (ADR-0014). The key is emitted only when True, so
+            the message stays byte-identical when the argument is False.
 
     Returns:
         JSON-serialisable dict ready for NATS publish.
@@ -85,6 +91,10 @@ def build_task_message(
         # Top-level, like ``session``: the gym contract reads
         # ``raw.get("capture_routed_experts", False)`` (amzn_arena_contract).
         msg["capture_routed_experts"] = True
+    if token_arrays_by_ref:
+        # Top-level, like ``capture_routed_experts``: the gym contract reads
+        # ``raw.get("token_arrays_by_ref", False)``. An old gym ignores it.
+        msg["token_arrays_by_ref"] = True
     return msg
 
 
@@ -129,7 +139,10 @@ def extract_trajectories(result: dict[str, Any]) -> list[dict[str, Any]]:
       - ``messages``: list[dict]  (re-tokenized locally when no token-level data)
       - ``steps``: list[dict]     (GenerateClient token_ids/loss_mask/log_probs);
         may hold several self-contained segments (ADR-0011); the final
-        segment is last and is the only step that carries ``stop_reason``
+        segment is last and is the only step that carries ``stop_reason``.
+        Under ``token_arrays_by_ref`` a step can carry ``token_arrays_ref``
+        in place of the three arrays, and ``messages`` can be absent
+        (ADR-0014)
 
     Returns:
         List of trajectory dicts, or empty list on failure.
@@ -158,6 +171,7 @@ def sample_to_task(
     gym_name: str = "",
     session: str | None = None,
     capture_routed_experts: bool = False,
+    token_arrays_by_ref: bool = False,
 ) -> dict[str, Any]:
     """Convert a miles Sample (from manifest dataset) into a NATS task.
 
@@ -193,4 +207,5 @@ def sample_to_task(
         gym_name=gym_name,
         session=session,
         capture_routed_experts=capture_routed_experts,
+        token_arrays_by_ref=token_arrays_by_ref,
     )

@@ -1,6 +1,7 @@
 # ADR-0012: R3 rollout routing replay over the arena NATS path
 
 Status: Accepted (2026-09-09).
+Amended by: ADR-0014 (the same reader serves token_arrays_ref files)
 
 ## Context
 

@@ -29,6 +29,7 @@ Run: python -m pytest tests/fast/plugins/arena/test_group_identity.py -v
 from __future__ import annotations
 
 import queue
+import threading
 import types as pytypes
 
 import pytest
@@ -143,6 +144,9 @@ def _make_worker(args) -> NATSRolloutWorker:
     worker.output_queue = queue.Queue()
     worker._output_group_counter = 0
     worker._tokenizer = None  # the fast path never touches it
+    # A whole-group drop counts here (pop_dropped_group_metrics).
+    worker._dropped_groups = {}
+    worker._dropped_groups_lock = threading.Lock()
     return worker
 
 

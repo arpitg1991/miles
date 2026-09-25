@@ -885,12 +885,14 @@ def shape_group_length_reward(args, group: list[Sample]) -> bool:
     if hi <= lo:
         return False
 
-    # A fixed coefficient is not safe on its own: CTRF reward is passed/tests,
-    # and 13.5% of observed within-group reward gaps are under 0.05 (minimum
-    # 0.0099, a task with ~101 tests). Clamping each downward shift to under
-    # half the gap to the next lower reward level makes a reordering impossible
-    # at any coefficient. Only the best level ever shifts upward, and nothing
-    # sits above it, so the upward side needs no clamp.
+    # A fixed coefficient is not safe on its own: the gym verifier sets the
+    # reward granularity (for example 1/N on an N-step chain). Under the
+    # retired CTRF partial credit, 13.5% of observed within-group reward gaps
+    # were under 0.05 (minimum 0.0099, a task with ~101 tests). Clamping each
+    # downward shift to under half the gap to the next lower reward level makes
+    # a reordering impossible at any coefficient. Only the best level ever
+    # shifts upward, and nothing sits above it, so the upward side needs no
+    # clamp.
     levels = sorted(set(rewards))
     below = {v: (v - levels[i - 1] if i else float("inf")) for i, v in enumerate(levels)}
 
@@ -2629,8 +2631,8 @@ def _add_arena_arguments(parser):
         help="Scale of the group-relative token-efficiency term added to each "
         "episode reward (Kimi k1.5 length reward, gated on the group's best "
         "reward). The term spans +-coef/2, so coef/2 MUST stay below the reward "
-        "granularity (1/tests under CTRF) or efficiency outranks passing "
-        "another test. 0.0 = off.",
+        "granularity of the gym's verifier (for example 1/N on an N-step "
+        "chain) or efficiency outranks a higher reward. 0.0 = off.",
     )
     group.add_argument(
         "--arena-skip-prompt-above-reward",

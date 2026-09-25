@@ -1596,8 +1596,8 @@ class TestShapeGroupLengthReward:
     def test_clamp_preserves_a_narrow_reward_gap(self):
         from miles_plugins.arena.nats_arena.nats_rollout import shape_group_length_reward
 
-        # CTRF granularity reaches 0.0099 (~101 tests), below coef/2. The clamp
-        # bounds the fall to 0.49x the gap, so the ordering survives.
+        # A reward gap of 0.01 (1/N on a 100-step chain) is below coef/2. The
+        # clamp bounds the fall to 0.49x the gap, so the ordering survives.
         group = self._group([(0.99, 40_000), (1.0, 440_000)])
         shape_group_length_reward(self._args(), group)
         assert group[1].reward > group[0].reward

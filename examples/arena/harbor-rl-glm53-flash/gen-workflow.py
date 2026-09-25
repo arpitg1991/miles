@@ -1,14 +1,13 @@
 """Emit r<N>/workflow.yaml for a guparpit-miles-deployer WorkflowTemplate.
 
 Usage: .venv python gen-workflow.py <N> [--base r27] [--template ...]
-       [--partial-reward ctrf] [--experiment-name NAME] [--gym-image IMAGE]
-       [--param NAME=VALUE ...]
+       [--experiment-name NAME] [--gym-image IMAGE] [--param NAME=VALUE ...]
 
-Copies every submit parameter from the base workflow.yaml, then sets the run
-identity, the miles-config block (r<N>/miles-config.yaml verbatim), the
-gym image (r<N>/gym-worker.yaml unless --gym-image is given), the
-partial-reward mode and any --param. Checks that a re-parse of the output
-returns the config byte for byte.
+Copies every submit parameter from the base workflow.yaml except
+partial-reward, then sets the run identity, the miles-config block
+(r<N>/miles-config.yaml verbatim), the gym image (r<N>/gym-worker.yaml
+unless --gym-image is given) and any --param. Checks that a re-parse of
+the output returns the config byte for byte.
 """
 
 import argparse
@@ -33,7 +32,6 @@ yaml.add_representer(_Block, _block_repr)
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("n", type=int)
-    ap.add_argument("--partial-reward", default="ctrf")
     ap.add_argument("--base", default="r19")
     ap.add_argument("--template", default="guparpit-miles-deployer-v4")
     # Default: keep the trainer image of the existing r<N>/workflow.yaml. The
@@ -57,7 +55,11 @@ def main() -> None:
     # RBAC allows create but not patch on workflowtemplates, so each template
     # revision gets a new name.
     wf["spec"]["workflowTemplateRef"]["name"] = a.template
-    params = {p["name"]: p for p in wf["spec"]["arguments"]["parameters"]}
+    # AREnATasks ADR-0069: the gym trains on the Harbor trial reward and the
+    # template has no partial-reward parameter. r20..r38 still carry it.
+    wf_params = wf["spec"]["arguments"]["parameters"]
+    wf_params[:] = [p for p in wf_params if p["name"] != "partial-reward"]
+    params = {p["name"]: p for p in wf_params}
     params["experiment-name"]["value"] = a.experiment_name or f"rl-glm53f-gbash-r{a.n}"
     out = run / "workflow.yaml"
     trainer_image = a.trainer_image
@@ -67,19 +69,19 @@ def main() -> None:
     if trainer_image is not None:
         params["trainer-image"]["value"] = trainer_image
     params["miles-config"]["value"] = _Block(cfg)
-    # r19 left gym-image and partial-reward at the template defaults.
+    # r19 left gym-image at the template default.
     extra = [tuple(kv.split("=", 1)) for kv in a.param]
-    for name, value in (("gym-image", gym_img), ("partial-reward", a.partial_reward), *extra):
+    for name, value in (("gym-image", gym_img), *extra):
         if name in params:
             params[name]["value"] = value
         else:
-            wf["spec"]["arguments"]["parameters"].append({"name": name, "value": value})
+            wf_params.append({"name": name, "value": value})
     out.write_text(yaml.dump(wf, sort_keys=False, width=10**9))
     back = yaml.safe_load(out.read_text())
     got = {p["name"]: p["value"] for p in back["spec"]["arguments"]["parameters"]}
     if got["miles-config"] != cfg:
         sys.exit("miles-config round-trip mismatch")
-    print(out, "generateName", back["metadata"]["generateName"], "trainer-image", got["trainer-image"], "gym-image", got["gym-image"], "partial-reward", got["partial-reward"], "experiment", got["experiment-name"])
+    print(out, "generateName", back["metadata"]["generateName"], "trainer-image", got["trainer-image"], "gym-image", got["gym-image"], "experiment", got["experiment-name"])
 
 
 if __name__ == "__main__":

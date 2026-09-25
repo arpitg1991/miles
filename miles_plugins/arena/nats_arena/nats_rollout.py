@@ -12,7 +12,9 @@ conversation is tokenised locally via ``MultiTurnLossMaskGenerator``. Under
 ``--arena-train-segments all`` (the default) a compacted episode (several
 self-contained ``steps`` with ``segment_end`` markers) becomes one Sample per
 segment; the segments share one ``rollout_id`` and one reward (ADR-0011).
-``final`` trains the last step only.
+``final`` trains the last step only. The token arrays of a step come inline
+or through a ``token_arrays_ref`` file that the trainer reads when it
+converts the result (ADR-0014).
 
 Wired in via ``--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.generate_rollout``.
 """
@@ -47,10 +49,13 @@ from miles_plugins.arena.nats_arena.routing_replay import (
     pad_routing,
     RoutingRefLostError,
     RoutingReplayError,
+    TOKEN_REF_KEY,
+    TokenArraysRefError,
     materialize_group_routing,
     reap_result_refs,
     reap_sample_refs,
     replay_enabled,
+    resolve_token_arrays,
     stash_step_payload,
 )
 from miles_plugins.arena.nats_arena.stream_config import results_stream_config
@@ -91,16 +96,20 @@ def _raise_if_fatal(worker) -> None:
 def _discard_stale_result(result: dict, tid: str, accepted_tids: set[str]) -> None:
     """Drop a same-session result whose task_id is no longer pending.
 
-    A redelivery of an accepted result keeps its ref files. The group that
+    A result for an accepted tid keeps its routing files. The group that
     holds them waits in the output queue and reads them at drain time; r27
-    and r28 died on this reap (2026-09-20). Only a result that nobody
-    accepted (DLQ-swept, or pending state reset on a reconnect) has orphaned
-    files, and those are deleted here.
+    and r28 died on this reap (2026-09-20). Its token files are deleted
+    (ADR-0014). The conversion already read and deleted the token files of
+    the accepted copy, so a redelivery of the same message finds nothing. A
+    second run of the task wrote new token files that nobody reads. A result
+    that nobody accepted (DLQ-swept, or pending state reset on a reconnect)
+    loses all of its files here.
     """
     if tid in accepted_tids:
         logger.info(
-            "Dropping redelivered result for accepted task_id %s; its ref files stay with the queued group", tid
+            "Dropping redelivered result for accepted task_id %s; its routing files stay with the queued group", tid
         )
+        reap_result_refs([result], keys=(TOKEN_REF_KEY,))
         return
     logger.info("Dropping stale result for unknown task_id %s (likely from before NATS reconnect)", tid)
     reap_result_refs([result])
@@ -348,8 +357,15 @@ _TRAIN_SEGMENTS_DEFAULT = "all"
 # Why the gym dropped a trajectory, as a fixed set so the W&B keys
 # rollout/failed/<category> and rollout/dropped_groups/<category> stay bounded.
 # First match wins, on a lowercase substring of the gym reason text.
-# "chain aborted" comes from older gym images only.
+# "chain aborted" comes from older gym images only. "token_arrays_ref" is the
+# trainer's own drop text (_load_token_arrays). "result too large" and "result
+# staging failed" are the gym's two failed envelopes: over 30 MiB, and an
+# OSError on the shared mount (ADR-0014). The full phrase keeps a Docker
+# "request entity too large" text in "other".
 _FAILED_REASON_PATTERNS = (
+    ("token_arrays_ref", "token_ref"),
+    ("result too large", "too_large"),
+    ("result staging failed", "staging"),
     ("cancellederror", "deadline"),
     ("deadline", "deadline"),
     ("no numeric reward", "no_reward"),
@@ -357,7 +373,17 @@ _FAILED_REASON_PATTERNS = (
     ("rollout.json", "missing_rollout"),
     ("chain aborted", "chain_abort"),
 )
-_FAILED_REASON_CATEGORIES = ("deadline", "no_reward", "missing_rollout", "chain_abort", "other", "unknown")
+_FAILED_REASON_CATEGORIES = (
+    "deadline",
+    "no_reward",
+    "missing_rollout",
+    "chain_abort",
+    "too_large",
+    "staging",
+    "token_ref",
+    "other",
+    "unknown",
+)
 
 
 def _failed_reason_category(text: Any) -> str:
@@ -400,6 +426,35 @@ def _training_steps(steps: list[dict], args) -> list[dict]:
     if _train_segments_mode(args) == "all" and any(st.get("segment_end") for st in steps):
         return [st for st in steps if st.get("has_generate_tokens")]
     return steps[-1:]
+
+
+def _load_token_arrays(result: dict[str, Any], args) -> None:
+    """Read the ``token_arrays_ref`` files of every training step in ``result`` (ADR-0014).
+
+    Only the steps that ``_training_steps`` selects are read. Under ``final``
+    the archived steps keep their refs, and the conversion's untrained reap
+    deletes those files unread. A bad file replaces its trajectory with a
+    synthetic pad whose ``error`` gives the reason, so ``_process_group``
+    pads the slot with a sibling copy and the siblings still train. Its
+    routing and unread token files are deleted first.
+    """
+    trajectories = result.get("trajectories") or []
+    for i, traj in enumerate(trajectories):
+        if _is_synthetic_trajectory(traj):
+            continue
+        try:
+            for step in _training_steps(traj.get("steps") or [], args):
+                resolve_token_arrays(step)
+        except TokenArraysRefError as exc:
+            reap_result_refs([{"trajectories": [traj]}])
+            trajectories[i] = {
+                "synthetic": True,
+                "stop_reason": "errored",
+                "reward": 0.0,
+                "messages": [],
+                "steps": [],
+                "error": f"token_arrays_ref unusable: {exc}",
+            }
 
 
 @dataclass(frozen=True)
@@ -1652,6 +1707,9 @@ class NATSRolloutWorker:
                             gym_name=gym_name,
                             session=self.session,
                             capture_routed_experts=replay_enabled(self.args),
+                            # Always on: this trainer reads inline arrays and
+                            # refs, and an old gym ignores the key (ADR-0014).
+                            token_arrays_by_ref=True,
                         )
                         # Make task_id unique per publish to avoid collisions
                         # when the data_source wraps epochs and re-emits the
@@ -1925,11 +1983,14 @@ class NATSRolloutWorker:
                 reap_result_refs([result])
                 continue
 
-            # The conversion below skips these trajectories and logs each one.
-            dropped_reasons.extend(
-                t.get("error") for t in result.get("trajectories") or [] if _is_synthetic_trajectory(t)
-            )
             try:
+                # A trajectory whose token_arrays_ref file is bad becomes a
+                # synthetic pad here, so it takes a drop reason below (ADR-0014).
+                _load_token_arrays(result, self.args)
+                # The conversion below skips these trajectories and logs each one.
+                dropped_reasons.extend(
+                    t.get("error") for t in result.get("trajectories") or [] if _is_synthetic_trajectory(t)
+                )
                 episodes.extend(
                     _result_to_episodes_full_trajectory(result, self._tokenizer, self.args)
                 )

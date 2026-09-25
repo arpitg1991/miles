@@ -5,7 +5,7 @@
 
 **Builds on:** ADR-0001 (port scope and module mapping); AREnATasks
 ADR-0039 (Harbor NATS gym worker — the worker side of the same contract)
-**Amended by:** ADR-0013 (the "Degenerate stops" row is history: `_DEGENERATE_AGENT_STOP` was removed on 2026-09-23 and no agent stop removes a sample)
+**Amended by:** ADR-0013 (the "Degenerate stops" row is history: `_DEGENERATE_AGENT_STOP` was removed on 2026-09-23 and no agent stop removes a sample); ADR-0014 (the task envelope gains an optional top-level `token_arrays_by_ref`; a step can carry `token_arrays_ref` in place of `token_ids`/`loss_mask`/`log_probs`; a trajectory can omit `messages`)
 
 ## Summary
 

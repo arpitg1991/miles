@@ -17,13 +17,15 @@ run = import_launch_script(REPO_ROOT / "scripts" / "run_arena_harbor.py")
 _CKPT = "/ckpt/slime_experiments/rl-test"
 
 
-def _argv(tmp_path, yaml_extra: str = "", arena_eval_tasks: str = "") -> list[str]:
+def _argv(
+    tmp_path, yaml_extra: str = "", arena_eval_tasks: str = "", replicas: int = 3, num_trainers: int = 2
+) -> list[str]:
     config = tmp_path / "config.yaml"
     config.write_text(f"model_arch: qwen3.5-27B\nrollout_batch_size: 4\n{yaml_extra}")
     args = run.ScriptArgs(
         config=str(config),
-        replicas=3,
-        num_trainers=2,
+        replicas=replicas,
+        num_trainers=num_trainers,
         num_gpus_per_node=8,
         experiment_name="rl-test",
         checkpoints_dir="/ckpt",
@@ -63,3 +65,19 @@ def test_opt_in_appends_save_hf(tmp_path, yaml_extra, arena_eval_tasks):
 def test_non_boolean_value_fails_fast(tmp_path):
     with pytest.raises(typer.BadParameter, match="arena_save_hf"):
         _argv(tmp_path, 'arena_save_hf: "yes"\n')
+
+
+_TRAIN_ONLY = "load_debug_rollout_data: /data/rollout_{rollout_id}.pt\n"
+
+
+@pytest.mark.parametrize(("replicas", "rollout_gpus"), [(2, "8"), (3, "8")])
+def test_train_only_runs_without_rollout_nodes(tmp_path, replicas, rollout_gpus):
+    """debug_train_only places no rollout GPUs, so a trainer-only job gets one phantom node."""
+    argv = _argv(tmp_path, _TRAIN_ONLY, replicas=replicas, num_trainers=2)
+    assert _value(argv, "--rollout-num-gpus") == rollout_gpus
+    assert _value(argv, "--actor-num-nodes") == "2"
+
+
+def test_rollout_job_still_needs_a_rollout_node(tmp_path):
+    with pytest.raises(AssertionError, match="rollout node"):
+        _argv(tmp_path, replicas=2, num_trainers=2)

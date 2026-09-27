@@ -69,6 +69,12 @@ COPY . /root/miles
 # the first GLM-5.3-Flash train step (RuntimeError: Unsupported function
 # referenced). The script is idempotent and hard-fails if fla's code drifted.
 RUN python3 /root/miles/examples/arena/patches/fla_kda_next_power_of_2.py
+# fla 0.5.2 (the upstream base): causal_conv1d computes token offsets in
+# int32. A GLM-5.3 row longer than 87,381 tokens (q, k and v convolved together,
+# 24,576 channels) causes an illegal memory access in the first train step. The
+# script applies the int64 lines of fla PR #1082. It skips fla 0.4.x and a fla
+# that already has the fix, and hard-fails if the kernel drifted.
+RUN python3 /root/miles/examples/arena/patches/fla_conv_int64_offsets.py
 
 # Import smoke: fail the build if the arena plugin or the launcher cannot resolve.
 # The builder has no GPU driver; transformer_engine dlopens libcuda.so.1 at

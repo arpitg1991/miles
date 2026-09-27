@@ -85,11 +85,12 @@ class ReplicatedGlm5NextKDA(nn.Module):
     ``gate`` selects the kernel call. ``"outside"`` is the old trainer: ``fused_kda_gate``, then
     ``chunk_kda`` on the decay. ``"kernel"`` is the shared layer (``KimiDeltaRule``): the gate inside
     ``chunk_kda`` with the safe-gate path, as SGLang runs GLM-5.3. Both compute the same function.
+    ``"outside_safe"`` and ``"kernel_unsafe"`` flip ``safe_gate`` only, to isolate the two changes.
     """
 
     def __init__(self, hidden: int, heads: DeltaRuleHeads, dtype, gate: str = "outside", eps: float = EPS):
         super().__init__()
-        assert gate in ("outside", "kernel")
+        assert gate in ("outside", "kernel", "outside_safe", "kernel_unsafe")
         self.heads, self.gate = heads, gate
         size, d = heads.value_dim, heads.head_v_dim
         self.q_proj = nn.Linear(hidden, size, bias=False)
@@ -118,7 +119,7 @@ class ReplicatedGlm5NextKDA(nn.Module):
         q, k, v = (t.unflatten(-1, (h, d)) for t in mixed.split([size] * 3, dim=-1))
         beta = torch.sigmoid(self.b_proj(x).float())
         forget = self.f_b_proj(self.f_a_proj(x)).unflatten(-1, (h, d))
-        if self.gate == "outside":
+        if self.gate in ("outside", "outside_safe"):
             g = fused_kda_gate(forget, self.A_log, self.dt_bias, lower_bound=KDA_LOWER_BOUND)
             out, _ = chunk_kda(
                 q,
@@ -129,6 +130,7 @@ class ReplicatedGlm5NextKDA(nn.Module):
                 initial_state=None,
                 output_final_state=False,
                 use_qk_l2norm_in_kernel=True,
+                safe_gate=self.gate == "outside_safe",
                 cu_seqlens=cu_seqlens,
             )
         else:
@@ -144,7 +146,7 @@ class ReplicatedGlm5NextKDA(nn.Module):
                 output_final_state=False,
                 use_qk_l2norm_in_kernel=True,
                 use_gate_in_kernel=True,
-                safe_gate=True,
+                safe_gate=self.gate == "kernel",
                 lower_bound=KDA_LOWER_BOUND,
                 transpose_state_layout=True,
                 cu_seqlens=cu_seqlens,

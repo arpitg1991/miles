@@ -36,6 +36,7 @@ It is a test image only: NEVER use it for a live run.
 | `kdash-run.sh` | Pod driver: `t1`, `t2` or `warm`. It writes only under `/mnt/scratch-s3files-rw/guparpit/kdash/`. |
 | `t1-job.yaml`, `t2-job.yaml` | PyTorchJob `kdash-t1-<stamp>` (1 node) and `kdash-t2-<stamp>` (8 nodes). Placeholders `__IMAGE__`, `__STAMP__`. |
 | `t1_parity.py` | T1 checkpoint-level parity, 8 GPUs (`torchrun`). |
+| `t1_gate_isolation.py` | T1 follow-up, 1 GPU: the gate location and `safe_gate` of the kernel call, each against fp32. |
 | `build_rollout_data.py` | Train-only rollout files from r45 groups and r43 staged tokens and routing. |
 | `make_slice_hf.py` | Config-only HF dir of the 5-layer slice. |
 | `gen_arm_configs.py` | Arm YAMLs from `../r45/miles-config.yaml`. |

@@ -1,3 +1,15 @@
+# r46 resume 1 deltas vs r46 (2026-09-27): r46 continues from its
+# iter_0000009 checkpoint. The AREnAThanatos idle-GPU reaper deleted
+# rl-glm53f46-clhv6 at 11:02:24Z, during the step-9 HF export. Only two
+# changes, the same as r44 resume 1. (1) 8 SGLang engines, not 32: replicas
+# 40 -> 16 (workflow params replicas 16, replica-trainer 8). (2) Trainer
+# image miles-glm53-r15-20260927a (miles bc31f88ac): no --save-hf, because
+# this file has no arena_save_hf key. calculate_per_token_loss stays true.
+# The reaper cut the save before the sidecar and the data-source state. A
+# hand-written sidecar holds {"rollout_id": 9, "wandb_run_id": "4iu54zov"}.
+# No data-source state exists, so the data position restarts at row 0 of
+# the epoch-0 order (r46/BUILD.md "Resume 1"). The launch config is
+# miles-config-r0.yaml.
 # r46 deltas vs r44 (2026-09-27): calculate_per_token_loss true (token-level
 # loss average; the comment above the key gives the reason). New run names
 # (r46). Fresh run: no checkpoint dir under
@@ -216,7 +228,10 @@ agislime_dir: /root/miles
 # r6: 24 replicas = 8 actor nodes + 16 engine nodes (r1-r5: 12 = 8 + 4) (same convention as the parent:
 # replicas - num_trainers = rollout nodes; the launcher derives
 # --actor-num-nodes 8 and --rollout-num-gpus 128 from these + the pod env)
-replicas: 40
+# resume 1 (2026-09-27): 16 = 8 actor nodes + 8 engine nodes. The launcher
+# reads REPLICA and REPLICA_TRAINER from the pod env (workflow params
+# replicas and replica-trainer). This key is the config-side record only.
+replicas: 16
 num_trainers: 8
 # -> scripts/models/glm5.3-flash.py (ships in the merged image tree)
 model_arch: glm5.3-flash

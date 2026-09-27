@@ -96,6 +96,8 @@ def _free_port() -> int:
 def _setup(rank: int, world: int, port: int, sizes: dict):
     """gloo on CPU, the CUDA calls of the layer constructor made CPU-safe, and a stub HF config."""
     dist.init_process_group("gloo", init_method=f"tcp://127.0.0.1:{port}", rank=rank, world_size=world)
+    # On a GPU host the layer constructor asks for the device capability of "cpu" and fails.
+    torch.cuda.is_available = lambda: False
     torch.cuda.current_device = lambda: "cpu"
     torch.cuda.synchronize = lambda *args, **kwargs: None  # dist_checkpointing syncs around save and load
     from megatron.core.transformer import TransformerConfig

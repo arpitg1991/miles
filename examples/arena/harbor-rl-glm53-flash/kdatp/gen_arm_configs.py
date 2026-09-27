@@ -18,9 +18,12 @@ Arms:
 - ``*-none``: no recompute (the T1c memory ceiling).
 - ``kdatp-block10``: item 4 on top of item 3, full recompute of the first
   10 layers of each stage only.
+- ``block<N>``, ``kdatp-block<N>`` (``--arms`` only): the same with the
+  first N layers of each stage.
 """
 
 import argparse
+import re
 from pathlib import Path
 
 import yaml
@@ -37,7 +40,14 @@ SELECTIVE = {
     "enable_hyper_connections": True,
 }
 NO_RECOMPUTE = {"recompute_granularity": None, "recompute_method": None, "recompute_num_layers": None}
-BLOCK10 = {"recompute_method": "block", "recompute_num_layers": 10}
+
+
+def block(num_layers: int) -> dict:
+    return {"recompute_method": "block", "recompute_num_layers": num_layers}
+
+
+BLOCK10 = block(10)
+BLOCK_ARM = re.compile(r"^(kdatp-)?block(\d+)$")
 
 # Keys that make the run train only, never save, and never log to a live W&B project.
 TRAIN_ONLY = {
@@ -96,9 +106,18 @@ TESTS = {
 }
 
 
+def arm_deltas(test: str, arm: str) -> dict:
+    if arm in TESTS[test]["arms"]:
+        return TESTS[test]["arms"][arm]
+    match = BLOCK_ARM.match(arm)
+    if match is None:
+        raise ValueError(f"unknown {test} arm {arm!r}")
+    return {**(KDA_TP if match.group(1) else {}), **block(int(match.group(2)))}
+
+
 def arm_config(base: dict, test: str, arm: str, data_dir: str, out_dir: str) -> dict:
     spec = TESTS[test]
-    config = {**base, **TRAIN_ONLY, **spec["common"], **spec["arms"][arm]}
+    config = {**base, **TRAIN_ONLY, **spec["common"], **arm_deltas(test, arm)}
     for key in ("load_debug_rollout_data", "hf_checkpoint"):
         config[key] = config[key].format(data=data_dir)
     config["experiment_name"] = f"kdatp-{test}-{arm}"  # a record only; the pod env names the run
@@ -113,11 +132,12 @@ def main() -> None:
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--base", default=str(R45_CONFIG))
+    parser.add_argument("--arms", default="", help="space-separated arm names (default: the arms of the test)")
     cli = parser.parse_args()
     base = yaml.safe_load(Path(cli.base).read_text())
     out = Path(cli.out)
     out.mkdir(parents=True, exist_ok=True)
-    for arm in TESTS[cli.test]["arms"]:
+    for arm in cli.arms.split() or TESTS[cli.test]["arms"]:
         path = out / f"{arm}.yaml"
         path.write_text(yaml.safe_dump(arm_config(base, cli.test, arm, cli.data_dir, cli.out), sort_keys=False))
         print(path)

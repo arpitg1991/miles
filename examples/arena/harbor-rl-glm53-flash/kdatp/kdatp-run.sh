@@ -13,8 +13,9 @@ set -uo pipefail
 TEST=${1:?usage: kdatp-run.sh t1|t2}
 KD=${KDATP_DIR:-/mnt/scratch-s3files-rw/guparpit/kdatp}
 STAMP=${KDATP_STAMP:?the manifest sets one KDATP_STAMP for all pods}
-HERE=/root/miles/examples/arena/harbor-rl-glm53-flash/kdatp
-LAUNCHER=/root/miles/scripts/run_arena_harbor.py
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../../../.." && pwd)"
+LAUNCHER=$REPO/scripts/run_arena_harbor.py
 HF=/mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16
 BASE_DCP=/mnt/scratch-s3files-rw/guparpit/checkpoints/dcp/glm5.3-flash_torch_dist
 R43=/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/rl-glm53f-adebt-v3-r43
@@ -47,7 +48,7 @@ fi
 mkdir -p "$RUN"
 exec > >(tee -a "$RUN/driver.log") 2>&1
 log() { echo "[kdatp $(date -u +%FT%TZ)] $*"; }
-log "test=$TEST stamp=$STAMP image_head=$(git -C /root/miles rev-parse HEAD 2>/dev/null)"
+log "test=$TEST stamp=$STAMP image_head=$(git -C "$REPO" rev-parse HEAD 2>/dev/null)"
 cp "$HERE"/*.py "$HERE"/kdatp-run.sh "$RUN/" 2>/dev/null
 
 build_data() {  # name groups rollout_ids dp_size
@@ -121,7 +122,7 @@ t1)
   echo $? > "$RUN/parity/rc"
   log "T1 parity rc=$(cat "$RUN/parity/rc")"
 
-  python3 "$HERE/gen_arm_configs.py" t1c --data-dir "$KD/data" --out "$RUN/arms"
+  python3 "$HERE/gen_arm_configs.py" t1c --data-dir "$KD/data" --out "$RUN/arms" --arms "$T1C_ARMS"
   for arm in $T1C_ARMS; do
     run_arm t1c "$arm"
   done
@@ -134,7 +135,8 @@ t2)
   HEAD=$(hostname)
   export MILES_SCRIPT_EXTERNAL_RAY=1
   ray start --head --node-ip-address "$HEAD" --num-gpus 8 --disable-usage-stats
-  python3 "$HERE/gen_arm_configs.py" t2 --data-dir "$KD/data" --out "$RUN/arms"
+  python3 "$HERE/gen_arm_configs.py" t2 --data-dir "$KD/data" --out "$RUN/arms" --arms "$T2_ARMS" ||
+    { log "arm configs FAILED"; ray stop --force; exit 1; }  # the workers exit when the head goes away
   for arm in $T2_ARMS; do
     if seed_t2_ckpt "kdatp-t2-$arm-$STAMP"; then
       run_arm t2 "$arm"

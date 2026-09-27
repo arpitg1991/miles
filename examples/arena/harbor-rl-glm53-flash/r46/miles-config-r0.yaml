@@ -1,14 +1,10 @@
-# r44 resume 1 deltas vs r44 (2026-09-27): r44 continues from its
-# iter_0000009 checkpoint. The AREnAThanatos idle-GPU reaper deleted
-# rl-glm53f44-lt8vm at 10:02:37Z. Only two changes. (1) 8 SGLang engines,
-# not 32: replicas 40 -> 16 (workflow params replicas 16, replica-trainer
-# 8). The launcher derives --rollout-num-gpus (16 - 8) x 8 = 64, and 64 /
-# rollout_num_gpus_per_engine 8 = 8 engines. The 8 actor nodes and the
-# Megatron layout do not change. (2) Trainer image
-# miles-glm53-r15-20260927a (miles bc31f88ac): the launcher appends
-# --save-hf only when arena_save_hf is true. This file has no
-# arena_save_hf key, so each save writes the DCP only. The launch config
-# is miles-config-r0.yaml.
+# r46 deltas vs r44 (2026-09-27): calculate_per_token_loss true (token-level
+# loss average; the comment above the key gives the reason). New run names
+# (r46). Fresh run: no checkpoint dir under
+# slime_experiments/rl-glm53f-auct-cap-r46 (checked 2026-09-27). Everything
+# else is r44: trainer image miles-glm53-r14-20260927a, gym image
+# gym-glm53-adr72-20260927a, template guparpit-miles-deployer-v10, dataset
+# caponly-1034, agent-kwargs {}, publish-jobs-dir '', lr 1.5e-6.
 # r44 deltas vs r42 (2026-09-27): rollout_max_response_len 32768 -> 16384.
 # The trainer sends the output cap, the window (max_seq_len 131072), and
 # the sampling values in every task message (miles ADR-0015, AREnATasks
@@ -214,16 +210,13 @@ user: guparpit
 cluster: bom
 # EXPERIMENT_NAME in the PyTorchJob pod env drives CKPT_DIR; these names are
 # the config-side record. NEVER reuse a finished run's name (silent resume).
-experiment_name: rl-glm53f-auct-cap-r44
-project_name: rl-glm53f-auct-cap-r44
+experiment_name: rl-glm53f-auct-cap-r46
+project_name: rl-glm53f-auct-cap-r46
 agislime_dir: /root/miles
 # r6: 24 replicas = 8 actor nodes + 16 engine nodes (r1-r5: 12 = 8 + 4) (same convention as the parent:
 # replicas - num_trainers = rollout nodes; the launcher derives
 # --actor-num-nodes 8 and --rollout-num-gpus 128 from these + the pod env)
-# resume 1 (2026-09-27): 16 = 8 actor nodes + 8 engine nodes. The launcher
-# reads REPLICA and REPLICA_TRAINER from the pod env (workflow params
-# replicas and replica-trainer). This key is the config-side record only.
-replicas: 16
+replicas: 40
 num_trainers: 8
 # -> scripts/models/glm5.3-flash.py (ships in the merged image tree)
 model_arch: glm5.3-flash
@@ -468,6 +461,24 @@ entropy_coef: 0.0
 eps_clip: 0.2
 eps_clip_high: 0.28
 eps_clip_c: 2.0
+# r46: token-level loss average (DAPO token-level policy gradient loss,
+# arXiv 2503.14476; Dr. GRPO length-bias argument, arXiv 2503.20783). The
+# miles default is sum_of_sample_mean: each rollout divides its loss by its
+# own token count (rollout_mask_sums, all segments), and the step divides
+# the sum by the rollout count. Thus each token of a long wrong episode gets
+# a small share of the gradient. With calculate_per_token_loss, the step
+# divides the loss sum by the total token count, so every trained token has
+# the same weight. The launcher emits the bare flag
+# --calculate-per-token-loss. Megatron sums the token losses over the
+# micro-batches and divides the gradients by the token count that it
+# reduces over DP (finalize_model_grads). lr is unchanged: when the episode
+# lengths are similar, the mean step size per token is about the same.
+# W&B train/pg_loss has a different normalizer, so its scale is not
+# comparable with r44. train/pg_clipfrac, ppo_kl, and entropy_loss become
+# token-weighted means (r44: per-rollout means). No miles or Megatron check
+# blocks the flag here: CP 1, no indep-dp, no multi-LoRA, no MTP, no custom
+# loss, and ddp_average_in_collective false (the default).
+calculate_per_token_loss: true
 # ---- optimizer: upstream GLM recipe (lr 15e-7 -> 1e-6) ----
 optimizer: adam
 # r21: 1.5e-6 (r20 control stays 1e-6).
@@ -578,7 +589,7 @@ dynamic_sampling_filter_path: miles.rollout.filter_hub.dynamic_sampling_filters.
 # behind the CTRF length drift. The first attempt (save_debug_rollout_data on
 # rl-glm53f26-6ddss) killed the trainer in the polars dashboard writer
 # (Int32 sample_index vs the 1<<40 segment stride) and captured nothing.
-arena_sample_summary_dir: /mnt/scratch-s3files-rw/guparpit/debug/rl-glm53f-auct-cap-r44/sample_summary
+arena_sample_summary_dir: /mnt/scratch-s3files-rw/guparpit/debug/rl-glm53f-auct-cap-r46/sample_summary
 # r27 (REQUIRES image miles-glm53-r8-20260917a; on r7 the strict argparse kills
 # the trainer at startup on this key). Group-relative token-efficiency reward.
 # Before the dynamic-sampling filter, each episode reward gains a term based on

@@ -188,7 +188,11 @@ def layer_prefix(layer: int) -> str:
 
 def sharded_a(module: ReplicatedGlm5NextKDA, layer: int) -> dict:
     """The old replicated layer saved each tensor as one chunk under ``self_attention.kda.``."""
-    return sharded_state_dict_default(module, prefix=f"{layer_prefix(layer)}kda.")
+    # The TP group sets the replica id to the TP rank. The default None makes every rank a main
+    # replica (get_pg_rank(None) is 0), and the sharding validation then rejects the load.
+    return sharded_state_dict_default(
+        module, prefix=f"{layer_prefix(layer)}kda.", tp_group=mpu.get_tensor_model_parallel_group()
+    )
 
 
 def sharded_b(module: Glm5NextKDAAttention, layer: int) -> dict:
@@ -202,7 +206,9 @@ def load(module, sharded: dict, prefix: str, ckpt_dir: Path, strict: StrictHandl
     unexpected = set()
     if strict == StrictHandling.RETURN_UNEXPECTED:
         result, _missing, unexpected = result
-    module.load_state_dict({key[len(prefix) :]: value for key, value in result.items()}, strict=True)
+    # The load also returns the common state of the checkpoint (for example "args"). Keep the layer keys only.
+    layer_sd = {key[len(prefix) :]: value for key, value in result.items() if key.startswith(prefix)}
+    module.load_state_dict(layer_sd, strict=True)
     return keys, sorted(unexpected)
 
 

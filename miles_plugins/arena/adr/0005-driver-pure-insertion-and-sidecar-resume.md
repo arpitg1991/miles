@@ -4,6 +4,7 @@
 **Date:** 2026-09-01
 
 **Builds on:** ADR-0001 (port scope: core edits only where miles has no seam; keep `slime` names that are on-disk/wire compat)
+**Amended by:** ADR-0016 (2026-09-27: the driver is rebuilt on the upstream `train_async.py`; the final drain and the heartbeat removal are one disposer callback; upstream #3030 carries the `init_wandb_primary` resume change)
 
 ## Summary
 

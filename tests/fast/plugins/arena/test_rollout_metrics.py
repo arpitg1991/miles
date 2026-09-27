@@ -36,7 +36,6 @@ class MockSample:
     reward: float | None = 0.0
     metadata: dict = field(default_factory=dict)
     remove_sample: bool = False
-    weight_versions: list = field(default_factory=list)
 
     def get_reward_value(self, args) -> float:
         """Mirror miles.utils.types.Sample.get_reward_value."""
@@ -174,8 +173,12 @@ class TestComputeGroupMetrics:
 # ===========================================================================
 
 
+def _tagged(weight_versions: list[str]) -> MockSample:
+    return MockSample(metadata={"arena_weight_versions": weight_versions})
+
+
 class TestOffPolicyMetrics:
-    """compute_off_policy_metrics reads Sample.weight_versions (SGLang-tagged)."""
+    """compute_off_policy_metrics reads Sample.metadata["arena_weight_versions"] (ADR-0016)."""
 
     def test_empty_samples_returns_empty(self):
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
@@ -187,7 +190,7 @@ class TestOffPolicyMetrics:
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
 
         # reference_step=0, interval=1 → rollout_weight_step = (1-1)*1 = 0.
-        samples = [MockSample(weight_versions=["1"]), MockSample(weight_versions=["1"])]
+        samples = [_tagged(["1"]), _tagged(["1"])]
         result = compute_off_policy_metrics(MockArgs(), samples, rollout_id=0)
         assert result["off_policy_round/mean"] == pytest.approx(0.0)
         assert result["off_policy_round/on_policy_frac"] == pytest.approx(1.0)
@@ -198,16 +201,16 @@ class TestOffPolicyMetrics:
         """A sample from weight v1 consumed at step 3 is 3 rounds stale."""
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
 
-        samples = [MockSample(weight_versions=["1"])]
+        samples = [_tagged(["1"])]
         result = compute_off_policy_metrics(MockArgs(), samples, rollout_id=3)
         assert result["off_policy_round/mean"] == pytest.approx(3.0)
         assert result["off_policy_round/on_policy_frac"] == pytest.approx(0.0)
 
     def test_untagged_samples_tracked(self):
-        """Samples with no weight_versions count toward untagged_frac."""
+        """Samples with no arena weight versions count toward untagged_frac."""
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
 
-        samples = [MockSample(weight_versions=["2"]), MockSample(weight_versions=[])]
+        samples = [_tagged(["2"]), _tagged([])]
         result = compute_off_policy_metrics(MockArgs(), samples, rollout_id=3)
         assert result["off_policy_round/untagged_frac"] == pytest.approx(0.5)
 

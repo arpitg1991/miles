@@ -59,6 +59,7 @@ from miles_plugins.arena.nats_arena.routing_replay import (
     stash_step_payload,
 )
 from miles_plugins.arena.nats_arena.stream_config import results_stream_config
+from miles_plugins.arena.rollout_metrics import ARENA_WEIGHT_VERSIONS_KEY
 
 # Lazy-imported in _maybe_build_autoscaler / _maybe_build_timing_tracker
 # so that import errors in these optional modules don't prevent
@@ -483,13 +484,14 @@ class _EpisodeContext:
 
 def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | None) -> Sample:
     """Stamp the trajectory-level fields shared by the fast and slow paths."""
-    # Per-turn SGLang weight versions for the off_policy_round metric: the
-    # trajectory list on every segment, no per-segment slicing (ADR-0011).
-    s.weight_versions = list(ctx.weight_versions)
     # segment / n_segments land on EVERY sample (ADR-0011). The default is a
     # one-sample episode, which is what the slow path emits; the fast path
     # overwrites both for a multi-segment episode.
     s.metadata = {
+        # Per-turn SGLang weight versions for the off_policy_round metric: the
+        # trajectory list on every segment, no per-segment slicing (ADR-0011).
+        # They stay in metadata; Sample.weight_versions stays empty (ADR-0016).
+        ARENA_WEIGHT_VERSIONS_KEY: list(ctx.weight_versions),
         "task_id": ctx.task_id,
         "mode": "full_trajectory",
         "gym_name": ctx.gym_name,
@@ -954,7 +956,7 @@ def _episodes(groups: list[list[Sample]]) -> list[list[Sample]]:
 def _episode_representatives(groups: list[list[Sample]]) -> list[Sample]:
     """Return one Sample per episode: its first segment.
 
-    ``reward`` and ``weight_versions`` are identical on every segment, and the
+    ``reward`` and the arena weight versions are identical on every segment, and the
     first segment of a group's first episode carries ``group_metrics``, so
     episode-level reductions of those read this sample. ``remove_sample``,
     ``removal_reason`` and ``status`` are per segment (``hard_overflow``,
@@ -2308,7 +2310,6 @@ def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
         # COMPLETED, never the source status: a zero-loss row trains nothing, and a
         # copied TRUNCATED inflates rollout/truncated_ratio and train_data["truncated"].
         pad.status = Sample.Status.COMPLETED
-        pad.weight_versions = list(src.weight_versions)
         pad.remove_sample = False
         pad.metadata = {**(src.metadata or {}), "mode": "dp_pad", "segment": len(episode) + k}
         group.append(pad)
@@ -2734,9 +2735,8 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
 
             # Off-policy staleness (rollout/off_policy_round/*): how far the
             # trainer's weights advanced past the weights that generated each
-            # sample. Reads s.weight_versions, which miles tags natively via the
-            # SGLang weight-version handshake (types.py update_from_meta_info),
-            # so no manager-side propagation is needed. reference_step ==
+            # sample. Reads the gym-reported per-turn versions in
+            # s.metadata["arena_weight_versions"] (ADR-0016). reference_step ==
             # rollout_id (one generate_rollout == one trainer step in
             # nats_rollout).
             off_policy = compute_off_policy_metrics(args, all_samples, rollout_id)

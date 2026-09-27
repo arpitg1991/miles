@@ -6,11 +6,16 @@ at the right points in the training loop WITHOUT modifying miles core code:
 1. Checkpoint sidecar (wandb_run_id + counters) after save_model
 2. Fire-and-forget per-checkpoint hosted eval (argo_eval_trigger) after save_model
 3. Trainer-side eval-metrics queue drain (eval_metrics_drain) once per loop
-   iteration and once, with final=True, before finish_tracking
+   iteration and once, with final=True, at teardown before finish_tracking
 4. Trainer-alive heartbeat removal (eval_metrics_drain.remove_trainer_alive)
    between the final drain and finish_tracking, so a post-training eval
    coordinator flushes its queue immediately instead of waiting out the
    heartbeat-staleness window
+
+The final drain and the heartbeat removal are one disposer callback. It is
+registered right after init_orchestration_script, which registers
+finish_tracking, so the disposer stack runs it after every later teardown
+(eval dispatcher, models, rollout components) and before finish_tracking.
 
 Arena W&B metric step bindings need no plugin-side declarations: miles'
 _init_wandb_common already declares train/*, rollout/*, multi_turn/*,
@@ -19,10 +24,10 @@ passrate/*, perf/* and eval/*, and wandb glob matching is prefix-based
 
 Off-policy staleness (rollout/off_policy_round/*) and rollout/binary_reward are
 logged inside the rollout function (nats_arena/nats_rollout.py) where the Sample
-objects — and their SGLang-tagged weight_versions / rewards — actually live.
-Weight versions are propagated to the rollout engines natively by miles'
-update-weight backend (the trainer calls rollout_manager.set_weight_version),
-so no wrapper-side propagation is needed here.
+objects live. The gym-reported per-turn weight versions ride in
+Sample.metadata["arena_weight_versions"] (ADR-0016). miles' update_weights
+publishes each new weight version to the rollout executor, so no
+wrapper-side propagation is needed here.
 
 Usage (in entrypoint.sh):
     python3 -m miles_plugins.arena.train_async_arena
@@ -32,19 +37,21 @@ Usage (in entrypoint.sh):
 import asyncio
 import logging
 import os
+from functools import partial
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.placement_group import (
+    create_rollout_components,
+    create_training_models,
+    maybe_start_api_server,
+    update_weights,
+)
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
-from miles.utils import object_store
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.data import remove_rollout_data_refs
-from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
-from miles.utils.ft_utils.control_server.server import start_control_server
+from miles.utils.async_utils import Disposer, eager_create_task, with_disposer
+from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
-from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
+from miles.utils.orchestration_utils import init_orchestration_script
 
 logger = logging.getLogger(__name__)
 
@@ -153,53 +160,67 @@ def _maybe_drain_eval_metrics(args, final: bool = False):
         logger.warning("Eval-metrics drain failed: %s", e)
 
 
+def _remove_trainer_alive(args):
+    """Clear the trainer-alive heartbeat so a post-training eval coordinator
+    flushes the metrics queue itself instead of waiting for mtime staleness.
+    Never raises — shutdown must proceed regardless.
+    """
+    try:
+        from miles_plugins.arena.eval_metrics_drain import remove_trainer_alive
+
+        remove_trainer_alive(args)
+    except Exception as e:  # noqa: BLE001 - never interrupt shutdown
+        logger.warning("Failed to remove trainer-alive sentinel: %s", e)
+
+
+def _finish_arena(args):
+    """Run the final eval-metrics drain, then clear the trainer-alive heartbeat.
+
+    The disposer runs this after the eval dispatcher, the models, and the
+    rollout components are torn down, and before finish_tracking. Never
+    raises: both steps are warn-only.
+    """
+    _maybe_drain_eval_metrics(args, final=True)
+    _remove_trainer_alive(args)
+
+
 # The framework supports other asynchronous approaches such as fully async (see miles/rollout/fully_async_rollout.py).
-async def train(args):
-    """Arena-wrapped async training loop."""
+async def train(args, *, disposer: Disposer):
     assert not args.colocate, "Colocation is not supported for async training."
     validate_async_off_policy_correction(args)
-    configure_logger(args, source=MainProcessIdentity())
-    maybe_start_periodic_pyspy_dump()
-
     # Load checkpoint sidecar BEFORE init_tracking so wandb_run_id is set
     _load_extra_state(args)
-
-    # allocate the GPUs
-    pgs = create_placement_groups(args)
-    object_store.init_instance(args, contribute_segment=False)
-    init_tracking(args)
+    _worker_manager = init_orchestration_script(args, disposer=disposer)
+    disposer.add(partial(_finish_arena, args))
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
+    disposer.add(inference_controller, rollout_executor)
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
+    actor_model, critic_model = await create_training_models(args, rollout_executor)
+    disposer.add(critic_model, actor_model)
 
-    if args.control_server_port:
-        start_control_server(
-            actor_model=actor_model,
-            rollout_manager=rollout_manager,
-            port=args.control_server_port,
-            ft_components=args.ft_components,
-        )
-
+    maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
     maybe_start_mini_ft_controller(args)
 
     # always update weight first so that sglang has the loaded weights from training.
-    await actor_model.update_weights()
+    await update_weights(args, actor_model, rollout_executor, inference_controller)
 
     if args.check_weight_update_equal:
-        await rollout_manager.check_weights.remote(
+        await inference_controller.check_weights(
             action="compare",
             allow_quant_error=args.check_weight_update_allow_quant_error,
             selector=args.check_weight_update_selector,
             skip_list=args.check_weight_update_skip_list,
         )
 
-    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_manager)
+    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
+    disposer.add(eval_dispatcher.drain)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
+        await inference_controller.prepare_eval()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
     async def save_training_model(model, rollout_id, force_sync):
@@ -209,16 +230,25 @@ async def train(args):
         if args.use_critic and args.offload_train:
             await model.offload()
 
+    async def prepare_and_generate(rollout_id):
+        await inference_controller.prepare_rollout(rollout_id)
+        return await rollout_executor.get(rollout_id)
+
     # async train loop.
-    rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
+    rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
             rollout_data_curr_ref = await rollout_data_next_future
 
-        # Start the next rollout early.
-        if rollout_id + 1 < args.num_rollout:
-            rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
+        has_next_rollout = rollout_id + 1 < args.num_rollout
+        weight_update_due = (rollout_id + 1) % args.update_weights_interval == 0
+
+        # A fully-async producer keeps generating without a pending get(). When
+        # weights will change, defer the next drain so it uses the new version.
+        defer_next_drain = args.fully_async and has_next_rollout and weight_update_due
+        if has_next_rollout and not defer_next_drain:
+            rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)
@@ -228,6 +258,7 @@ async def train(args):
                 await actor_model.train(rollout_id, rollout_data_curr_ref, external_data=values)
                 if args.offload_train:
                     await actor_model.offload()
+            remove_train_output_refs(values)
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)
@@ -242,17 +273,21 @@ async def train(args):
             _maybe_trigger_eval(args, rollout_id)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_manager.save.remote(rollout_id)
+            await rollout_executor.save(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
-        if (rollout_id + 1) % args.update_weights_interval == 0:
-            # sync generate before update weights to prevent update weight in the middle of generation
-            rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
-            rollout_data_next_future = None
-            await actor_model.update_weights(rollout_id=rollout_id)
+        if weight_update_due:
+            if not args.fully_async:
+                # sync generate before update weights to prevent update weight in the middle of generation
+                rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
+                rollout_data_next_future = None
+            await update_weights(args, actor_model, rollout_executor, inference_controller, rollout_id=rollout_id)
+            if defer_next_drain:
+                rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+            await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 
         # Forward any eval-coordinator metrics queued since the last iteration.
@@ -269,28 +304,7 @@ async def train(args):
             )
             break
 
-    await eval_dispatcher.drain()
-    await rollout_manager.dispose.remote()
-
-
-def _remove_trainer_alive(args):
-    """Clear the trainer-alive heartbeat so a post-training eval coordinator
-    flushes the metrics queue itself instead of waiting for mtime staleness.
-    Never raises — shutdown must proceed regardless.
-    """
-    try:
-        from miles_plugins.arena.eval_metrics_drain import remove_trainer_alive
-
-        remove_trainer_alive(args)
-    except Exception as e:  # noqa: BLE001 - never interrupt shutdown
-        logger.warning("Failed to remove trainer-alive sentinel: %s", e)
-
 
 if __name__ == "__main__":
     args = parse_args()
-    try:
-        asyncio.run(train(args))
-    finally:
-        _maybe_drain_eval_metrics(args, final=True)
-        _remove_trainer_alive(args)
-        finish_tracking()
+    asyncio.run(with_disposer(train, args))

@@ -1,5 +1,5 @@
-# kdatp-t1: T1 KDA-TP parity + the T1c 5-layer train-only arms on ONE p6-b200 node.
-# Placeholders: __IMAGE__ (the kdatp test trainer image), __STAMP__ (a fresh
+# kdash-t1: T1 shared delta-rule layer parity, GPU unit tests and the T1c 5-layer train-only arms on ONE p6-b200 node.
+# Placeholders: __IMAGE__ (the kdash test trainer image), __STAMP__ (a fresh
 # lowercase suffix, for example 20260927a; it names the job, the run dir and
 # the checkpoint dirs). README.md holds the submit and delete commands.
 #
@@ -8,10 +8,10 @@
 apiVersion: kubeflow.org/v1
 kind: PyTorchJob
 metadata:
-  name: kdatp-t1-__STAMP__
+  name: kdash-t1-__STAMP__
   namespace: arena-tasks
   labels:
-    app: kdatp-t1-__STAMP__
+    app: kdash-t1-__STAMP__
     arena.agif.amazon.dev/submitter: guparpit
     kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
     kueue.x-k8s.io/priority-class: inference
@@ -22,7 +22,7 @@ spec:
     maxRestarts: 0
     nProcPerNode: 8
     rdzvBackend: c10d
-    rdzvId: kdatp-t1-__STAMP__
+    rdzvId: kdash-t1-__STAMP__
   runPolicy:
     # Delete the job by hand when it ends (README.md); the results are on the scratch mount.
     activeDeadlineSeconds: 28800
@@ -35,7 +35,7 @@ spec:
       template:
         metadata:
           labels:
-            app: kdatp-t1-__STAMP__
+            app: kdash-t1-__STAMP__
             arena.agif.amazon.dev/submitter: guparpit
             kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
           annotations:
@@ -148,9 +148,9 @@ spec:
             imagePullPolicy: Always
             command: [bash, -c]
             args:
-            - exec bash /root/miles/examples/arena/harbor-rl-glm53-flash/kdatp/kdatp-run.sh t1
+            - exec bash /root/miles/examples/arena/harbor-rl-glm53-flash/kdash/kdash-run.sh t1
             env:
-            - {name: KDATP_STAMP, value: __STAMP__}
+            - {name: KDASH_STAMP, value: __STAMP__}
             - {name: USER, value: guparpit}
             - {name: AGISLIME_DIR, value: /root/miles}
             - {name: PYTHONUNBUFFERED, value: "1"}

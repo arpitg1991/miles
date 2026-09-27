@@ -874,6 +874,30 @@ def _publisher_max_in_flight(args) -> int:
     return int(getattr(args, "arena_inflight_multiplier", 2)) * int(args.rollout_batch_size)
 
 
+def _rollout_max_seq_len(args) -> int:
+    """Return the episode window that a Harbor training task carries as ``max_seq_len``.
+
+    The window is the smaller of ``rollout_max_context_len`` and
+    ``sglang_context_length``, over the values that are set. Thus the gym never
+    plans a turn past the SGLang window or past the trainer sample limit
+    (ADR-0015).
+
+    Raises:
+        ValueError: Neither value is set. The gym then has no window to use.
+    """
+    limits = [
+        v
+        for v in (getattr(args, "rollout_max_context_len", None), getattr(args, "sglang_context_length", None))
+        if v is not None
+    ]
+    if not limits:
+        raise ValueError(
+            "Set --rollout-max-context-len or --sglang-context-length. The Harbor gym takes its "
+            "context window from max_seq_len in the task message (ADR-0015)."
+        )
+    return min(limits)
+
+
 def _episode_key(s: Sample) -> tuple[int | None, int | None]:
     """Episode identity: ``rollout_id`` when stamped (``all`` mode), else ``index``."""
     return (s.group_index, s.rollout_id if s.rollout_id is not None else s.index)
@@ -1296,6 +1320,15 @@ class NATSRolloutWorker:
                 "Only 'full_trajectory' is supported (per_step was removed)."
             )
 
+        # A Harbor gym fails every group whose task message lacks the output
+        # cap or the window (ADR-0015). Stop here, before any publish.
+        if args.rollout_max_response_len is None:
+            raise ValueError(
+                "Set --rollout-max-response-len. The Harbor gym takes its per-call output cap "
+                "from sampling_params.max_new_tokens in the task message (ADR-0015)."
+            )
+        self._max_seq_len = _rollout_max_seq_len(args)
+
         self.n_per_prompt = args.n_samples_per_prompt
         self.concurrency = args.rollout_batch_size
         self.inflight_multiplier = int(getattr(args, "arena_inflight_multiplier", 2))
@@ -1710,6 +1743,14 @@ class NATSRolloutWorker:
                             # Always on: this trainer reads inline arrays and
                             # refs, and an old gym ignores the key (ADR-0014).
                             token_arrays_by_ref=True,
+                            # The gym keeps no copy of these values (ADR-0015).
+                            # ponytail: only the three sampling keys that the gym
+                            # reads; add rollout_top_k here and in the gym parser
+                            # together when a run sets it.
+                            max_new_tokens=self.args.rollout_max_response_len,
+                            temperature=self.args.rollout_temperature,
+                            top_p=self.args.rollout_top_p,
+                            max_seq_len=self._max_seq_len,
                         )
                         # Make task_id unique per publish to avoid collisions
                         # when the data_source wraps epochs and re-emits the

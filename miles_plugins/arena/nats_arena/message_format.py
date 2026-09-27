@@ -4,7 +4,9 @@ Defines the wire format for task messages (trainer -> Gym) and result
 messages (Gym -> trainer) exchanged via NATS JetStream.
 
 Task messages carry a lakefs_uri + commit_id pointing to the task directory.
-The gym worker pulls and materializes the task from lakeFS.
+The gym worker pulls and materializes the task from lakeFS. A Harbor training
+task also carries the per-call output cap, the sampling values, and the
+context window, so the miles config is the only source of each (ADR-0015).
 """
 
 from __future__ import annotations
@@ -32,6 +34,10 @@ def build_task_message(
     session: str | None = None,
     capture_routed_experts: bool = False,
     token_arrays_by_ref: bool = False,
+    max_new_tokens: int | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_seq_len: int | None = None,
 ) -> dict[str, Any]:
     """Build a task message for publishing to NATS.
 
@@ -62,6 +68,17 @@ def build_task_message(
             can then also leave out ``messages`` on a trajectory that takes
             the token path (ADR-0014). The key is emitted only when True, so
             the message stays byte-identical when the argument is False.
+        max_new_tokens: Per-call output cap (``rollout_max_response_len``).
+            Sent as ``sampling_params.max_new_tokens`` (ADR-0015).
+        temperature: Sampling temperature (``rollout_temperature``). Sent as
+            ``sampling_params.temperature``.
+        top_p: Nucleus sampling value (``rollout_top_p``). Sent as
+            ``sampling_params.top_p``.
+        max_seq_len: Context window for one episode: the smaller of
+            ``rollout_max_context_len`` and ``sglang_context_length``. Sent as
+            top-level ``max_seq_len``. The four sampling and window keys are
+            emitted only when set, so the message stays byte-identical
+            without them.
 
     Returns:
         JSON-serialisable dict ready for NATS publish.
@@ -95,6 +112,17 @@ def build_task_message(
         # Top-level, like ``capture_routed_experts``: the gym contract reads
         # ``raw.get("token_arrays_by_ref", False)``. An old gym ignores it.
         msg["token_arrays_by_ref"] = True
+    # The key names copy upstream examples/swe-agent-harbor-docker/
+    # swe_agent_function.py. An old gym ignores them (ADR-0015).
+    sampling_params = {
+        key: value
+        for key, value in (("max_new_tokens", max_new_tokens), ("temperature", temperature), ("top_p", top_p))
+        if value is not None
+    }
+    if sampling_params:
+        msg["sampling_params"] = sampling_params
+    if max_seq_len is not None:
+        msg["max_seq_len"] = max_seq_len
     return msg
 
 
@@ -172,11 +200,16 @@ def sample_to_task(
     session: str | None = None,
     capture_routed_experts: bool = False,
     token_arrays_by_ref: bool = False,
+    max_new_tokens: int | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_seq_len: int | None = None,
 ) -> dict[str, Any]:
     """Convert a miles Sample (from manifest dataset) into a NATS task.
 
     The Sample's metadata contains lakefs_uri and lakefs_commit_id
-    populated by the data source from the manifest JSONL.
+    populated by the data source from the manifest JSONL. The sampling and
+    window arguments go to ``build_task_message`` unchanged.
     """
     meta = sample.metadata or {}
     if isinstance(meta, str):
@@ -208,4 +241,8 @@ def sample_to_task(
         session=session,
         capture_routed_experts=capture_routed_experts,
         token_arrays_by_ref=token_arrays_by_ref,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        max_seq_len=max_seq_len,
     )

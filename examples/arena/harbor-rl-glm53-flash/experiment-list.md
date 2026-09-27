@@ -164,9 +164,13 @@ keeps starting new work past the point where it can finish inside the window.
 - **Why rejected.** The 98 k wall is an artifact the run created. The overflowing
   generations fail anyway. The user assessed the benefit as marginal: the
   episodes just get stuck near 120 k instead of 98 k.
+- **Reversed 2026-09-27.** See the RUNLOG.md entry of that date and plugin
+  ADR-0015.
 
 ### R3. Reduce the per-turn cap (32768 → 16384 or 8192)
 
 - **Idea.** Smaller per-turn cap leaves more turns inside the window.
 - **Why rejected.** Only 0.2% of turns hit the cap, so the cap is not the
   binding constraint. The user assessed the benefit as marginal.
+- **Reversed 2026-09-27.** See the RUNLOG.md entry of that date and plugin
+  ADR-0015.

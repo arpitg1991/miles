@@ -79,15 +79,16 @@ TESTS = {
             "num_trainers": 8,
             "rollout_batch_size": 8,  # 8 groups x 8 = 64 episodes = one optimizer step
             "global_batch_size": 64,
-            # Seeded from r43 iter_0000039: rollouts 40, 41, 42 (step 1 warms up, steps 2-3 time).
-            "debug_exit_after_rollout": 3,
+            # Seeded from r43 iter_0000039: rollouts 40 to 43 (step 1 warms up, steps 2-4 time).
+            "debug_exit_after_rollout": 4,
             "load_debug_rollout_data": "{data}/t2/rollout_{{rollout_id}}.pt",
         },
         "arms": {
             "baseline": {},
             "kdatp": KDA_TP,
             "kdatp-block10": {**KDA_TP, **BLOCK10},
-            "baseline2": {},
+            # The noise floor of the step-1 parity, and one more timed step.
+            "baseline2": {"debug_exit_after_rollout": 2},
             # Last: the kdatp design predicts an out-of-memory error on stage 0 at 131K tokens.
             "kdatp-selective": {**KDA_TP, **SELECTIVE},
         },

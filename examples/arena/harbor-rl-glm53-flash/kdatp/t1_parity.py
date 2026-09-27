@@ -16,7 +16,11 @@ Both load the layer from the same DCP checkpoint. Then the script checks:
   ``convert_glm5_next_to_hf`` gives the same HF tensors for A and B. When an
   HF directory is given, they are also bitwise equal to its safetensors.
 - F1 forward and B1 backward: the output, the input gradient and each weight
-  gradient of B match A. A second A pass gives the noise floor.
+  gradient of A and of B are compared with an fp32 reference (A with fp32
+  weights and inputs). B passes when its error is at most 2 x the error of A
+  plus one bf16 rounding (2**-8). The row-parallel o_proj of B sums 8 bf16
+  partial outputs, so B is not bitwise equal to A. A weight gradient norm
+  ratio B/A outside 0.99 to 1.01 is a TP reduction bug.
 - N1 negative control: B with a contiguous conv slice moves the output by
   more than 10%, so F1 can see a wrong conv layout.
 - R1 round trip: B saves a DCP. A fresh A and a fresh B load it bitwise.
@@ -77,9 +81,13 @@ SHARDING = {
     "dt_bias": (0, 1),
     "o_proj.weight": (1, 1),
 }
-# Gates (proposed in the kdatp design; not calibrated yet, so the JSON keeps the values).
-MAX_REL_L2_OUTPUT = 2e-3
-MAX_REL_L2_GRAD = 5e-3
+# F1 and B1 gate: err(B, ref) <= REF_ERR_FACTOR * err(A, ref) + BF16_ROUNDING (relative L2).
+REF_ERR_FACTOR = 2.0
+BF16_ROUNDING = 2.0**-8
+# A missing or doubled TP sum moves a gradient norm by 8, 1/8 or sqrt(8).
+NORM_RATIO_RANGE = (0.99, 1.01)
+# Used only when the fp32 reference fails (the JSON records the error): B against A.
+FALLBACK_MAX_REL_L2 = 1e-2
 MIN_REL_L2_NEGATIVE = 1e-1
 
 
@@ -152,11 +160,23 @@ def make_config(tp_size: int) -> TransformerConfig:
     )
 
 
-def build(hf_checkpoint: str, config: TransformerConfig, layer: int, kda_tp: bool) -> Glm5NextKDAAttention:
+def build(
+    hf_checkpoint: str, config: TransformerConfig, layer: int, kda_tp: bool, bf16: bool = True
+) -> Glm5NextKDAAttention:
     args = Namespace(hf_checkpoint=hf_checkpoint, sequence_parallel=True, allgather_cp=False, glm5_next_kda_tp=kda_tp)
     module = Glm5NextKDAAttention(args, config, layer_number=layer + 1).cuda()
-    # Float16Module does the same cast: bf16 except the tensors marked keep_in_fp32.
-    convert_module_to_dtype_except_fp32_marked(module, torch.bfloat16)
+    if bf16:
+        # Float16Module does the same cast: bf16 except the tensors marked keep_in_fp32.
+        convert_module_to_dtype_except_fp32_marked(module, torch.bfloat16)
+    return module
+
+
+def fp32_copy(hf_checkpoint: str, config: TransformerConfig, layer: int, source: Glm5NextKDAAttention):
+    """The replicated module with fp32 weights equal to the (bf16) weights of ``source``."""
+    module = build(hf_checkpoint, config, layer, kda_tp=False, bf16=False)
+    with torch.no_grad():
+        for name in KDA_PARAMS:
+            param(module, name).copy_(param(source, name).float())
     return module
 
 
@@ -191,6 +211,26 @@ def expected_shard(full: torch.Tensor, name: str, rank: int, tp_size: int) -> to
 
 def rel_l2(actual: torch.Tensor, expected: torch.Tensor) -> float:
     return ((actual.float() - expected.float()).norm() / expected.float().norm().clamp_min(1e-30)).item()
+
+
+def max_abs(actual: torch.Tensor, expected: torch.Tensor) -> float:
+    return (actual.float() - expected.float()).abs().max().item()
+
+
+def compare(a: torch.Tensor, b: torch.Tensor, ref: torch.Tensor | None) -> dict:
+    """Errors of A and B against the fp32 reference, and of B against A. ``ok`` is the F1/B1 gate."""
+    row = {"rel_l2_b_vs_a": rel_l2(b, a), "max_abs_b_vs_a": max_abs(b, a), "max_abs_a": a.float().abs().max().item()}
+    if ref is None:
+        row["ok"] = row["rel_l2_b_vs_a"] < FALLBACK_MAX_REL_L2
+        return row
+    row.update(
+        rel_l2_a_vs_ref=rel_l2(a, ref),
+        rel_l2_b_vs_ref=rel_l2(b, ref),
+        max_abs_a_vs_ref=max_abs(a, ref),
+        max_abs_b_vs_ref=max_abs(b, ref),
+    )
+    row["ok"] = row["rel_l2_b_vs_ref"] <= REF_ERR_FACTOR * row["rel_l2_a_vs_ref"] + BF16_ROUNDING
+    return row
 
 
 def gather_sp(x: torch.Tensor) -> torch.Tensor:
@@ -377,28 +417,47 @@ def check_layer(cli, checks: Checks, ckpt_name: str, ckpt_dir: Path, hf_dir: Pat
     out_b, dx_b = forward_backward(module_b, hidden, grad, psp)
     grads_b = gather_full(module_b, layer, tp_reduce_grads(module_b))
 
+    # The fp32 reference: A with fp32 weights, inputs and output gradient.
+    try:
+        module_ref = fp32_copy(cli.hf_checkpoint, config, layer, module_a)
+        out_ref, dx_ref = forward_backward(module_ref, hidden.float(), grad.float(), psp)
+        grads_ref = tp_reduce_grads(module_ref)
+        ref_error = None
+        del module_ref
+    except Exception as exc:  # noqa: BLE001 - the check falls back to B against A and records the error
+        out_ref = dx_ref = None
+        grads_ref = dict.fromkeys(KDA_PARAMS)
+        ref_error = repr(exc)
+    ref_ok = torch.tensor([0 if ref_error is None else 1], device="cuda")
+    dist.all_reduce(ref_ok)
+    if ref_ok.item():  # every rank MUST use the same gate
+        out_ref = dx_ref = None
+        grads_ref = dict.fromkeys(KDA_PARAMS)
+
     marked = sorted(n for n in KDA_PARAMS if getattr(param(module_b, n), "sequence_parallel", False))
     checks.add(f"{tag}/B1_tp_sum_marks", marked == ["o_norm.weight"], sequence_parallel_params=marked)
 
     floor = {"output": rel_l2(out_a2, out_a), "dx": rel_l2(dx_a2, dx_a)}
-    out_err, dx_err = rel_l2(out_b, out_a), rel_l2(dx_b, dx_a)
+    out_cmp = compare(out_a, out_b, out_ref)
     checks.add(
         f"{tag}/F1_forward",
-        out_err < MAX_REL_L2_OUTPUT,
-        rel_l2=out_err,
-        mean_abs=(out_b.float() - out_a.float()).abs().mean().item(),
-        max_abs=(out_b.float() - out_a.float()).abs().max().item(),
-        noise_floor=floor["output"],
+        out_cmp.pop("ok"),
+        **out_cmp,
+        mean_abs_b_vs_a=(out_b.float() - out_a.float()).abs().mean().item(),
+        a_vs_a=floor["output"],
+        reference="fp32" if out_ref is not None else f"none: {ref_error}",
         seqlens=seqlens,
     )
-    checks.add(f"{tag}/B1_input_grad", dx_err < MAX_REL_L2_GRAD, rel_l2=dx_err, noise_floor=floor["dx"])
-    grad_err = {name: rel_l2(grads_b[name], grads_a[name]) for name in KDA_PARAMS}
-    # A norm ratio near 8, 1/8 or sqrt(8) is a missing or doubled TP reduction.
+    dx_cmp = compare(dx_a, dx_b, dx_ref)
+    checks.add(f"{tag}/B1_input_grad", dx_cmp.pop("ok"), **dx_cmp, a_vs_a=floor["dx"])
+    grad_cmp = {name: compare(grads_a[name], grads_b[name], grads_ref[name]) for name in KDA_PARAMS}
     norm_ratio = {name: (grads_b[name].float().norm() / grads_a[name].float().norm()).item() for name in KDA_PARAMS}
+    low, high = NORM_RATIO_RANGE
+    grads_ok = [row.pop("ok") for row in grad_cmp.values()]  # a list: every row loses its "ok" key
     checks.add(
         f"{tag}/B1_weight_grads",
-        all(err < MAX_REL_L2_GRAD for err in grad_err.values()),
-        rel_l2=grad_err,
+        all(grads_ok) and all(low <= r <= high for r in norm_ratio.values()),
+        errors=grad_cmp,
         norm_ratio=norm_ratio,
     )
 

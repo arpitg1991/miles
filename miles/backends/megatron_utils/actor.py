@@ -85,10 +85,20 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
     logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
+def _reset_peak_memory() -> None:
+    """Start the step peak window at the start of ``train`` when MILES_LOG_PEAK_MEMORY is set.
+
+    Without it, the first step peak also holds the model load.
+    """
+    if os.environ.get("MILES_LOG_PEAK_MEMORY"):
+        torch.cuda.reset_peak_memory_stats()
+
+
 def _log_peak_memory(rollout_id: int) -> None:
     """Log and reset this rank's CUDA memory peak of the step when MILES_LOG_PEAK_MEMORY is set.
 
-    The peak covers the log-prob pass and the train pass. The kdatp memory tests read it per pipeline stage.
+    The peak covers the data transfer, the log-prob pass and the train pass. The kdatp memory tests read
+    it per pipeline stage.
     """
     if not os.environ.get("MILES_LOG_PEAK_MEMORY"):
         return
@@ -436,6 +446,7 @@ class MegatronTrainRayActor(TrainRayActor):
         self._last_rollout_id = rollout_id
         if self.args.offload_train and self._asleep:
             self.wake_up()
+        _reset_peak_memory()
 
         with ExitStack() as stack:
             with timer("data_preprocess"):

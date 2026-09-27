@@ -31,6 +31,18 @@ layout in the DCP factory, the weight-sync gather and the mbridge split and
 merge; the default module names and shapes) and
 `tests/fast/launch_scripts/test_run_arena_harbor.py` (train only).
 
+## Test image
+
+`arena-slime-dev:miles-glm53-kdatp-test-20260927a`, built 2026-09-27 from
+`arpit-kda-tp-recompute` `2340ced4d` with `docker build -f
+examples/arena/Dockerfile --build-arg
+MILES_BASE_IMAGE=<glm53next-upstream-20260902>` at the repo root. Digest
+`sha256:0fe78530f35cfa39da7198e91b0286ab71b091987e08514ef14fffb3aa064b6d`
+in us-east-1 and ap-south-1. Image checks: `git rev-parse HEAD` =
+`2340ced4d`, a clean tree, and the 6 CPU tests of
+`test_glm5_next_kda_tp.py` pass in the image. It is r15 plus this branch,
+so it is a test image only: NEVER use it for a live run.
+
 ## Files
 
 | File | Use |
@@ -60,8 +72,9 @@ merge; the default module names and shapes) and
 
 ```bash
 K="kubectl --context arena-prod-bom-v2 -n arena-tasks"
-IMAGE=427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:<kdatp test tag>
+IMAGE=427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-kdatp-test-20260927a
 STAMP=<fresh suffix, for example 20260927a>
+sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" t1-job.yaml | $K create --dry-run=server -f -
 sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" t1-job.yaml | $K create -f -
 $K logs -f kdatp-t1-$STAMP-worker-0
 $K delete pytorchjob kdatp-t1-$STAMP   # when driver.log says "done"

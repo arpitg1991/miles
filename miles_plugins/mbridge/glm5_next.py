@@ -8,9 +8,6 @@ from miles_plugins.mbridge.deepseek_v32 import GlmMoeDsaBridge
 
 _GLM5_NEXT_VOCAB_SIZE = 154880
 
-_KDA_CONV_SUFFIX = "self_attention.kda.conv1d.weight"
-_KDA_CONV_PARTS = 3
-
 _HC_ALPHA_SLICES = {
     "alpha_pre": slice(0, 1),
     "alpha_post": slice(1, 2),
@@ -21,28 +18,28 @@ _HC_ALPHA_SLICES = {
 @register_model("glm5_next")
 class Glm5NextBridge(GlmMoeDsaBridge):
 
+    # The KDA layers run on the shared head-sharded layer (miles_plugins/models/glm5_next/kda.py). Each
+    # sharded tensor is a plain dim-0 or dim-1 TP chunk, so the base TP split and merge are correct.
     _KDA_MAPPING = {
-        f"self_attention.kda.{weight_name}": ["model.layers.{layer_number}.self_attn." + weight_name]
-        for weight_name in [
-            "q_proj.weight",
-            "k_proj.weight",
-            "v_proj.weight",
-            "b_proj.weight",
-            "f_a_proj.weight",
-            "f_b_proj.weight",
-            "g_a_proj.weight",
-            "g_b_proj.weight",
-            "A_log",
-            "dt_bias",
-            "o_norm.weight",
-            "o_proj.weight",
+        f"self_attention.linear_attn.{megatron_name}": ["model.layers.{layer_number}.self_attn." + hf_name]
+        for megatron_name, hf_name in [
+            ("q_proj.weight", "q_proj.weight"),
+            ("k_proj.weight", "k_proj.weight"),
+            ("v_proj.weight", "v_proj.weight"),
+            ("q_conv1d.weight", "q_conv1d.weight"),
+            ("k_conv1d.weight", "k_conv1d.weight"),
+            ("v_conv1d.weight", "v_conv1d.weight"),
+            ("b_proj.weight", "b_proj.weight"),
+            ("f_a_proj.weight", "f_a_proj.weight"),
+            ("f_b_proj.weight", "f_b_proj.weight"),
+            ("g_a_proj.weight", "g_a_proj.weight"),
+            ("g_b_proj.weight", "g_b_proj.weight"),
+            ("A_log", "A_log"),
+            ("dt_bias", "dt_bias"),
+            ("norm.weight", "o_norm.weight"),
+            ("out_proj.weight", "o_proj.weight"),
         ]
     }
-    _KDA_MAPPING["self_attention.kda.conv1d.weight"] = [
-        "model.layers.{layer_number}.self_attn.q_conv1d.weight",
-        "model.layers.{layer_number}.self_attn.k_conv1d.weight",
-        "model.layers.{layer_number}.self_attn.v_conv1d.weight",
-    ]
 
     _KPOOL_MAPPING = {
         "self_attention.index_kpool_compress_gate": [
@@ -118,9 +115,6 @@ class Glm5NextBridge(GlmMoeDsaBridge):
         return [self._nest_language_model(n) for n in names]
 
     def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]) -> torch.Tensor:
-        if mcore_weights_name.endswith("self_attention.kda.conv1d.weight"):
-            assert len(hf_weights) == 3
-            return torch.cat(hf_weights, dim=0).contiguous()
         for alpha_name, alpha_slice in _HC_ALPHA_SLICES.items():
             if mcore_weights_name.endswith(f"_hyper_connection.{alpha_name}"):
                 assert len(hf_weights) == 1
@@ -134,44 +128,9 @@ class Glm5NextBridge(GlmMoeDsaBridge):
                 self.dtype = saved_dtype
         return DeepseekV3Bridge._weight_to_mcore_format(self, mcore_weights_name, hf_weights)
 
-    def _weight_split_across_tp(
-        self,
-        mcore_weights_name: str,
-        mcore_weights: torch.Tensor,
-        param: torch.Tensor,
-        tp_split_size: int,
-    ) -> list[torch.Tensor]:
-        """Give rank r the head slice r of each packed [q; k; v] conv part (--glm5-next-kda-tp).
-
-        The base split cuts the packed tensor into tp contiguous blocks, which
-        gives each rank wrong conv weights and raises no error.
-        """
-        if mcore_weights_name.endswith(_KDA_CONV_SUFFIX) and param.shape[0] != mcore_weights.shape[0]:
-            parts = mcore_weights.chunk(_KDA_CONV_PARTS, dim=0)
-            return [
-                torch.cat([part.chunk(tp_split_size, dim=0)[rank] for part in parts], dim=0)
-                for rank in range(tp_split_size)
-            ]
-        return super()._weight_split_across_tp(mcore_weights_name, mcore_weights, param, tp_split_size)
-
-    def _weight_merge_across_tp(
-        self,
-        mcore_weights_name: str,
-        mcore_weights: list[torch.Tensor],
-        param: torch.Tensor,
-    ) -> torch.Tensor:
-        """Inverse of ``_weight_split_across_tp`` for the packed KDA conv."""
-        if mcore_weights_name.endswith(_KDA_CONV_SUFFIX) and len(mcore_weights) > 1:
-            rank_parts = [weight.chunk(_KDA_CONV_PARTS, dim=0) for weight in mcore_weights]
-            return torch.cat([parts[i] for i in range(_KDA_CONV_PARTS) for parts in rank_parts], dim=0)
-        return super()._weight_merge_across_tp(mcore_weights_name, mcore_weights, param)
-
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor
     ) -> tuple[list[str], list[torch.Tensor]]:
-        if mcore_weights_name.endswith("self_attention.kda.conv1d.weight"):
-            hf_names = self._weight_name_mapping_mcore_to_hf(mcore_weights_name)
-            return hf_names, list(mcore_weights.chunk(3, dim=0))
         for alpha_name in _HC_ALPHA_SLICES:
             if mcore_weights_name.endswith(f"_hyper_connection.{alpha_name}"):
                 raise NotImplementedError(

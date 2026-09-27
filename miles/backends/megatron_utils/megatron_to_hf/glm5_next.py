@@ -3,10 +3,13 @@ of ``miles_plugins/mbridge/glm5_next.py`` for the weight-update direction.
 
 Everything DeepseekV3-shaped delegates to ``convert_deepseekv3_to_hf``; the DSA
 indexer names are handled here instead so the converter's rope-interleave
-half-swap can never run (GLM-5.3 has ``qk_rope_head_dim == 0``). The packed
-``kda.conv1d.weight`` splits into the checkpoint's ``{q,k,v}_conv1d.weight``;
-the three ``alpha_*`` parameters (always on the same rank) are buffered per
-(layer, site) and emitted as one ``hc_*_scale`` tensor once all have arrived.
+half-swap can never run (GLM-5.3 has ``qk_rope_head_dim == 0``). The KDA layers
+run on the shared head-sharded layer, so their parameters are
+``self_attention.linear_attn.*`` with one conv per q, k and v, as in the HF
+checkpoint; ``norm`` and ``out_proj`` are the HF ``o_norm`` and ``o_proj``. The
+weight-sync gather gives the full tensors. The three ``alpha_*`` parameters
+(always on the same rank) are buffered per (layer, site) and emitted as one
+``hc_*_scale`` tensor once all have arrived.
 """
 
 import re
@@ -16,20 +19,23 @@ import torch
 from .deepseekv3 import convert_deepseekv3_to_hf
 
 _KDA_SUFFIX_MAPPING = {
-    f"self_attention.kda.{weight_name}": f"self_attn.{weight_name}"
-    for weight_name in [
-        "q_proj.weight",
-        "k_proj.weight",
-        "v_proj.weight",
-        "b_proj.weight",
-        "f_a_proj.weight",
-        "f_b_proj.weight",
-        "g_a_proj.weight",
-        "g_b_proj.weight",
-        "A_log",
-        "dt_bias",
-        "o_norm.weight",
-        "o_proj.weight",
+    f"self_attention.linear_attn.{megatron_name}": f"self_attn.{hf_name}"
+    for megatron_name, hf_name in [
+        ("q_proj.weight", "q_proj.weight"),
+        ("k_proj.weight", "k_proj.weight"),
+        ("v_proj.weight", "v_proj.weight"),
+        ("q_conv1d.weight", "q_conv1d.weight"),
+        ("k_conv1d.weight", "k_conv1d.weight"),
+        ("v_conv1d.weight", "v_conv1d.weight"),
+        ("b_proj.weight", "b_proj.weight"),
+        ("f_a_proj.weight", "f_a_proj.weight"),
+        ("f_b_proj.weight", "f_b_proj.weight"),
+        ("g_a_proj.weight", "g_a_proj.weight"),
+        ("g_b_proj.weight", "g_b_proj.weight"),
+        ("A_log", "A_log"),
+        ("dt_bias", "dt_bias"),
+        ("norm.weight", "o_norm.weight"),
+        ("out_proj.weight", "o_proj.weight"),
     ]
 }
 
@@ -82,14 +88,6 @@ def convert_glm5_next_to_hf(args, name, param):
         hf_suffix = _KDA_SUFFIX_MAPPING.get(rest) or _INDEXER_SUFFIX_MAPPING.get(rest) or _HC_SUFFIX_MAPPING.get(rest)
         if hf_suffix is not None:
             return [(f"model.layers.{layer_idx}.{hf_suffix}", param)]
-
-        if rest == "self_attention.kda.conv1d.weight":
-            q_conv, k_conv, v_conv = param.chunk(3, dim=0)
-            return [
-                (f"model.layers.{layer_idx}.self_attn.q_conv1d.weight", q_conv),
-                (f"model.layers.{layer_idx}.self_attn.k_conv1d.weight", k_conv),
-                (f"model.layers.{layer_idx}.self_attn.v_conv1d.weight", v_conv),
-            ]
 
         alpha_match = _HC_ALPHA_PATTERN.match(rest)
         if alpha_match:

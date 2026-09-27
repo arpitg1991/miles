@@ -4,13 +4,15 @@ Usage: .venv python gen-workflow.py <N> [--base r27] [--template ...]
        [--experiment-name NAME] [--gym-image IMAGE] [--param NAME=VALUE ...]
 
 Copies every submit parameter from the base workflow.yaml except
-partial-reward, then sets the run identity, the miles-config block
+partial-reward. A base compaction-max N becomes agent-kwargs
+{"max_compactions": N}. Then sets the run identity, the miles-config block
 (r<N>/miles-config.yaml verbatim), the gym image (r<N>/gym-worker.yaml
 unless --gym-image is given) and any --param. Checks that a re-parse of
 the output returns the config byte for byte.
 """
 
 import argparse
+import json
 import pathlib
 import re
 import sys
@@ -58,8 +60,18 @@ def main() -> None:
     # AREnATasks ADR-0069: the gym trains on the Harbor trial reward and the
     # template has no partial-reward parameter. r20..r38 still carry it.
     wf_params = wf["spec"]["arguments"]["parameters"]
-    wf_params[:] = [p for p in wf_params if p["name"] != "partial-reward"]
+    # Apps ADR-0016 amendment 2026-09-27: the template has no compaction-max
+    # parameter, and Argo keeps an undeclared argument without an error. r28..r43
+    # carry it, so their value moves to agent-kwargs, the only Vulcan path.
+    compaction_max = next((p["value"] for p in wf_params if p["name"] == "compaction-max"), None)
+    wf_params[:] = [p for p in wf_params if p["name"] not in ("partial-reward", "compaction-max")]
     params = {p["name"]: p for p in wf_params}
+    if compaction_max is not None and "agent-kwargs" not in params:
+        params["agent-kwargs"] = {
+            "name": "agent-kwargs",
+            "value": json.dumps({"max_compactions": int(compaction_max)}),
+        }
+        wf_params.append(params["agent-kwargs"])
     params["experiment-name"]["value"] = a.experiment_name or f"rl-glm53f-gbash-r{a.n}"
     out = run / "workflow.yaml"
     trainer_image = a.trainer_image
@@ -72,6 +84,8 @@ def main() -> None:
     # r19 left gym-image at the template default.
     extra = [tuple(kv.split("=", 1)) for kv in a.param]
     for name, value in (("gym-image", gym_img), *extra):
+        if name == "compaction-max":
+            sys.exit("compaction-max is gone: pass --param agent-kwargs='{\"max_compactions\": N}'")
         if name in params:
             params[name]["value"] = value
         else:
@@ -81,7 +95,7 @@ def main() -> None:
     got = {p["name"]: p["value"] for p in back["spec"]["arguments"]["parameters"]}
     if got["miles-config"] != cfg:
         sys.exit("miles-config round-trip mismatch")
-    print(out, "generateName", back["metadata"]["generateName"], "trainer-image", got["trainer-image"], "gym-image", got["gym-image"], "experiment", got["experiment-name"])
+    print(out, "generateName", back["metadata"]["generateName"], "trainer-image", got["trainer-image"], "gym-image", got["gym-image"], "experiment", got["experiment-name"], "agent-kwargs", got.get("agent-kwargs"))
 
 
 if __name__ == "__main__":

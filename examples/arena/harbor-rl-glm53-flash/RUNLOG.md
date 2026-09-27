@@ -2259,3 +2259,60 @@ Stop. The run record is `r45/` (`BUILD.md`, `workflow.yaml`).
   `username` `guparpit`, so it writes under the `guparpit/` scratch prefix.
   NEVER select a workflow by a bare `rl-glm53fNN-` prefix.
 - NEVER fit one trend across rollout 39 and rollout 40 (see `r45/BUILD.md`).
+
+## 2026-09-27 — r46: auctioneer with the token-level loss average (`rl-glm53f46-clhv6`)
+
+The user gave the go on 2026-09-27 (about 06:05Z): "ok can you start
+another r46 with auctioneer and token level average". The run record is
+`r46/` (`BUILD.md`, `miles-config.yaml`, `workflow.yaml`). No run was
+stopped. r44 and r45 continue.
+
+- **Delta vs r44.** `calculate_per_token_loss: true` is the only
+  functional change. Each optimizer step divides the loss sum by the total
+  trained token count, so every token has the same weight (DAPO
+  token-level loss, Dr. GRPO length bias). The r44 default divides each
+  rollout by its own token count, then divides the sum by the rollout
+  count. `lr` 1.5e-6, images, template v10, dataset caponly-1034,
+  `agent-kwargs` `{}` and `publish-jobs-dir` `''` are the r44 values. The
+  workflow parameters differ from r44 only in `experiment-name` and
+  `miles-config`.
+- **Launch.** `kubectl create -f r46/workflow.yaml` at 06:15:41Z ->
+  `rl-glm53f46-clhv6`, experiment `rl-glm53f-auct-cap-r46`, W&B run
+  `4iu54zov` in project `rl-glm53f-auct-cap`. Kueue admitted the PyTorchJob
+  at 06:18:49Z with no wait (`deploy-trainer-pinned` 06:18:41Z, `PodsReady`
+  06:19:34Z). `wait-trainer-nats` done 06:35:50Z. Gym Deployment 288/288
+  at 06:39Z. 330 pods `Running`, 0 restarts, at 08:04Z.
+- **Health (06:19Z-08:07Z, read-only):**
+
+  | Check | Result |
+  | --- | --- |
+  | Trainer argv (worker-0 `/proc` cmdline) | Holds `--calculate-per-token-loss`. The diff against the r44 argv is that flag plus the run names in `--wandb-group`, `--load`, `--save`, `--save-hf` and the sample summary dir. |
+  | SGLang engines | 32 of 32 "fired up" 06:33:46Z-06:34:08Z. The `freeze_gc` connection-refused lines are the known warmup noise (r44 has the same lines). |
+  | First weight sync | `update_weights` 43.7 s at 06:35:43Z, `ok=true`. The 128 `destroy_weights_update_group` HTTP 400 lines at 06:34:59Z are startup only. |
+  | Gym pod env (`rl-glm53f46-clhv6-gym-749774977d-248jd`) | `DOCKER_CONFIG=/root/.docker`, `HARBOR_AGENT_KWARGS={}`, `ARENA_PUBLISH_JOBS_DIR` empty, `ARENA_TOOL_CALL_PARSER=glm47`. None of the seven removed ADR-0072 names is set. |
+  | Gym startup errors (288 pods, 08:07Z) | 0 `ValueError`, 0 `Traceback`, 0 `ERROR`, 0 "task message has no" lines. |
+  | Rollout 0 | Collect start 06:35:44Z, first group 06:58:28Z (reward 0.106), done 07:03:50Z in 1685.5 s. 32/32 groups kept, 0 dropped. 258 train samples, `episode_raw_reward` 0.363, `truncated_ratio` 0, episode response length mean 16063 and max 24497. |
+  | Rollout 1 | Done 07:05:35Z. 32/32 kept, 264 samples, `episode_raw_reward` 0.355. |
+  | Train step 0 | `log_probs` 998.5 s, `actor_train` 2338.0 s, end 08:00:15Z, `valid_step` true. Weight sync 24.6 s at 08:00:40Z. Rollout 2 started (queue 320). |
+  | Trainer-worker-0 log since launch | 0 "Requested token count exceeds", 0 `POST /generate` HTTP 400, 0 "maximum context length". |
+  | Known noise, also on r44 | One task with `skipping synthetic trajectory, reason=other error='RuntimeError'` (r44: 2 tasks). One NATS publish `nats: timeout` in the worker loop right after the weight sync; the loop retries after 2 s (r44: 4 up to 07:57Z). |
+
+- **Train step 0 against r44 step 0.**
+
+  | Metric | r44 | r46 |
+  | --- | --- | --- |
+  | `train/pg_clipfrac` | 0.000262 | 0.000268 |
+  | `train/ppo_kl` | 2.35e-5 | -3.75e-5 |
+  | `train/grad_norm` | 0.140 | 0.120 |
+  | `train/ess_ratio` | 1.015 | 0.999 |
+  | `train/pg_loss` | 1.42e-5 | -0.0183 |
+  | `train/train_rollout_kl` | 0.0034 | 0.0041 |
+
+  `pg_loss` is not comparable. On r46 it is a token-weighted mean, so it
+  is not near zero when the episode length and the advantage correlate.
+  The negative value on step 0 agrees with more tokens on the episodes
+  with a positive advantage. `pg_clipfrac`, `ppo_kl` and `ess_ratio` are
+  token-weighted means on r46 and per-rollout means on r44.
+- **Watch items.** Compare the episode length and the reward against r44
+  at the same rollout indices. A length drop on the failed episodes is the
+  expected effect.

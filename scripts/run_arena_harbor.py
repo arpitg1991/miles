@@ -22,8 +22,9 @@ it is re-emitted as ``2e-06``), and ``prompt-data-list`` is renamed to
 Keys the launcher consumes from the YAML (miles argparse is strict, so unlike
 slime 0.3.0 they must never reach the train argv): ``user``, ``cluster``,
 ``experiment_name``, ``project_name``, ``agislime_dir``, ``replicas``,
-``num_trainers``, ``model_arch``. Only ``model_arch`` has a consumer here — it selects
-``scripts/models/<model_arch>.py``. Run identity (checkpoint dir, wandb group) comes
+``num_trainers``, ``model_arch``, ``arena_save_hf``. ``model_arch`` selects
+``scripts/models/<model_arch>.py``; ``arena_save_hf: true`` appends ``--save-hf``
+(plugin ADR-0006 amendment 2026-09-27). Run identity (checkpoint dir, wandb group) comes
 from the ``EXPERIMENT_NAME`` pod env per ADR-0004, never from the YAML names; an
 existing checkpoint dir resumes silently, so a finished run trains nothing and
 exits 0 — bump ``EXPERIMENT_NAME`` for a fresh run.
@@ -71,6 +72,7 @@ _LAUNCHER_CONSUMED_KEYS = (
     "replicas",
     "num_trainers",
     "model_arch",
+    "arena_save_hf",
 )
 
 
@@ -136,6 +138,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def hf_save_dir(self) -> str:
         """--save-hf destination; ``{rollout_id}`` is substituted by the save-hf path itself.
 
+        Used only when the run turns the HF export on (see _save_hf_requested).
         Always the local ckpt-dir form, even when S3_ARTIFACT_BASE is set:
         miles' save_hf_model consumes --save-hf strictly as a local Path, so the
         s3:// URI entrypoint.sh emitted here was mangled into a pod-local
@@ -203,6 +206,21 @@ def _pop_launcher_keys(container: dict) -> dict:
     return consumed
 
 
+def _save_hf_requested(args: ScriptArgs, consumed: dict) -> bool:
+    """True when the run asks for the per-save HF export (plugin ADR-0006 amendment 2026-09-27).
+
+    Default off: each save is DCP only, and resume needs only the DCP. The export
+    idles every GPU for ~25 min per save and runs before the sidecar and the
+    data-source state, so a cut save left a DCP without them. The
+    per-checkpoint eval (ARENA_EVAL_TASKS) reads the per-save HF export, so it
+    turns the export on too.
+    """
+    save_hf = consumed.get("arena_save_hf")
+    if save_hf is not None and not isinstance(save_hf, bool):
+        raise typer.BadParameter(f"arena_save_hf must be true or false, got {save_hf!r}")
+    return bool(save_hf) or bool(args.arena_eval_tasks)
+
+
 def _build_train_args(args: ScriptArgs) -> tuple[str, str]:
     """Returns (megatron_model_type, train argv string) for execute_train."""
     container = _load_experiment_config(args.config_path)
@@ -232,8 +250,9 @@ def _build_train_args(args: ScriptArgs) -> tuple[str, str]:
         # --load == --save: an existing checkpoint here resumes silently (ADR-0004)
         "--load", args.ckpt_dir,
         "--save", args.ckpt_dir,
-        "--save-hf", args.hf_save_dir,
     ]  # fmt: skip
+    if _save_hf_requested(args, consumed):
+        tokens += ["--save-hf", args.hf_save_dir]
     if args.use_mlflow_amzn:
         # entrypoint.sh appended `--use-mlflow-amzn --mlflow-project <p>
         # --mlflow-group <g>` here. No consumer registers those flags in this tree

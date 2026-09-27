@@ -99,6 +99,26 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
     logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
+def _log_peak_memory(rollout_id: int) -> None:
+    """Log and reset this rank's CUDA memory peak of the step when MILES_LOG_PEAK_MEMORY is set.
+
+    The peak covers the log-prob pass and the train pass. The kdatp memory tests read it per pipeline stage.
+    """
+    if not os.environ.get("MILES_LOG_PEAK_MEMORY"):
+        return
+    parallel_state = get_parallel_state()
+    logger.warning(
+        "[peak-memory] rollout=%d rank=%d pp=%d tp=%d max_allocated_gib=%.2f max_reserved_gib=%.2f",
+        rollout_id,
+        dist.get_rank(),
+        parallel_state.pp.rank,
+        parallel_state.tp.rank,
+        torch.cuda.max_memory_allocated() / 2**30,
+        torch.cuda.max_memory_reserved() / 2**30,
+    )
+    torch.cuda.reset_peak_memory_stats()
+
+
 class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
@@ -780,6 +800,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 )
 
             self.prof.step(rollout_id=rollout_id)
+            _log_peak_memory(rollout_id)
 
         train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 

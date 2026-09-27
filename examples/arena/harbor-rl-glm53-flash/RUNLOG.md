@@ -2067,10 +2067,13 @@ The miles ADRs 0010 to 0013 now cite the current numbers. The per-run
   `temperature`, `top_p`} from `rollout_max_response_len`,
   `rollout_temperature` and `rollout_top_p`. It also carries `max_seq_len`,
   the smaller of `rollout_max_context_len` and `sglang_context_length`. The
-  trainer stops at startup when the cap or both window values are not set.
-  The gym side is AREnATasks ADR-0072 (CR-B). The clamp of
-  `max_new_tokens` to the room left in the window is the 2026-09-27
-  amendment of AREnATasks ADR-0063 (CR-A).
+  trainer raises `ValueError` when the cap or both window values are not set,
+  or when `rollout_top_k` is not -1 (the gym reads no top-k value). The check
+  runs when the rollout worker starts, at the first `generate_rollout` call,
+  after the actor and engine init. The gym side is AREnATasks ADR-0072. The
+  clamp of `max_new_tokens` to the room left in the window is the 2026-09-27
+  amendment of AREnATasks ADR-0063. Neither AREnATasks change has a CR ID on
+  this date.
 - **The lockstep rule is gone.** The rule "keep `ARENA_MAX_TOKENS` in
   lockstep with `rollout_max_response_len`" (`gym-worker.yaml`, and the
   `rN/miles-config.yaml` comments since r11) no longer applies. The miles
@@ -2082,7 +2085,17 @@ The miles ADRs 0010 to 0013 now cite the current numbers. The per-run
   each run. The top-level `gym-worker.yaml` is a pre-Argo record and pins an
   old gym image.
 - **Next run.** The next run sets `rollout_max_response_len: 16384` in its
-  `miles-config.yaml` and nowhere else. No run record exists for it yet.
+  `miles-config.yaml`. No other file carries the value. No run record exists
+  for it yet.
+- **Template parameter `agent-kwargs`.** The Apps template change (Apps
+  ADR-0016 amendment 2026-09-27) removes the `compaction-max` parameter. The
+  `agent-kwargs` parameter (a JSON object, default `{}`) is the only path to
+  a Vulcan setting. Argo keeps an undeclared workflow argument without an
+  error, so a stale `compaction-max` does nothing. `gen-workflow.py` turns a
+  base `compaction-max` N into `agent-kwargs` `{"max_compactions": N}`, and it
+  stops when `--param compaction-max` is given. r39, r42 and r43 carry
+  `compaction-max` 2, so a run generated from one of them keeps 2
+  compactions. Pass `--param 'agent-kwargs={}'` for the Vulcan default of 4.
 - **The r8 decision is reversed.** r8 rejected a clamp to the room left in
   the context (`experiment-list.md` R2) and a per-turn cap of 16384 (R3). Both
   were assessed as marginal. The overflow evidence since then:
@@ -2095,24 +2108,30 @@ The miles ADRs 0010 to 0013 now cite the current numbers. The per-run
     budget, over the 131072 window. About 99 percent were Vulcan summary
     calls. 38-48 percent of the compactions lost their handoff note.
 - **Deploy order.** Deploy the trainer image with this miles change first.
-  Then deploy a gym image with AREnATasks CR-B. The trainer and gym pairs:
+  Then deploy a gym image with AREnATasks ADR-0072. The trainer and gym
+  pairs:
 
   | Trainer | Gym image | Result |
   | --- | --- | --- |
-  | before ADR-0015 | CR-B | every group fails with a `ValueError` that names ADR-0015 |
-  | ADR-0015 | before CR-B | the old gym ignores the keys and reads its env values, as before |
-  | ADR-0015 | CR-B | the intended pair |
+  | before ADR-0015 | with ADR-0072 | every group fails with a `ValueError` that names ADR-0015 |
+  | ADR-0015 | before ADR-0072 (for example adr69, adr71) | the old gym ignores the keys and reads its env values, as before |
+  | ADR-0015 | with ADR-0072 | the intended pair |
 
   NEVER pair a template without the gym env entries with a gym image
-  before CR-B. That gym falls back to the `ArenaSGLangLLM` defaults of 8192
-  and 32768 and gives no error.
+  before ADR-0072. That gym falls back to the `ArenaSGLangLLM` defaults of
+  8192 and 32768 and gives no error.
 - **Watch items for the next run.**
   - `raw_response_length/response_length_clip_ratio` compares the whole
     multi-turn response with the per-call cap. At 16384 it reads near 1.
-    Only the chart is wrong.
+    The `correct_length/pNN` buckets also use the cap as their top edge, so
+    a longer response falls in no bucket. Neither chart changes the loss.
+  - The in-training eval uses the same value: `eval_rollout.py` sends
+    `rollout_max_response_len` as the eval gym `ARENA_MAX_TOKENS`. r39, r42
+    and r43 set no `eval_interval`, so they ran no in-training eval. A run
+    that sets one also gets the 16384 cap on the eval gym.
   - The Vulcan effective window is `context_limit - max_tokens`. At 16384 it
     goes from 98304 to 114688 tokens, so compaction starts at 91750 tokens
     instead of 78643 (fraction 0.8). Segments and NATS results get longer.
-  - r39, r42 and r43 set `compaction-max` 2. A CR-B gym uses the Vulcan
-    default of 4 unless the gym `--agent-kwargs` JSON sets
-    `max_compactions`.
+  - The compaction bound comes from `agent-kwargs` (see above). Record the
+    `max_compactions` value of the run: 2 when it keeps the r43 value, 4 for
+    the Vulcan default.

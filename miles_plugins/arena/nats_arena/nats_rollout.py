@@ -879,8 +879,10 @@ def _rollout_max_seq_len(args) -> int:
 
     The window is the smaller of ``rollout_max_context_len`` and
     ``sglang_context_length``, over the values that are set. Thus the gym never
-    plans a turn past the SGLang window or past the trainer sample limit
-    (ADR-0015).
+    plans a turn past the trainer sample limit. It also stays inside the
+    SGLang window when ``sglang_context_length`` is set. Without that value,
+    SGLang takes its window from the model config, which this function does not
+    read (ADR-0015).
 
     Raises:
         ValueError: Neither value is set. The gym then has no window to use.
@@ -896,6 +898,38 @@ def _rollout_max_seq_len(args) -> int:
             "context window from max_seq_len in the task message (ADR-0015)."
         )
     return min(limits)
+
+
+def _task_limits(args) -> dict[str, int | float]:
+    """Return the ``sample_to_task`` keyword arguments for the output cap, the sampling values, and the window.
+
+    One dict carries the four values from the trainer config to each Harbor
+    training task message (ADR-0015).
+
+    Raises:
+        ValueError: ``rollout_max_response_len`` is not set, no window value is
+            set, or ``rollout_top_k`` is set. A Harbor gym fails every group
+            without the cap or the window, and it reads no top-k value.
+    """
+    if args.rollout_max_response_len is None:
+        raise ValueError(
+            "Set --rollout-max-response-len. The Harbor gym takes its per-call output cap "
+            "from sampling_params.max_new_tokens in the task message (ADR-0015)."
+        )
+    max_seq_len = _rollout_max_seq_len(args)
+    # ponytail: the gym reads no top_k, so a set value stops the run and does
+    # not drift in silence. Add top_k to this dict and to the gym parser together.
+    if args.rollout_top_k != -1:
+        raise ValueError(
+            f"--rollout-top-k {args.rollout_top_k} is set, but the Harbor gym reads no top_k from the task "
+            "message (ADR-0015). Leave it at -1."
+        )
+    return {
+        "max_new_tokens": args.rollout_max_response_len,
+        "temperature": args.rollout_temperature,
+        "top_p": args.rollout_top_p,
+        "max_seq_len": max_seq_len,
+    }
 
 
 def _episode_key(s: Sample) -> tuple[int | None, int | None]:
@@ -1322,12 +1356,7 @@ class NATSRolloutWorker:
 
         # A Harbor gym fails every group whose task message lacks the output
         # cap or the window (ADR-0015). Stop here, before any publish.
-        if args.rollout_max_response_len is None:
-            raise ValueError(
-                "Set --rollout-max-response-len. The Harbor gym takes its per-call output cap "
-                "from sampling_params.max_new_tokens in the task message (ADR-0015)."
-            )
-        self._max_seq_len = _rollout_max_seq_len(args)
+        self._task_limits = _task_limits(args)
 
         self.n_per_prompt = args.n_samples_per_prompt
         self.concurrency = args.rollout_batch_size
@@ -1744,13 +1773,7 @@ class NATSRolloutWorker:
                             # refs, and an old gym ignores the key (ADR-0014).
                             token_arrays_by_ref=True,
                             # The gym keeps no copy of these values (ADR-0015).
-                            # ponytail: only the three sampling keys that the gym
-                            # reads; add rollout_top_k here and in the gym parser
-                            # together when a run sets it.
-                            max_new_tokens=self.args.rollout_max_response_len,
-                            temperature=self.args.rollout_temperature,
-                            top_p=self.args.rollout_top_p,
-                            max_seq_len=self._max_seq_len,
+                            **self._task_limits,
                         )
                         # Make task_id unique per publish to avoid collisions
                         # when the data_source wraps epochs and re-emits the

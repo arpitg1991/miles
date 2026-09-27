@@ -8,6 +8,9 @@ from miles_plugins.mbridge.deepseek_v32 import GlmMoeDsaBridge
 
 _GLM5_NEXT_VOCAB_SIZE = 154880
 
+_KDA_CONV_SUFFIX = "self_attention.kda.conv1d.weight"
+_KDA_CONV_PARTS = 3
+
 _HC_ALPHA_SLICES = {
     "alpha_pre": slice(0, 1),
     "alpha_post": slice(1, 2),
@@ -130,6 +133,38 @@ class Glm5NextBridge(GlmMoeDsaBridge):
             finally:
                 self.dtype = saved_dtype
         return DeepseekV3Bridge._weight_to_mcore_format(self, mcore_weights_name, hf_weights)
+
+    def _weight_split_across_tp(
+        self,
+        mcore_weights_name: str,
+        mcore_weights: torch.Tensor,
+        param: torch.Tensor,
+        tp_split_size: int,
+    ) -> list[torch.Tensor]:
+        """Give rank r the head slice r of each packed [q; k; v] conv part (--glm5-next-kda-tp).
+
+        The base split cuts the packed tensor into tp contiguous blocks, which
+        gives each rank wrong conv weights and raises no error.
+        """
+        if mcore_weights_name.endswith(_KDA_CONV_SUFFIX) and param.shape[0] != mcore_weights.shape[0]:
+            parts = mcore_weights.chunk(_KDA_CONV_PARTS, dim=0)
+            return [
+                torch.cat([part.chunk(tp_split_size, dim=0)[rank] for part in parts], dim=0)
+                for rank in range(tp_split_size)
+            ]
+        return super()._weight_split_across_tp(mcore_weights_name, mcore_weights, param, tp_split_size)
+
+    def _weight_merge_across_tp(
+        self,
+        mcore_weights_name: str,
+        mcore_weights: list[torch.Tensor],
+        param: torch.Tensor,
+    ) -> torch.Tensor:
+        """Inverse of ``_weight_split_across_tp`` for the packed KDA conv."""
+        if mcore_weights_name.endswith(_KDA_CONV_SUFFIX) and len(mcore_weights) > 1:
+            rank_parts = [weight.chunk(_KDA_CONV_PARTS, dim=0) for weight in mcore_weights]
+            return torch.cat([parts[i] for i in range(_KDA_CONV_PARTS) for parts in rank_parts], dim=0)
+        return super()._weight_merge_across_tp(mcore_weights_name, mcore_weights, param)
 
     def _weight_to_hf_format(
         self, mcore_weights_name: str, mcore_weights: torch.Tensor

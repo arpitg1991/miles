@@ -2464,6 +2464,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=False,
             )
             parser.add_argument(
+                "--glm5-next-kda-tp",
+                action="store_true",
+                default=False,
+                help=(
+                    "GLM-5.3 (glm5_next): split the KDA linear-attention heads across the tensor-parallel "
+                    "ranks. The default keeps all heads on each rank. The checkpoint keys and global shapes "
+                    "are the same in both modes."
+                ),
+            )
+            parser.add_argument(
                 "--custom-megatron-init-path",
                 type=str,
                 default=None,

@@ -4,11 +4,11 @@ Usage: .venv python gen-workflow.py <N> [--base r27] [--template ...]
        [--experiment-name NAME] [--gym-image IMAGE] [--param NAME=VALUE ...]
 
 Copies every submit parameter from the base workflow.yaml except
-partial-reward. A base compaction-max N becomes agent-kwargs
-{"max_compactions": N}. Then sets the run identity, the miles-config block
-(r<N>/miles-config.yaml verbatim), the gym image (r<N>/gym-worker.yaml
-unless --gym-image is given) and any --param. Checks that a re-parse of
-the output returns the config byte for byte.
+partial-reward and step-cut-on-fail. A base compaction-max N becomes
+agent-kwargs {"max_compactions": N}. Then sets the run identity, the
+miles-config block (r<N>/miles-config.yaml verbatim), the gym image
+(r<N>/gym-worker.yaml unless --gym-image is given) and any --param. Checks
+that a re-parse of the output returns the config byte for byte.
 """
 
 import argparse
@@ -63,8 +63,10 @@ def main() -> None:
     # Apps ADR-0016 amendment 2026-09-27: the template has no compaction-max
     # parameter, and Argo keeps an undeclared argument without an error. r28..r43
     # carry it, so their value moves to agent-kwargs, the only Vulcan path.
+    # Apps 658dfe4 removed step-cut-on-fail (v10 and later). r31..r43 carry it.
     compaction_max = next((p["value"] for p in wf_params if p["name"] == "compaction-max"), None)
-    wf_params[:] = [p for p in wf_params if p["name"] not in ("partial-reward", "compaction-max")]
+    dropped = ("partial-reward", "compaction-max", "step-cut-on-fail")
+    wf_params[:] = [p for p in wf_params if p["name"] not in dropped]
     params = {p["name"]: p for p in wf_params}
     if compaction_max is not None and "agent-kwargs" not in params:
         params["agent-kwargs"] = {

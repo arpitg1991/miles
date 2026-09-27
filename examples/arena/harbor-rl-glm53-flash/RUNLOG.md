@@ -2182,3 +2182,80 @@ The miles ADRs 0010 to 0013 now cite the current numbers. The per-run
 - **Watch items.** The first compactions come from the message-count
   trigger, not the token trigger. Compare the SGLang 400 count and the
   `structural` compaction share against r42 at the same rollout indices.
+
+## 2026-09-27 — r45: agentic debt resumed from r43 step 39 (`rl-glm53f45-vvqhg`)
+
+The user gave the go on 2026-09-27: "for agentic debt, take its most
+recent saved checkpoint and resume on new images and configs" (02:54Z) and
+"launch r45 too" (05:28Z). The plan that the user approved names the r43
+Stop. The run record is `r45/` (`BUILD.md`, `workflow.yaml`).
+
+- **Checks before the seed (05:32Z).** The r43 tracker reads 39.
+  `iter_0000039` holds 67 entries (64 shards, `.metadata`, `metadata.json`,
+  the sidecar), 584G, and no zero-size file. The r43 sidecar is
+  `{"rollout_id": 39, "wandb_run_id": "2z0599lb"}`.
+  `rollout/arena_data_source_state_39.pt` is 92767 bytes. `hf/rollout_39`
+  holds `.complete`. The step-39 save ended at 04:30:35Z. At 05:32Z r43 was
+  in rollout generation, with no save in progress.
+- **Seed (05:33:22Z).** From r43 trainer-worker-0 (container `pytorch`),
+  with the `r45/BUILD.md` commands as written. Result:
+  `slime_experiments/rl-glm53f-adebt-v3-r45/` holds a real `iter_0000039`
+  dir with 66 relative links to the r43 files and its own sidecar
+  `{"rollout_id": 39}`. The tracker is a plain file that reads 39. The data
+  source state is a copy (`cmp` equal). All links resolve.
+- **r43 retired.** No `/tmp/r43-resume.sh` watcher ran. The Stop patch went
+  in at 05:33:41Z. The phase reads `Failed`, "Stopped with strategy 'Stop'",
+  at 05:36:44Z. The PyTorchJob, the Deployments, NATS, and the services were
+  gone at 05:37:46Z. After the Stop, the r43 tracker still reads 39 and the
+  r45 dir is intact (read from `rl-glm53f44-lt8vm-trainer-worker-0`). r43
+  had trained rollouts 40 and 41 and started rollout 42 at 05:33:33Z. These
+  two steps are lost. They stay in W&B run `2z0599lb` only.
+- **First launch failed: `rl-glm53f45-54bb8`.** Created 05:38:31Z. Kueue
+  admitted the PyTorchJob at 05:41:41Z. At 05:41:44Z it logged
+  `EvictedDueToNodeFailures` for TAS nodes `i-055b073cb40c3ac18` and
+  `i-0b1fc7110a2f1ddda`, and at 05:41:50Z `FinishedWorkload`. The ttl 0
+  removed the PyTorchJob. The workflow stayed `Running` in the
+  `wait-trainer-nats` loop with no trainer (the zombie signature of
+  2026-09-18). At 05:49Z both nodes read `Ready` with only the normal taints.
+  The ClusterQueue had 0 pending workloads and 832 GPUs in use. I stopped the
+  zombie at 05:50:30Z. Its teardown ended at 05:53:47Z. The Stop does not
+  touch the checkpoint dir.
+- **Second launch: `rl-glm53f45-vvqhg`.** Created 05:53:57Z from the same
+  `r45/workflow.yaml`. Kueue admitted the PyTorchJob at 05:57:09Z, 4 s after
+  its workload came into the queue. 40 trainer workers run. The gym
+  Deployment had 288/288 pods Running at 06:17Z.
+- **Resume evidence (trainer-worker-0).**
+  - `load` = `.../slime_experiments/rl-glm53f-adebt-v3-r45`, `finetune`
+    False.
+  - `Loaded slime extra state ... {'rollout_id': 39}` and `Checkpoint
+    sidecar rollout_id=39.` No `Restored wandb_run_id` line.
+  - `loading distributed checkpoint from .../rl-glm53f-adebt-v3-r45 at
+    iteration 39`, then `successfully loaded checkpoint ... at iteration 39`.
+  - 06:12:22Z `Loading arena data source state from
+    .../rl-glm53f-adebt-v3-r45/rollout/arena_data_source_state_39.pt`.
+  - 06:13:08Z `Rollout 40: collecting 32 groups` and `NATS connected
+    (initial)`.
+  - New W&B run `ajsur4ej` in project `rl-glm53f-adebt-v3`, not `2z0599lb`.
+- **Gym check.** One gym pod: `DOCKER_CONFIG=/root/.docker`,
+  `HARBOR_AGENT_KWARGS={}`, `ARENA_PUBLISH_JOBS_DIR` empty. None of
+  `ARENA_MAX_TOKENS`, `ARENA_ROLLOUT_CONTEXT_LIMIT`, `ARENA_TEMPERATURE`,
+  `ARENA_TOP_P`, `ARENA_COMPACTION_MAX`, `ARENA_TRUNCATED_TURN_MAX` or
+  `ARENA_COMPACTION_FRACTION` is set (pod spec and container env). No
+  traceback and no `ValueError` in the logs of all 288 gym pods. The trials
+  pull their task images.
+- **Health at 07:20Z.** 0 "Requested token count exceeds" lines in the
+  trainer log. The only 400s are 3 `destroy_weights_update_group` calls at
+  the first weight sync (06:12:22Z). 262 groups went out to the gym. 6
+  results came back: 5 groups with 8/8 real trajectories, and
+  `realdiff_mongo-bakery_mongo_bakery_s0.g101.` with 0/8 (`HealthcheckError`
+  on all 8). Dynamic sampling dropped all 6 (zero std: 4 at reward 1.0, 1 at
+  0.0), so rollout 40 reads 0/32 groups kept after 67 min. r43 rollout 0
+  kept its first group at 871 s. The gym logs hold 1482 "turn truncated at
+  max_tokens" warnings (the 16384 cap). One `dind` container OOMKilled at
+  07:05:53Z (pod `rl-glm53f45-vvqhg-gym-756ff88f8c-c76sd`, 1 restart).
+- **Not ours.** `rl-glm53f43-rk5mf` (created 05:29:39Z by lijiahu,
+  template `lijiahu-miles-deployer-v6-prof`, experiment `rl-glm53f-pack-r43`)
+  and `rl-glm53f42-rgh5v` belong to lijiahu. `rl-glm53f43-rk5mf` sets
+  `username` `guparpit`, so it writes under the `guparpit/` scratch prefix.
+  NEVER select a workflow by a bare `rl-glm53fNN-` prefix.
+- NEVER fit one trend across rollout 39 and rollout 40 (see `r45/BUILD.md`).

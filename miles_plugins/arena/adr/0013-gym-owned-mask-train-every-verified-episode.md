@@ -14,6 +14,9 @@ episode property" and "Harbor chain step" bullets: no per-segment salvage, no
 ADR-0007 (a removed sample's reward still enters the group baseline),
 ADR-0011 (one `Sample` per segment)
 **Pairs with:** AREnATasks ADR-0066 (the gym side of this contract, same date)
+**Amended by:** ADR-0015 (section 6: the Vulcan caps, their code defaults,
+and the retired `ARENA_COMPACTION_MAX` and `ARENA_TRUNCATED_TURN_MAX` env
+names)
 
 ## Summary
 
@@ -167,9 +170,16 @@ AREnATasks ADR-0066 (2026-09-23) is the gym side. Per trajectory the gym
 ships `agent_stop_reason`, `truncated_turns`, `masked_output_tokens`,
 `compactions` and `steps[*].stop_reason`. `truncated_turns` and
 `masked_output_tokens` are present only when non-zero; a missing field reads
-as 0. The gym's default compaction cap (`ARENA_COMPACTION_MAX`) is 5, and the
-clipped-turn nudge cap (`ARENA_TRUNCATED_TURN_MAX`) defaults to 5. The
-trainer trusts the gym mask and the gym verdict.
+as 0. The trainer trusts the gym mask and the gym verdict.
+
+Correction 2026-09-27 (ADR-0015): an earlier text gave 5 as the default of
+both caps. The Vulcan code defaults are as follows:
+
+- `max_compactions` is `DEFAULT_MAX_COMPACTIONS`, which is 4.
+- `max_truncated_turns` is 0 in the eval Vulcan. The training subclass
+  `TrainingVulcanAgent` sets 5 (AREnATasks ADR-0072).
+- The gym `--agent-kwargs` JSON overrides both. The training gym reads no
+  `ARENA_COMPACTION_MAX` or `ARENA_TRUNCATED_TURN_MAX`.
 
 ### Alternatives considered
 

@@ -73,7 +73,16 @@ within hours. A row with a repository prefix lives in `arena-slime-dev`.
 | `glm53-reasoning-20260904a` | mainline c1a0439 + 0fb3e54 + bae6a6b | `ARENA_AGENT_TIMEOUT_MULTIPLIER` honoured on the rollout path (mainline wired eval only) | GLM r6 (multiplier 2, `ARENA_NATS_ACK_WAIT` 6000) |
 | `glm53-sgltimeout-20260904b` | bae6a6b + `ARENA_SGLANG_REQUEST_TIMEOUT_SEC` | configurable `/generate` httpx read timeout (default 600 s, previously hardcoded) | GLM r7 (1800 s, effort `high`) |
 | `arena-slime-dev:gym-glm53-vulcan-20260908a` | `arpit-glm-53` a337c2d; `brazil-build docker-arena`, then `docker tag amzn-arena-tasks:local` + `docker push` to us-east-1 `arena-slime-dev` (replicates to ap-south-1) | Vulcan agent with token-aware context compaction (AREnATasks ADR-0048): the policy writes a handoff note (pi prompts) before each compaction; the compacted history is text only (`[system, instruction, bridge]`, `compaction_tail_fraction` 0); each compaction starts a new rollout segment and the gym ships one step per segment; `ARENA_COMPACTION_*` knobs; CLI `--mode rollout --agent vulcan`. Vulcan does not read `ARENA_CONTEXT_NUDGE_TOKENS` | GLM r12 (`ARENA_COMPACTION_MAX` 2, effort `high`) |
-| `arena-slime-dev:gym-glm53-r5-20260914a` | `arpit-glm-53` 1b07eda (on r4 `dd0df46`, `ARENA_PARTIAL_REWARD=ctrf`; AREnATasks ADR-0069 removes that knob and the `partial-reward` template parameter, so the gym trains on the Harbor trial reward); `brazil-build docker-arena`, `docker tag` + `docker push` to us-east-1 `arena-slime-dev`, `sha256:97bc7a13...` | Vulcan continues after a per-turn `length` cut-off with a Terminus-2 nudge, bounded by `ARENA_TRUNCATED_TURN_MAX` (default 5); each segment ships `truncated_spans` (`[[start, end), ...]` in the cumulative `token_ids` index space) with the loss mask left at 1, so the trainer decides the credit (`--arena-truncated-turn-rule`); `truncated_turns` in the trajectory | GLM r25 |
+| `arena-slime-dev:gym-glm53-r5-20260914a` | `arpit-glm-53` 1b07eda (on r4 `dd0df46`, `ARENA_PARTIAL_REWARD=ctrf`; AREnATasks ADR-0069 removes that knob and the `partial-reward` template parameter, so the gym trains on the Harbor trial reward); `brazil-build docker-arena`, `docker tag` + `docker push` to us-east-1 `arena-slime-dev`, `sha256:97bc7a13...` | Vulcan continues after a per-turn `length` cut-off with a Terminus-2 nudge, bounded by `ARENA_TRUNCATED_TURN_MAX` (default 5 in this image; see the current defaults below the table); each segment ships `truncated_spans` (`[[start, end), ...]` in the cumulative `token_ids` index space) with the loss mask left at 1, so the trainer decides the credit (`--arena-truncated-turn-rule`); `truncated_turns` in the trajectory | GLM r25 |
+
+Current gym defaults (2026-09-27, plugin ADR-0015 and AREnATasks ADR-0072).
+The trainer sends the per-call output cap, the window, and the sampling values
+in every task message. A training gym with ADR-0072 stops at startup when one
+of these env names is set: `ARENA_MAX_TOKENS`, `ARENA_ROLLOUT_CONTEXT_LIMIT`,
+`ARENA_TEMPERATURE`, `ARENA_TOP_P`, `ARENA_COMPACTION_MAX`,
+`ARENA_TRUNCATED_TURN_MAX`, or `ARENA_COMPACTION_FRACTION`. The Vulcan code
+defaults are `max_compactions` 4 and `max_truncated_turns` 5 in the training
+subclass (0 in eval). The gym `--agent-kwargs` JSON overrides them.
 
 ## Shared conventions
 

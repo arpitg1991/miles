@@ -13,7 +13,8 @@ Covers:
     dedup/DLQ state machine
   - gym_autoscaler.py: desired_replicas calculation without K8s
   - nats_rollout.py: gym drop-reason categories, rollout/failed/* and
-    rollout/dropped_groups/* (requires torch)
+    rollout/dropped_groups/* (requires torch), the task-message window and
+    the startup check for the output cap and the window
 
 Run: python -m pytest tests/fast/plugins/arena/test_nats_arena.py -v
 """
@@ -108,6 +109,30 @@ class TestBuildTaskMessage:
         )
         assert msg["metadata"]["foo"] == "bar"
         assert msg["metadata"]["gym_name"] == "g"
+
+    def test_sampling_and_window_absent_by_default(self):
+        from miles_plugins.arena.nats_arena.message_format import build_task_message
+
+        # ADR-0015: without the new arguments the message stays byte-identical.
+        msg = build_task_message("t", lakefs_uri="x", lakefs_commit_id="y", session="s")
+        assert set(msg) == {"id", "lakefs_uri", "lakefs_commit_id", "n_samples", "metadata", "session"}
+
+    def test_sampling_and_window_present_when_set(self):
+        from miles_plugins.arena.nats_arena.message_format import build_task_message
+
+        # temperature 0.0 is a value, not an absent key.
+        msg = build_task_message(
+            "t",
+            lakefs_uri="x",
+            lakefs_commit_id="y",
+            max_new_tokens=16384,
+            temperature=0.0,
+            top_p=0.95,
+            max_seq_len=131072,
+        )
+        # The gym reads these literals; they copy upstream swe_agent_function.py.
+        assert msg["sampling_params"] == {"max_new_tokens": 16384, "temperature": 0.0, "top_p": 0.95}
+        assert msg["max_seq_len"] == 131072
 
 
 class TestSerializeParseRoundTrip:
@@ -252,6 +277,62 @@ class TestSampleToTask:
         )
         task = sample_to_task(sample, session="my-session")
         assert task["session"] == "my-session"
+
+    def test_sampling_and_window_propagated(self):
+        from miles_plugins.arena.nats_arena.message_format import sample_to_task
+
+        sample = SimpleNamespace(
+            metadata={
+                "instance_id": "t",
+                "lakefs_uri": "lakefs://r/b/tasks/t/",
+                "lakefs_commit_id": "c",
+            },
+            index=0,
+            group_index=0,
+        )
+        task = sample_to_task(sample, max_new_tokens=16384, temperature=1.0, top_p=1.0, max_seq_len=65536)
+        assert task["sampling_params"] == {"max_new_tokens": 16384, "temperature": 1.0, "top_p": 1.0}
+        assert task["max_seq_len"] == 65536
+        assert "sampling_params" not in sample_to_task(sample)
+        assert "max_seq_len" not in sample_to_task(sample)
+
+
+class TestRolloutMaxSeqLen:
+    """The window and the output cap that a Harbor training task carries (ADR-0015)."""
+
+    @pytest.mark.parametrize(
+        ("context_len", "sglang_len", "expected"),
+        [(131072, 65536, 65536), (65536, 131072, 65536), (131072, None, 131072), (None, 32768, 32768)],
+    )
+    def test_smaller_set_value_wins(self, context_len, sglang_len, expected):
+        from miles_plugins.arena.nats_arena.nats_rollout import _rollout_max_seq_len
+
+        args = SimpleNamespace(rollout_max_context_len=context_len, sglang_context_length=sglang_len)
+        assert _rollout_max_seq_len(args) == expected
+
+    def test_no_window_raises(self):
+        from miles_plugins.arena.nats_arena.nats_rollout import _rollout_max_seq_len
+
+        with pytest.raises(ValueError, match="--rollout-max-context-len or --sglang-context-length"):
+            _rollout_max_seq_len(SimpleNamespace(rollout_max_context_len=None, sglang_context_length=None))
+
+    @pytest.mark.parametrize(
+        ("response_len", "context_len", "match"),
+        [(None, 131072, "--rollout-max-response-len"), (16384, None, "--rollout-max-context-len")],
+    )
+    def test_worker_stops_at_startup(self, response_len, context_len, match):
+        from miles_plugins.arena.nats_arena.nats_rollout import NATSRolloutWorker
+
+        # The check runs before the tokenizer load and before any publish.
+        args = SimpleNamespace(
+            global_batch_size=1,
+            n_samples_per_prompt=1,
+            rollout_max_response_len=response_len,
+            rollout_max_context_len=context_len,
+            sglang_context_length=None,
+        )
+        with pytest.raises(ValueError, match=match):
+            NATSRolloutWorker(args, data_source=None)
 
 
 # ===========================================================================

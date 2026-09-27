@@ -40,3 +40,4 @@ in `../RUNLOG.md` and `examples/arena/<job>/RUNLOG.md`, not here.
 | [0012](0012-r3-routing-replay-over-nats.md) | R3 rollout routing replay over the arena NATS path: investigation and plan (proposed) |
 | [0013](0013-gym-owned-mask-train-every-verified-episode.md) | The gym owns the loss mask; the trainer trains every verified episode (supersedes ADR-0009 and ADR-0010; retires the six clipped-turn and salvage flags) |
 | [0014](0014-token-arrays-by-file-reference.md) | Token arrays ride a file reference; the trainer reads both shapes and drops one trajectory on a bad file (amends ADR-0002 and ADR-0012) |
+| [0015](0015-task-message-carries-output-cap-window-and-sampling.md) | The task message carries the output cap, the window, and the sampling values; the gym keeps no env copy (amends ADR-0002; reverses the r8 rejections R2 and R3) |

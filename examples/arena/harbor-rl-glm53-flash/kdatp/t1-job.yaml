@@ -1,0 +1,93 @@
+# kdatp-t1: T1 KDA-TP parity + the T1c 5-layer train-only arms on ONE p6-b200 node.
+# Placeholders: __IMAGE__ (the kdatp test trainer image), __STAMP__ (a fresh
+# lowercase suffix, for example 20260927a; it names the job, the run dir and
+# the checkpoint dirs). README.md holds the submit and delete commands.
+#
+# Same queue, workload priority and pod priority as the live GLM runs. No
+# NATS, no gym, no W&B key: the arms run train only and never save.
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: kdatp-t1-__STAMP__
+  namespace: arena-tasks
+  labels:
+    app: kdatp-t1-__STAMP__
+    arena.agif.amazon.dev/submitter: guparpit
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+    kueue.x-k8s.io/priority-class: inference
+spec:
+  elasticPolicy:
+    minReplicas: 1
+    maxReplicas: 1
+    maxRestarts: 0
+    nProcPerNode: 8
+    rdzvBackend: c10d
+    rdzvId: kdatp-t1-__STAMP__
+  runPolicy:
+    # The idle reaper and the platform delete finished jobs; the results are on the scratch mount.
+    activeDeadlineSeconds: 28800
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            app: kdatp-t1-__STAMP__
+            arena.agif.amazon.dev/submitter: guparpit
+            kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
+        spec:
+          serviceAccountName: arena-tasks-runner
+          enableServiceLinks: false
+          priorityClassName: high
+          nodeSelector:
+            node-type: p6-gpu
+            node.kubernetes.io/instance-type: p6-b200.48xlarge
+          tolerations:
+          - {effect: NoSchedule, key: nvidia.com/gpu, operator: Exists}
+          - {effect: NoSchedule, key: vpc.amazonaws.com/efa, operator: Exists}
+          containers:
+          - name: pytorch
+            image: __IMAGE__
+            imagePullPolicy: Always
+            command: [bash, -c]
+            args:
+            - exec bash /root/miles/examples/arena/harbor-rl-glm53-flash/kdatp/kdatp-run.sh t1
+            env:
+            - {name: KDATP_STAMP, value: __STAMP__}
+            - {name: USER, value: guparpit}
+            - {name: AGISLIME_DIR, value: /root/miles}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+            - {name: PYTHONFAULTHANDLER, value: "1"}
+            - {name: PYTORCH_CUDA_ALLOC_CONF, value: "expandable_segments:True"}
+            - {name: LD_LIBRARY_PATH, value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"}
+            - {name: FI_EFA_USE_DEVICE_RDMA, value: "1"}
+            - {name: FI_PROVIDER, value: efa}
+            - {name: FI_EFA_FORK_SAFE, value: "1"}
+            - {name: NCCL_TIMEOUT, value: "7200"}
+            - {name: NCCL_SOCKET_IFNAME, value: eth0}
+            - {name: GLOO_SOCKET_IFNAME, value: eth0}
+            - {name: NCCL_PROTO, value: simple}
+            - {name: NCCL_IB_DISABLE, value: "0"}
+            - {name: NCCL_NET_GDR_LEVEL, value: "2"}
+            - {name: NCCL_P2P_DISABLE, value: "0"}
+            - {name: RAY_memory_monitor_refresh_ms, value: "0"}
+            - {name: TORCHINDUCTOR_COMPILE_THREADS, value: "1"}
+            - name: REPLICA_IDX
+              valueFrom: {fieldRef: {fieldPath: "metadata.labels['training.kubeflow.org/replica-index']"}}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            resources:
+              limits: {memory: 1800Gi, nvidia.com/gpu: "8", vpc.amazonaws.com/efa: "8"}
+              requests: {ephemeral-storage: 32Gi, memory: 1200Gi, nvidia.com/gpu: "8", vpc.amazonaws.com/efa: "8"}
+            securityContext: {privileged: true}
+            volumeMounts:
+            - {name: dshm, mountPath: /dev/shm}
+            - {name: infiniband, mountPath: /dev/infiniband}
+            - {name: nvidia-caps, mountPath: /dev/nvidia-caps}
+          volumes:
+          - {name: dshm, emptyDir: {medium: Memory, sizeLimit: 256Gi}}
+          - {name: infiniband, hostPath: {path: /dev/infiniband}}
+          - {name: nvidia-caps, hostPath: {path: /dev/nvidia-caps}}

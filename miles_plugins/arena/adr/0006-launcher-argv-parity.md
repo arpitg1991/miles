@@ -8,6 +8,9 @@ ADR-0005 (the driver this launcher submits). Honours AGISlime ADR-0004 (trainer 
 identity: the `EXPERIMENT_NAME` pod env keys `--load`/`--save` and the W&B group; an
 existing checkpoint dir resumes silently).
 
+**Amended:** 2026-09-27 (see the amendment at the end): the per-save `--save-hf` export
+is opt-in. Decision items 3 and 5 describe the argv before that date.
+
 ## Context
 
 - AGISlime launched arena Harbor RL as a kubeflow PyTorchJob whose identical pods ran
@@ -131,3 +134,42 @@ frozen `MASTER_ADDR=127.0.0.1` is the fallback the snapshot records. The CPU par
 substitutions (`--hf-checkpoint` removed, `--ref-load` -> empty dir, CUDA arch stubbed to
 sm100), so the first on-cluster run had to watch argparse/validation output. mlflow-amzn is
 unsupported on this path until someone registers the flags.
+
+## Amendment 2026-09-27: the per-save HF export is opt-in
+
+Decision items 3 and 5 append `--save-hf <ckpt>/hf/rollout_{rollout_id}` to each run.
+From 2026-09-27 the launcher appends `--save-hf` only when the run asks for it:
+
+- The YAML key `arena_save_hf: true` turns the export on. The default is `false`. The
+  launcher pops the key with the other launcher keys, so the key never reaches the trainer.
+- A set `ARENA_EVAL_TASKS` also turns the export on. The per-checkpoint eval
+  (`argo_eval_trigger.submit_eval`) reads the HF export of each save. Without the export,
+  the eval skips each checkpoint with a warning.
+- A value that is not a boolean stops the launcher with `typer.BadParameter`.
+- `--load` and `--save` do not change.
+
+Resume uses the DCP only. It reads `iter_<N>`, `latest_checkpointed_iteration.txt`, the
+`iter_<N>/slime_extra_state.json` sidecar (ADR-0005), and
+`rollout/arena_data_source_state_<N>.pt`. No resume step reads the HF export.
+
+Reasons:
+
+1. **The export idles every GPU.** On the GLM-5.3-Flash runs one HF export took
+   approximately 25 min, and all GPUs of the job stayed idle for that time. The
+   AREnAThanatos idle-GPU reaper deletes a workflow when its 60-min mean GPU power is
+   below 10 %. On 2026-09-27 it deleted r44 (`rl-glm53f44-lt8vm`, 10:02:37Z) and r46
+   (`rl-glm53f46-clhv6`, 11:02:24Z).
+2. **The export runs before the progress writes.** `save_model` runs the HF export
+   after the DCP save (`actor.py:714`). The driver writes the sidecar and the data-source
+   state only after `save_model` returns (`train_async_arena.py`). On r44 the DCP
+   `iter_0000009` was complete at 09:34, the HF export ran from 09:33 to 09:59, and the
+   data-source state and the sidecar came at 09:58:59 and 09:59:00. On r46 the reaper cut
+   the HF export at 491 of 675 files. The DCP `iter_0000009` and the tracker were complete,
+   but the sidecar and `arena_data_source_state_9.pt` were not written. Thus a cut save
+   left a DCP without the sidecar and the data-source state that resume needs.
+
+An HF checkpoint stays available on demand. `actor.py` `export_hf` exports one checkpoint
+from the live model. `tools/convert_torch_dist_to_hf.py` converts a saved `iter_<N>`
+after the run; the eval path calls it through `eval_rollout._convert_dcp_to_hf`. The snapshot `train.txt` no longer holds
+`--save-hf`. `tests/fast/launch_scripts/test_run_arena_harbor.py` pins the default argv
+and the two opt-in paths.

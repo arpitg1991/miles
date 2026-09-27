@@ -103,8 +103,14 @@ parameter `agent-kwargs` (the gym `--agent-kwargs` JSON) overrides them.
 - Every job runs `scripts/run_arena_harbor.py` (`train` on replica 0 = ray head
   + job submit, `worker` elsewhere); the launcher pops the keys it consumes
   (`user`, `cluster`, `experiment_name`, `project_name`, `agislime_dir`,
-  `replicas`, `num_trainers`, `model_arch`) and appends `--wandb-group`,
-  `--load/--save/--save-hf` and the node math from the pod env.
+  `replicas`, `num_trainers`, `model_arch`, `arena_save_hf`) and appends
+  `--wandb-group`, `--load/--save` and the node math from the pod env.
+- HF export (2026-09-27, plugin ADR-0006 amendment): each save is DCP only, and
+  resume needs only the DCP. The launcher appends
+  `--save-hf <ckpt>/hf/rollout_{rollout_id}` only when the YAML sets
+  `arena_save_hf: true` or the pod env sets `ARENA_EVAL_TASKS`. The per-save
+  export idles every GPU for approximately 25 min. The idle-GPU reaper deleted
+  r44 and r46 during such an export.
 - Clipped turns and stop reasons (2026-09-23): the gym masks a clipped or
   empty generate in `loss_mask`; the trainer applies no advantage transform
   and keeps every episode whose verifier ran, whatever `agent_stop_reason`

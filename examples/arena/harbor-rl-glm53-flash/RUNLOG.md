@@ -2135,3 +2135,50 @@ The miles ADRs 0010 to 0013 now cite the current numbers. The per-run
   - The compaction bound comes from `agent-kwargs` (see above). Record the
     `max_compactions` value of the run: 2 when it keeps the r43 value, 4 for
     the Vulcan default.
+
+## 2026-09-27 — r44 launch (`rl-glm53f44-lt8vm`); r39 and r42 retired
+
+- **Retires (user go).** Both runs got `shutdown: Stop`. r42
+  `rl-glm53f42-5cthp`: patch 04:58:07Z, finished 05:02:08Z. r39
+  `rl-glm53f39-25pdn`: patch 05:02:52Z, finished 05:05:52Z. Argo shows
+  phase `Failed` with the message "Stopped with strategy 'Stop'". At
+  05:31Z no PyTorchJob, Deployment, Service, StatefulSet or pod with either
+  name existed.
+- **Last complete checkpoints** (read 05:31Z under
+  `s3://arena-scratch-prod-bom-ap-south-1/guparpit/checkpoints/slime_experiments/`):
+
+  | Run | Experiment | Tracker | Save time (UTC) | Sidecar `slime_extra_state.json` | Data source state | HF export |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | r42 | `rl-glm53f-auct-cap-r42` | 49 | 2026-09-26 20:05 | `rollout_id` 49, `wandb_run_id` `ob9qvkyg` | `arena_data_source_state_49.pt` | `hf/rollout_49` |
+  | r39 | `rl-glm53f-auct-cap-r39` | 59 | 2026-09-26 17:19 | `rollout_id` 59, `wandb_run_id` `j6todjkb` | `arena_data_source_state_59.pt` | `hf/rollout_59` |
+
+  Each `iter_N` holds 64 `.distcp` shards, `.metadata` and
+  `metadata.json`. No partial `iter_*` dir is newer than the tracker.
+- **r44 launch.** `kubectl create -f r44/workflow.yaml` at 05:07:02Z ->
+  `rl-glm53f44-lt8vm`, template `guparpit-miles-deployer-v10`, experiment
+  `rl-glm53f-auct-cap-r44`. Trainer image `miles-glm53-r14-20260927a`, gym
+  image `gym-glm53-adr72-20260927a`, `agent-kwargs` `{}`,
+  `publish-jobs-dir` `''`. Kueue admitted the PyTorchJob with no wait
+  (`deploy-trainer-pinned` 05:10:03Z, worker-0 start 05:10:20Z). NATS
+  ready 05:09Z; `wait-trainer-nats` done 05:27:15Z; gym Deployment
+  288/288 at 05:28Z. 330 pods `Running`, 0 restarts, at 05:32Z and at
+  07:00Z.
+- **Health (05:30Z-07:00Z, read-only):**
+
+  | Check | Result |
+  | --- | --- |
+  | SGLang engines | 32 of 32 (256 GPUs / 8) "fired up" 05:24:47Z-05:25:12Z. The `freeze_gc` connection-refused lines at warmup are the known r18 noise. |
+  | First weight sync | `update_weights` 44.3 s at 05:26:49Z, `ok=true`. The 128 `destroy_weights_update_group` HTTP 400 lines at 05:26:04Z are startup only. |
+  | Gym pod env (`rl-glm53f44-lt8vm-gym-9d96b9c58-24nkw`) | `DOCKER_CONFIG=/root/.docker`, `HARBOR_AGENT_KWARGS={}`, `ARENA_PUBLISH_JOBS_DIR` empty, `ARENA_TOOL_CALL_PARSER=glm47`. None of the seven removed ADR-0072 names in the env or the `envFrom` ConfigMap. No literal `{{` value. |
+  | Gym startup errors (288 pods) | 0 `ValueError`, 0 "task message has no", 0 `Traceback`, 0 `ERROR` lines. |
+  | Limits in the gym | Harbor job `config.json` on the pod above: `max_tokens` 16384, `context_limit` 131072, `temperature` 1.0, `top_p` 1.0. Trainer args: `rollout_max_response_len` 16384, `rollout_max_context_len` 131072, `sglang_context_length` 131072. |
+  | Rollout 0 | Collect start 05:26:50Z, first group 05:48:00Z (reward 0.643), done 05:56:25Z. `perf/rollout_time` 1781 s. 32/32 groups kept, 0 dropped. 260 samples, `episode_raw_reward` 0.312, `truncated_ratio` 0, episode response length mean 16791 and max 28620. |
+  | Rollout 1 | Done 05:58:28Z. 32/32 kept, 262 samples, `episode_raw_reward` 0.300. |
+  | Train step 0 | `log_probs` 1071.5 s, `actor_train` 2621.0 s, end 06:58:35Z. `ppo_kl` 2.3e-5, `grad_norm` 0.140, `pg_clipfrac` 0.00026, `ess_ratio` 1.015, lr 1.5e-6. Weight sync 24.4 s at 06:59:12Z. Rollout 2 started (queue 320). |
+  | Trainer-worker-0 log since launch | 0 "Requested token count exceeds", 0 `POST /generate` HTTP 400, 0 "maximum context length". |
+  | Vulcan compactions (gym logs, 07:00Z) | 180 lines, all `1/4` (`max_compactions` 4). 177 `(count, summary)`, 3 `(tokens, summary)`, 0 `structural`: no compaction lost its handoff note. r39 and r42 lost 38-48%. |
+  | Other gym warnings | 0 clipped-turn, 0 model-call-failed, 0 empty-response lines. The only other warnings are GLM tool-parser "undefined function" lines. |
+
+- **Watch items.** The first compactions come from the message-count
+  trigger, not the token trigger. Compare the SGLang 400 count and the
+  `structural` compaction share against r42 at the same rollout indices.

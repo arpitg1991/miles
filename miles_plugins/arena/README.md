@@ -58,11 +58,14 @@ overrides). Defaults match the AGISlime wire contract: streams
 `ARENA_TASKS` / `ARENA_RESULTS`, subjects `arena.tasks.<gym>` /
 `arena.results`, durable consumer `slime-trainer`. The wire format matches
 the AGISlime original except for the optional task keys
-`capture_routed_experts` (ADR-0012) and `token_arrays_by_ref` (ADR-0014). An
-old gym ignores both, so existing gym workers need no changes. Under
-`token_arrays_by_ref` a new gym sends the per-step token arrays in a
-`token_arrays_ref` file. The trainer also reads inline arrays, so every gym
-image keeps working.
+`capture_routed_experts` (ADR-0012), `token_arrays_by_ref` (ADR-0014), and
+`sampling_params` and `max_seq_len` (ADR-0015). An old gym ignores all of
+them, so existing gym workers need no changes. Under `token_arrays_by_ref` a
+new gym sends the per-step token arrays in a `token_arrays_ref` file. The
+trainer also reads inline arrays, so every gym image keeps working. A gym
+with AREnATasks ADR-0072 takes its output cap, window, and sampling values
+from the message and fails every group of an older trainer. Deploy the
+trainer image first.
 
 ## harbor-rl-27b usage
 

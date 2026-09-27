@@ -2058,3 +2058,61 @@ numbers that were current when they were written. Map them as follows:
 
 The miles ADRs 0010 to 0013 now cite the current numbers. The per-run
 `rN/` directories keep their original comments as a record of that run.
+
+## 2026-09-27 — The gym takes the output cap, the window, and the sampling values from the task message (ADR-0015)
+
+- **Code.** miles `arpit-glm-53` commit "feat(arena): send the output cap,
+  window, and sampling in the task message" (plugin ADR-0015). Every Harbor
+  training task now carries `sampling_params` {`max_new_tokens`,
+  `temperature`, `top_p`} from `rollout_max_response_len`,
+  `rollout_temperature` and `rollout_top_p`. It also carries `max_seq_len`,
+  the smaller of `rollout_max_context_len` and `sglang_context_length`. The
+  trainer stops at startup when the cap or both window values are not set.
+  The gym side is AREnATasks ADR-0072 (CR-B). The clamp of
+  `max_new_tokens` to the room left in the window is the 2026-09-27
+  amendment of AREnATasks ADR-0063 (CR-A).
+- **The lockstep rule is gone.** The rule "keep `ARENA_MAX_TOKENS` in
+  lockstep with `rollout_max_response_len`" (`gym-worker.yaml`, and the
+  `rN/miles-config.yaml` comments since r11) no longer applies. The miles
+  config is the only source of the cap, the window, and the sampling
+  values. A gym image with ADR-0072 stops at startup when
+  `ARENA_MAX_TOKENS`, `ARENA_ROLLOUT_CONTEXT_LIMIT`, `ARENA_TEMPERATURE`,
+  `ARENA_TOP_P`, `ARENA_COMPACTION_MAX`, `ARENA_TRUNCATED_TURN_MAX` or
+  `ARENA_COMPACTION_FRACTION` is set. The `rN/` comments stay as a record of
+  each run. The top-level `gym-worker.yaml` is a pre-Argo record and pins an
+  old gym image.
+- **Next run.** The next run sets `rollout_max_response_len: 16384` in its
+  `miles-config.yaml` and nowhere else. No run record exists for it yet.
+- **The r8 decision is reversed.** r8 rejected a clamp to the room left in
+  the context (`experiment-list.md` R2) and a per-turn cap of 16384 (R3). Both
+  were assessed as marginal. The overflow evidence since then:
+  - r6 and r7 (2026-09-05 08:50 PT entry above): 2945 and 711 SGLang
+    "exceeds the model's maximum context length" errors at 98-102k prompt
+    tokens. 9 of 98 and 4 of 33 completed trials on 40 pods ended on
+    `ContextLengthExceededError` with the verifier skipped.
+  - r39 and r42 (auctioneer, 2026-09-26 and 2026-09-27): about 500 SGLang
+    requests per 90 minutes with 98K-131K input tokens plus the fixed 32768
+    budget, over the 131072 window. About 99 percent were Vulcan summary
+    calls. 38-48 percent of the compactions lost their handoff note.
+- **Deploy order.** Deploy the trainer image with this miles change first.
+  Then deploy a gym image with AREnATasks CR-B. The trainer and gym pairs:
+
+  | Trainer | Gym image | Result |
+  | --- | --- | --- |
+  | before ADR-0015 | CR-B | every group fails with a `ValueError` that names ADR-0015 |
+  | ADR-0015 | before CR-B | the old gym ignores the keys and reads its env values, as before |
+  | ADR-0015 | CR-B | the intended pair |
+
+  NEVER pair a template without the gym env entries with a gym image
+  before CR-B. That gym falls back to the `ArenaSGLangLLM` defaults of 8192
+  and 32768 and gives no error.
+- **Watch items for the next run.**
+  - `raw_response_length/response_length_clip_ratio` compares the whole
+    multi-turn response with the per-call cap. At 16384 it reads near 1.
+    Only the chart is wrong.
+  - The Vulcan effective window is `context_limit - max_tokens`. At 16384 it
+    goes from 98304 to 114688 tokens, so compaction starts at 91750 tokens
+    instead of 78643 (fraction 0.8). Segments and NATS results get longer.
+  - r39, r42 and r43 set `compaction-max` 2. A CR-B gym uses the Vulcan
+    default of 4 unless the gym `--agent-kwargs` JSON sets
+    `max_compactions`.

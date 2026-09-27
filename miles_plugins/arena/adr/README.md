@@ -33,3 +33,4 @@ in `../RUNLOG.md` and `examples/arena/<job>/RUNLOG.md`, not here.
 | [0005](0005-driver-pure-insertion-and-sidecar-resume.md) | Driver as pure insertion over `train_async.py`; checkpoint-sidecar W&B resume via `init_wandb_primary` |
 | [0006](0006-launcher-argv-parity.md) | Launcher argv parity: `scripts/run_arena_harbor.py` replaces entrypoint.sh + hydra_converter |
 | [0007](0007-plain-stack-descoping-for-snorkel.md) | Plain-stack descoping for the snorkel job |
+| [0008](0008-glm5-next-support-via-pr2786-merge.md) | GLM-5.3-Flash (glm5_next) support via the PR #2786 merge |

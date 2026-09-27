@@ -241,6 +241,11 @@ def _build_train_args(args: ScriptArgs) -> tuple[str, str]:
         tokens += ["--disable-wandb-random-suffix"]
 
     rollout_nodes = args.replicas - args.num_trainers
+    if "--load-debug-rollout-data" in tokens:
+        # Train only (debug_train_only): miles places no rollout GPUs, so the job
+        # needs no rollout node. One phantom node keeps the rollout GPU count valid.
+        assert rollout_nodes >= 0, f"replicas={args.replicas} < trainers={args.num_trainers}"
+        rollout_nodes = max(rollout_nodes, 1)
     assert rollout_nodes > 0, f"need at least one rollout node: replicas={args.replicas} trainers={args.num_trainers}"
     tokens += [
         "--actor-num-nodes", str(args.num_trainers),

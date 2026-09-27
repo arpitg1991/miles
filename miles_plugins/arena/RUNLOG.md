@@ -1077,3 +1077,27 @@ the GLM example depends on it):
   samples; the effort=high context-ceiling / `context_error` observation that
   no on-disk source records yet) -> the placeholder row in
   `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`, in a follow-up docs commit.
+
+## 2026-09-27 — Reconcile with upstream `main` (branch `arpit-reconcile-upstream`)
+
+Not a run. This entry closes follow-up 11 above ("Re-sync when PR #2786 lands
+upstream"). Upstream merged PR #2786 as `cc76e2391` on 2026-09-24.
+
+- Rebase: `arpit-glm-53` `3028bc358` onto radixark/miles `main` `23d41d711`,
+  from the merge base `2799fe386`. The branch keeps 139 of the 167 fork
+  commits. It drops the 28 commits of the fork copy of PR #2786 and the 4
+  merge commits. One new commit restores the three files that only the merge
+  `38921ae45` added. `examples/arena/RECONCILE.md` lists each drop, each partial
+  keep, and each conflict resolution.
+- New commits after the rebase: ADR-0016, the driver rebuilt on the upstream
+  `train_async.py`, the launcher on the upstream backend object, the gym weight
+  versions in `Sample.metadata["arena_weight_versions"]`, a parallel state in
+  the advantage-scale tests, and the regenerated `run_glm5_3_flash` snapshot.
+- CPU checks: the arena fast tests pass (325). The launcher tests pass, except
+  `test_workplace_backend.py`, which also fails on upstream `main` in the same
+  venv. The r44, r45, and r46 configs parse through the launcher argv. The
+  import smoke of `examples/arena/Dockerfile` passes in the
+  `miles-glm53-r15-20260927a` image.
+- Not done: no trainer image, no GPU job, and no change to r44, r45, or r46.
+  ADR-0016 stays Proposed until the owner accepts the weight-version decision
+  and a GPU test job passes.

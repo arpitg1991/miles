@@ -21,7 +21,7 @@ Two changes from the r45 MFU review (2026-09-27), tested away from the live runs
 | `miles/backends/megatron_utils/update_weight/common.py` | The weight-sync gather accepts stride 3 for `kda.conv1d.weight`. |
 | `miles_plugins/mbridge/glm5_next.py` | TP split and merge of the packed conv (HF to DCP conversion, bridge mode). |
 | `miles/utils/arguments.py` | `--glm5-next-kda-tp`, default off. |
-| `miles/backends/megatron_utils/actor.py` | With `MILES_LOG_PEAK_MEMORY=1`, each rank logs its CUDA peak per step (`[peak-memory]`). |
+| `miles/backends/megatron_utils/actor.py` | With `MILES_LOG_PEAK_MEMORY=1`, each rank logs its CUDA peak per step (`[peak-memory]`). The peak window starts at the start of each `train` call, so the model load is not in it. |
 | `scripts/run_arena_harbor.py` | A train-only YAML (`load_debug_rollout_data`) runs with no rollout node. |
 | `scripts/models/glm5.3-flash-5layer.py` | The real layers 0 to 4: KDA + dense x3, DSA + MoE, KDA + MoE. |
 
@@ -62,9 +62,14 @@ so it is a test image only: NEVER use it for a live run.
   the r43 staged files and the r45 sample summary. They write only under
   `kdatp/`.
 - T2 links the r43 DCP files into `kdatp/checkpoints/`. No arm saves:
-  `save_interval` is 100000 and each arm stops after 3 rollouts.
-- The jobs use the queue, the workload priority and the pod priority of the
-  live runs. They set no W&B key and `use_wandb: false`.
+  `save_interval` is 100000 and each arm stops after 4 rollouts or fewer.
+- The jobs use the queue, the workload priority, the pod priority and the
+  excluded-nodes list of the live runs. They set no W&B key and
+  `use_wandb: false`.
+- `cleanPodPolicy: All` stops the pods when the job fails or reaches its
+  deadline. The default keeps them, so they keep the GPUs.
+- `kdatp-run.sh` sets `RAY_DEDUP_LOGS=0`. Without it, the ray driver folds
+  the per-rank `[peak-memory]` lines into `[repeated Nx]`.
 - MUST delete each job when it ends. The idle-GPU reaper deletes a job whose
   GPUs idle for 60 minutes, so start a job only when it can run.
 
@@ -92,9 +97,14 @@ Phases (results in `kdatp/t1/<stamp>/`):
      production strictness (`assume_ok_unexpected`) loads B.
    - E1: the weight-sync gather and `convert_glm5_next_to_hf` give the same
      HF tensors for A and B, equal to the HF safetensors bit for bit.
-   - F1, B1: output relative L2 below 2e-3, input and weight gradients below
-     5e-3 (not calibrated; the JSON also holds the A-A noise floor). A
-     gradient norm ratio near 8, 1/8 or 2.83 is a TP reduction bug.
+   - F1, B1: A and B are compared with an fp32 reference (A with fp32
+     weights and inputs). The output, the input gradient and each weight
+     gradient of B pass when the relative L2 error of B is at most 2 x the
+     error of A plus 2**-8 (one bf16 rounding). B is not bitwise equal to A:
+     its row-parallel `o_proj` sums 8 bf16 partial outputs. A weight
+     gradient norm ratio B/A outside 0.99 to 1.01 fails B1. A ratio near 8,
+     1/8 or 2.83 is a TP reduction bug. The JSON also holds the B-A errors
+     and the max abs errors.
    - N1: a contiguous conv slice moves the output by more than 10%.
    - R1: B saves a DCP. The old module and B load it bit for bit (rollback).
    - T7: forward plus backward time of A and B at 8K, 32K and 131K tokens.
@@ -116,9 +126,10 @@ $K delete pytorchjob kdatp-t2-$STAMP
 
 Arms, in order: `baseline`, `kdatp`, `kdatp-block10`, `baseline2`,
 `kdatp-selective` (the design predicts an out-of-memory error on stage 0).
-Each arm starts from r43 `iter_0000039` and trains rollouts 40 to 42 on the
-same 64 episodes (313 rows plus 1 DP pad, 22.3M tokens, up to 131,070
-tokens per row). The kernel caches stay on each pod, so only the first arm
+Each arm starts from r43 `iter_0000039` and trains rollouts 40 to 43 (one
+warm-up step and 3 timed steps) on the same 64 episodes (313 rows plus 1
+DP pad, 22.3M tokens, up to 131,070 tokens per row). `baseline2` trains
+rollouts 40 and 41 only. The kernel caches stay on each pod, so only the first arm
 compiles cold. Budget: about 1.5 h per arm.
 
 Compare in `results.json`:

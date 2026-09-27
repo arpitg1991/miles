@@ -6,6 +6,7 @@ difference between two arms comes from the arm deltas only.
 
     python3 gen_arm_configs.py t1c --data-dir <kdatp>/data --out <dir>   # 1 node, 5-layer slice
     python3 gen_arm_configs.py t2 --data-dir <kdatp>/data --out <dir>    # 8 nodes, the r45 layout
+    python3 gen_arm_configs.py warm --data-dir <kdatp>/data --out <dir>  # 1 node: the T2 rows, 5-layer slice
 
 Arms:
 
@@ -82,6 +83,25 @@ TESTS = {
             "none": NO_RECOMPUTE,
             "kdatp-none": {**KDA_TP, **NO_RECOMPUTE},
         },
+    },
+    # One train step of the T2 rows on the 5-layer slice. It compiles the kernels of each T2
+    # sequence length on one node, so the T2 job starts with a warm kernel cache.
+    "warm": {
+        "common": {
+            "replicas": 1,
+            "num_trainers": 1,
+            "model_arch": "glm5.3-flash-5layer",
+            "pipeline_model_parallel_size": 1,
+            "decoder_first_pipeline_num_layers": None,
+            "decoder_last_pipeline_num_layers": None,
+            "expert_model_parallel_size": 8,
+            "rollout_batch_size": 8,  # the 64 T2 episodes = one optimizer step
+            "global_batch_size": 64,
+            "debug_exit_after_rollout": 1,
+            "load_debug_rollout_data": "{data}/warm/rollout_{{rollout_id}}.pt",
+            "hf_checkpoint": "{data}/hf/GLM-5.3-Flash-5layer",
+        },
+        "arms": {"baseline": {}, "kdatp": KDA_TP},
     },
     "t2": {
         "common": {

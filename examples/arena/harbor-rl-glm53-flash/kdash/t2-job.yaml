@@ -1,18 +1,18 @@
-# kdatp-t2: the T2 train-only arms on 8 p6-b200 nodes, the r45 trainer layout.
-# Placeholders: __IMAGE__ (the kdatp test trainer image), __STAMP__ (a fresh
+# kdash-t2: the T2 train-only arms on 8 p6-b200 nodes, the r45 trainer layout.
+# Placeholders: __IMAGE__ (the kdash test trainer image), __STAMP__ (a fresh
 # lowercase suffix, for example 20260927a; it names the job, the run dir and
 # the checkpoint dirs). README.md holds the submit and delete commands.
 #
 # Same queue, workload priority and pod priority as the live GLM runs. No
 # NATS, no gym, no W&B key: the arms run train only and never save.
-# Run kdatp-t1 first: it builds the T2 data (data/t2/manifest.json).
+# T2 reads the T2 data of the kdatp tests (kdatp/data/t2, read only). Without it, run kdash-t1 first.
 apiVersion: kubeflow.org/v1
 kind: PyTorchJob
 metadata:
-  name: kdatp-t2-__STAMP__
+  name: kdash-t2-__STAMP__
   namespace: arena-tasks
   labels:
-    app: kdatp-t2-__STAMP__
+    app: kdash-t2-__STAMP__
     arena.agif.amazon.dev/submitter: guparpit
     kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
     kueue.x-k8s.io/priority-class: inference
@@ -23,7 +23,7 @@ spec:
     maxRestarts: 0
     nProcPerNode: 8
     rdzvBackend: c10d
-    rdzvId: kdatp-t2-__STAMP__
+    rdzvId: kdash-t2-__STAMP__
   runPolicy:
     # Delete the job by hand when it ends (README.md); the results are on the scratch mount.
     activeDeadlineSeconds: 43200
@@ -36,7 +36,7 @@ spec:
       template:
         metadata:
           labels:
-            app: kdatp-t2-__STAMP__
+            app: kdash-t2-__STAMP__
             arena.agif.amazon.dev/submitter: guparpit
             kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
           annotations:
@@ -149,9 +149,9 @@ spec:
             imagePullPolicy: Always
             command: [bash, -c]
             args:
-            - exec bash /root/miles/examples/arena/harbor-rl-glm53-flash/kdatp/kdatp-run.sh t2
+            - exec bash /root/miles/examples/arena/harbor-rl-glm53-flash/kdash/kdash-run.sh t2
             env:
-            - {name: KDATP_STAMP, value: __STAMP__}
+            - {name: KDASH_STAMP, value: __STAMP__}
             - {name: REPLICA, value: "8"}
             - {name: REPLICA_TRAINER, value: "8"}
             - {name: USER, value: guparpit}

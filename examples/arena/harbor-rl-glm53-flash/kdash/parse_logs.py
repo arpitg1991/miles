@@ -1,4 +1,4 @@
-"""Collect the per-arm results of a kdatp run dir into one JSON (stdout).
+"""Collect the per-arm results of a kdash (or kdatp) run dir into one JSON (stdout).
 
 For each ``<run>/<arm>/trainer-0.log`` it reads:
 
@@ -8,10 +8,12 @@ For each ``<run>/<arm>/trainer-0.log`` it reads:
   ranks of each pipeline stage, per rollout,
 - ``<arm>/rc`` (the launcher exit code) and an out-of-memory marker.
 
+``_exit_codes`` holds the exit codes of the T1 GPU unit tests and of the T1 parity.
+
 It also gives, per arm, the mean of each perf and step value over the steps
 after the first one (the first step pays the kernel compile).
 
-    python3 parse_logs.py /mnt/scratch-s3files-rw/guparpit/kdatp/t2/<stamp> > results.json
+    python3 parse_logs.py /mnt/scratch-s3files-rw/guparpit/kdash/t2/<stamp> > results.json
 """
 
 import ast
@@ -75,7 +77,13 @@ def parse_arm(arm_dir: Path) -> dict:
 def main() -> None:
     run_dir = Path(sys.argv[1])
     arms = sorted(p for p in run_dir.iterdir() if p.is_dir() and (p / "trainer-0.log").exists())
-    json.dump({arm.name: parse_arm(arm) for arm in arms}, sys.stdout, indent=2, default=str)
+    results = {arm.name: parse_arm(arm) for arm in arms}
+    # The exit codes of the T1 GPU unit tests and of the T1 parity (0 = pass).
+    rcs = {f"unit/{path.stem}": path for path in sorted(run_dir.glob("unit/*.rc"))}
+    if (run_dir / "parity" / "rc").is_file():
+        rcs["parity"] = run_dir / "parity" / "rc"
+    results["_exit_codes"] = {name: int(path.read_text()) for name, path in rcs.items()}
+    json.dump(results, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
 
 

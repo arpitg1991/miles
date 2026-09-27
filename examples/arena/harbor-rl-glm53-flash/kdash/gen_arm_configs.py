@@ -1,25 +1,26 @@
-"""Write the train-only arm configs of the kdatp tests from the r45 config.
+"""Write the train-only arm configs of the kdash tests from the r45 config.
 
 Each arm is the r45 ``miles-config.yaml`` with the common deltas of its test
 and the arm deltas below. Every other r45 key stays the same, so a timing
-difference between two arms comes from the arm deltas only.
+difference between two arms comes from the arm deltas only. The KDA layers
+always run on the shared head-sharded layer (one code path, no switch), so
+the baseline of the old replicated layer comes from the kdatp runs of the
+same data and layout (``kdatp/t1/<stamp>`` and ``kdatp/t2/<stamp>``, arm
+``baseline``).
 
-    python3 gen_arm_configs.py t1c --data-dir <kdatp>/data --out <dir>   # 1 node, 5-layer slice
-    python3 gen_arm_configs.py t2 --data-dir <kdatp>/data --out <dir>    # 8 nodes, the r45 layout
+    python3 gen_arm_configs.py t1c --data-dir <data> --out <dir>   # 1 node, 5-layer slice
+    python3 gen_arm_configs.py t2 --data-dir <data> --out <dir>    # 8 nodes, the r45 layout
 
 Arms:
 
-- ``baseline``: today (all KDA heads on each rank, full recompute).
-- ``kdatp``: item 3, ``glm5_next_kda_tp``.
-- ``*-selective``: item 4, selective recompute of the Megatron modules that
-  reach GLM-5.3 (``mhc``, ``moe_act``, ``layernorm``). ``mhc`` needs
+- ``shared``: the r45 config (full recompute, uniform, 1 layer).
+- ``shared2`` (t2): ``shared`` again for 2 rollouts, the noise floor of the step-1 parity.
+- ``selective``: selective recompute of the Megatron modules that reach
+  GLM-5.3 (``mhc``, ``moe_act``, ``layernorm``). ``mhc`` needs
   ``enable_hyper_connections`` on the command line, because Megatron checks
   it before the glm5_next spec turns mHC on.
-- ``*-none``: no recompute (the T1c memory ceiling).
-- ``kdatp-block10``: item 4 on top of item 3, full recompute of the first
-  10 layers of each stage only.
-- ``block<N>``, ``kdatp-block<N>`` (``--arms`` only): the same with the
-  first N layers of each stage.
+- ``none``: no recompute (the memory ceiling).
+- ``block<N>``: full recompute of the first N layers of each stage only.
 """
 
 import argparse
@@ -31,7 +32,6 @@ import yaml
 HERE = Path(__file__).resolve().parent
 R45_CONFIG = HERE.parent / "r45" / "miles-config.yaml"
 
-KDA_TP = {"glm5_next_kda_tp": True}
 SELECTIVE = {
     "recompute_granularity": "selective",
     "recompute_method": None,
@@ -46,8 +46,7 @@ def block(num_layers: int) -> dict:
     return {"recompute_method": "block", "recompute_num_layers": num_layers}
 
 
-BLOCK10 = block(10)
-BLOCK_ARM = re.compile(r"^(kdatp-)?block(\d+)$")
+BLOCK_ARM = re.compile(r"^block(\d+)$")
 
 # Keys that make the run train only, never save, and never log to a live W&B project.
 TRAIN_ONLY = {
@@ -75,12 +74,9 @@ TESTS = {
             "hf_checkpoint": "{data}/hf/GLM-5.3-Flash-5layer",
         },
         "arms": {
-            "baseline": {},
-            "kdatp": KDA_TP,
+            "shared": {},
             "selective": SELECTIVE,
-            "kdatp-selective": {**KDA_TP, **SELECTIVE},
             "none": NO_RECOMPUTE,
-            "kdatp-none": {**KDA_TP, **NO_RECOMPUTE},
         },
     },
     "t2": {
@@ -94,13 +90,11 @@ TESTS = {
             "load_debug_rollout_data": "{data}/t2/rollout_{{rollout_id}}.pt",
         },
         "arms": {
-            "baseline": {},
-            "kdatp": KDA_TP,
-            "kdatp-block10": {**KDA_TP, **BLOCK10},
+            "shared": {},
             # The noise floor of the step-1 parity, and one more timed step.
-            "baseline2": {"debug_exit_after_rollout": 2},
-            # Last: the kdatp design predicts an out-of-memory error on stage 0 at 131K tokens.
-            "kdatp-selective": {**KDA_TP, **SELECTIVE},
+            "shared2": {"debug_exit_after_rollout": 2},
+            "selective": SELECTIVE,
+            "none": NO_RECOMPUTE,
         },
     },
 }
@@ -112,7 +106,7 @@ def arm_deltas(test: str, arm: str) -> dict:
     match = BLOCK_ARM.match(arm)
     if match is None:
         raise ValueError(f"unknown {test} arm {arm!r}")
-    return {**(KDA_TP if match.group(1) else {}), **block(int(match.group(2)))}
+    return block(int(match.group(1)))
 
 
 def arm_config(base: dict, test: str, arm: str, data_dir: str, out_dir: str) -> dict:
@@ -120,8 +114,8 @@ def arm_config(base: dict, test: str, arm: str, data_dir: str, out_dir: str) -> 
     config = {**base, **TRAIN_ONLY, **spec["common"], **arm_deltas(test, arm)}
     for key in ("load_debug_rollout_data", "hf_checkpoint"):
         config[key] = config[key].format(data=data_dir)
-    config["experiment_name"] = f"kdatp-{test}-{arm}"  # a record only; the pod env names the run
-    config["project_name"] = f"kdatp-{test}"
+    config["experiment_name"] = f"kdash-{test}-{arm}"  # a record only; the pod env names the run
+    config["project_name"] = f"kdash-{test}"
     config["arena_sample_summary_dir"] = f"{out_dir}/{arm}/sample_summary"
     return config
 

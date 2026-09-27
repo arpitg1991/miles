@@ -1,4 +1,4 @@
-"""Build train-only rollout data for the kdatp tests (``--load-debug-rollout-data``).
+"""Build train-only rollout data for the kdatp and kdash tests (``--load-debug-rollout-data``).
 
 No gym and no SGLang run: miles loads ``rollout_{rollout_id}.pt`` in place of
 a rollout (``debug_train_only``). This script writes those files with the

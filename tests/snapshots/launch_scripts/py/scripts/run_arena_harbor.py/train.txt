@@ -960,3 +960,4 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --rollout-num-gpus 8
   --load /root/shared_data/arena/checkpoints/slime_experiments/arena-smoke
   --save /root/shared_data/arena/checkpoints/slime_experiments/arena-smoke
+  --deploy-component all

@@ -3,6 +3,7 @@
 #
 #   kdash-run.sh t1   # 1 node: GPU unit tests, T1 parity, then the T1c 5-layer train-only arms
 #   kdash-run.sh t2   # 8 nodes: the T2 train-only arms on the r45 layout
+#   kdash-run.sh warm # 1 node: compile the kernels of the T2 rows, save the kernel cache
 #
 # Writes only under $KDASH_DIR (default /mnt/scratch-s3files-rw/guparpit/kdash).
 # Reads the base DCP, the r43 iter_0000039 DCP and HF export, and the train-only
@@ -28,6 +29,9 @@ T1C_GROUPS=${T1C_GROUPS:-243}
 T2_GROUPS=${T2_GROUPS:-243,284,307,258,239,306,276,309}
 T1C_ARMS=${T1C_ARMS:-shared selective none}
 T2_ARMS=${T2_ARMS:-shared block10}
+WARM_ARMS=${WARM_ARMS:-shared}
+# Space-separated kernel cache tarballs (from `warm`) to unpack before the start.
+KDASH_KCACHE=${KDASH_KCACHE:-}
 ARM_TIMEOUT=${ARM_TIMEOUT:-7200}
 UNIT_TIMEOUT=${UNIT_TIMEOUT:-1800}
 RUN=$KD/$TEST/$STAMP
@@ -51,6 +55,15 @@ export RAY_DEDUP_LOGS=0
 export KCACHE=/tmp/kernel_cache
 export TILELANG_CACHE_DIR=$KCACHE/tilelang TRITON_CACHE_DIR=$KCACHE/triton TORCHINDUCTOR_CACHE_DIR=$KCACHE/inductor
 mkdir -p "$TILELANG_CACHE_DIR" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+# A cold T2 job compiles kernels for about an hour at low GPU power, and the idle-GPU reaper
+# deletes it (kdatp-t2-20260927b). With a warm cache, the first step does GPU work at once.
+for tarball in $KDASH_KCACHE; do
+  if tar -C "${KCACHE%/*}" -xf "$tarball"; then
+    echo "[kdash] kernel cache unpacked: $tarball"
+  else
+    echo "[kdash] kernel cache FAILED: $tarball"
+  fi
+done
 ulimit -n 1000000
 
 if [ "${REPLICA_IDX:-0}" != "0" ]; then
@@ -113,6 +126,13 @@ for job in client.list_jobs():
         client.stop_job(job.submission_id)
 PY
   sleep 60
+}
+
+save_kcache() {  # name: tar the kernel cache to $KD/kcache/<name>.tar, then rename it
+  mkdir -p "$KD/kcache"
+  tar -C "${KCACHE%/*}" -cf "$KD/kcache/$1.tar.part" "${KCACHE##*/}" &&
+    mv -f "$KD/kcache/$1.tar.part" "$KD/kcache/$1.tar"
+  log "kernel cache: $KD/kcache/$1.tar $(du -h "$KD/kcache/$1.tar" 2>&1 | cut -f1)"
 }
 
 seed_t2_ckpt() {  # experiment name: link r43 iter_0000039 file by file (r45/BUILD.md pattern)
@@ -188,6 +208,26 @@ t2)
     fi
     stop_ray_jobs
   done
+  ;;
+warm)
+  export REPLICA=1 REPLICA_TRAINER=1
+  test -f "$KDASH_DATA/t2/manifest.json" || { log "no T2 data in $KDASH_DATA: run t1 first"; exit 1; }
+  # The warm step trains the T2 rows as rollout 0 (rollout 1 is the prefetch). Its links stay under kdash.
+  WARM_DATA=$KD/data-warm
+  mkdir -p "$WARM_DATA/warm"
+  ln -sfn "$KDASH_DATA/hf" "$WARM_DATA/hf"
+  for i in 0 1; do
+    ln -sfn "$KDASH_DATA/t2/rollout_40.pt" "$WARM_DATA/warm/rollout_$i.pt"
+  done
+  python3 "$HERE/gen_arm_configs.py" warm --data-dir "$WARM_DATA" --out "$RUN/arms" --arms "$WARM_ARMS" || exit 1
+  # The reaper can delete this job too. A snapshot every 10 minutes keeps the kernels compiled so far.
+  (while sleep 600; do save_kcache "$STAMP.snap"; done) &
+  SNAP_PID=$!
+  for arm in $WARM_ARMS; do
+    run_arm warm "$arm"
+  done
+  kill "$SNAP_PID"
+  save_kcache "$STAMP"
   ;;
 *)
   log "unknown test $TEST"

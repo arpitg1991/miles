@@ -33,7 +33,7 @@ It is a test image only: NEVER use it for a live run.
 
 | File | Use |
 | --- | --- |
-| `kdash-run.sh` | Pod driver: `t1` or `t2`. It writes only under `/mnt/scratch-s3files-rw/guparpit/kdash/`. |
+| `kdash-run.sh` | Pod driver: `t1`, `t2` or `warm`. It writes only under `/mnt/scratch-s3files-rw/guparpit/kdash/`. |
 | `t1-job.yaml`, `t2-job.yaml` | PyTorchJob `kdash-t1-<stamp>` (1 node) and `kdash-t2-<stamp>` (8 nodes). Placeholders `__IMAGE__`, `__STAMP__`. |
 | `t1_parity.py` | T1 checkpoint-level parity, 8 GPUs (`torchrun`). |
 | `build_rollout_data.py` | Train-only rollout files from r45 groups and r43 staged tokens and routing. |
@@ -120,13 +120,35 @@ Phases (results in `kdash/t1/<stamp>/`):
    T1c `baseline` arm (`kdatp/t1/20260927b/results.json`, the same data):
    `rollout/log_probs`, `train/grad_norm`, `perf/actor_train_time`, peak memory.
 
+## Warm-up: one node before T2
+
+A cold T2 job compiles kernels for about an hour, and most GPUs wait at about
+250 W. The idle-GPU reaper (AREnAThanatos) deletes a job whose 60-minute mean
+GPU power stays below 10%. It deleted `kdatp-t2-20260927b` 65 minutes after
+the start, in the first step. MUST warm the kernel cache before T2:
+
+```bash
+W=${STAMP}w
+sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$W#g" -e "s#kdash-t1-#kdash-w1-#g" \
+    -e "s#kdash-run.sh t1#kdash-run.sh warm#" t1-job.yaml | $K create -f -
+```
+
+The job trains one step of the T2 rows on the 5-layer slice and writes
+`kdash/kcache/<stamp>.tar`. The reaper can delete the warm-up job too, so it
+also writes `kdash/kcache/<stamp>.snap.tar` every 10 minutes. Give the T2 job
+the tarball in `KDASH_KCACHE`. Each pod unpacks it before the start.
+
 ## T2: eight nodes, the r45 layout
 
 T2 needs `t2/manifest.json` in the data dir (`kdatp/data` has it). It does
-not need a finished T1.
+not need a finished T1. Run the warm-up first.
 
 ```bash
-sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" t2-job.yaml | $K create -f -
+KC=/mnt/scratch-s3files-rw/guparpit/kdash/kcache/${STAMP}w.tar
+ARMS="shared selective"
+sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" \
+    -e "s#- {name: KDASH_STAMP, value: $STAMP}#&\n            - {name: KDASH_KCACHE, value: $KC}\n            - {name: T2_ARMS, value: $ARMS}#" \
+    t2-job.yaml | $K create -f -
 $K logs -f kdash-t2-$STAMP-worker-0
 $K delete pytorchjob kdash-t2-$STAMP
 ```

@@ -193,9 +193,11 @@ class HuggingfaceAttention(MegatronModule, ABC):
         cu_seqlens = packed_seq_params.cu_seqlens_q
 
         if self.args.sequence_parallel:
-            # tensor_parallel_output_grad=False: the linear attention after this
-            # gather is NOT TP-sharded (duplicated on all ranks), so the backward
-            # should split (not reduce-scatter) to avoid inflating gradients by TP.
+            # tensor_parallel_output_grad=False: each rank already holds the full
+            # input gradient, so the backward splits it (a reduce-scatter would
+            # multiply it by TP). A duplicated module computes the full gradient on
+            # every rank. A head-split module (GLM-5.3 KDA with --glm5-next-kda-tp)
+            # all-reduces it inside its column-parallel linears.
             hidden_states = tensor_parallel.gather_from_sequence_parallel_region(
                 hidden_states,
                 tensor_parallel_output_grad=False,

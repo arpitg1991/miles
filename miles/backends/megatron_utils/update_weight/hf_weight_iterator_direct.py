@@ -325,6 +325,13 @@ def _check_and_fix_partition(args: Namespace, name: str, partition_stride: int, 
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
         if partition_dim <= 0:
             partition_dim = 1
+    elif name.endswith("self_attention.kda.conv1d.weight"):
+        # GLM-5.3 --glm5-next-kda-tp: each rank holds one head slice of each of
+        # the packed [q; k; v] conv parts, so the gather interleaves by 3.
+        assert (partition_stride, partition_dim) == (
+            3,
+            0,
+        ), f"Expected partition_stride=3 on dim 0 for {name}, got {partition_stride} on dim {partition_dim}"
     else:
         assert partition_stride == 1, f"Expected partition_stride=1 for {name}, got {partition_stride}"
     return partition_stride, partition_dim

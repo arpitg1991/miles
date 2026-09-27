@@ -202,7 +202,7 @@ def test_all_mode_one_sample_per_segment_shared_reward():
     assert all(s.status == Sample.Status.COMPLETED for s in (a, b, f))
     assert all(not s.remove_sample for s in (a, b, f))
     # Trajectory-level fields land on every segment; group_metrics on the first only.
-    assert all(s.weight_versions == ["3"] for s in (a, b, f))
+    assert all(s.metadata["arena_weight_versions"] == ["3"] and s.weight_versions == [] for s in (a, b, f))
     assert "group_metrics" in a.metadata
     assert "group_metrics" not in b.metadata and "group_metrics" not in f.metadata
 
@@ -451,9 +451,8 @@ def _sample(
     s.remove_sample = remove
     s.tokens = [1] * (response_length + 1)
     # A None-valued key is absent, like a segment that carries no removal_reason.
-    s.metadata = {"mode": mode, "task_id": f"t{group_index}", "gym_name": "g"}
+    s.metadata = {"mode": mode, "task_id": f"t{group_index}", "gym_name": "g", "arena_weight_versions": ["3"]}
     s.metadata.update({k: v for k, v in meta.items() if v is not None})
-    s.weight_versions = ["3"]
     return s
 
 
@@ -667,7 +666,7 @@ def test_pad_rows_to_dp_alignment_pads_odd_rows_with_shortest_kept_sibling(caplo
     # A zero-loss row never trains: COMPLETED keeps miles' per-sample truncated count at the source alone.
     assert pad.status is Sample.Status.COMPLETED
     assert sum(s.status is Sample.Status.TRUNCATED for s in rows) == 1
-    assert pad.weight_versions == src.weight_versions
+    assert pad.metadata["arena_weight_versions"] == src.metadata["arena_weight_versions"]
     assert pad.index == 3 + _SEGMENT_INDEX_STRIDE
     assert len({s.index for s in rows}) == len(rows)
     # segment counts from len(episode); n_segments is a copy (nothing validates segment < n_segments).

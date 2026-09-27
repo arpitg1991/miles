@@ -11,6 +11,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Sample.metadata key for the per-turn weight versions that the gym reports
+# (strings). Sample.weight_versions holds miles span objects, which the NATS
+# path cannot build without per-turn token ranges (ADR-0016).
+ARENA_WEIGHT_VERSIONS_KEY = "arena_weight_versions"
+
+
 
 def compute_group_metrics_from_samples(samples: list[Any]) -> dict[str, float]:
     """Aggregate gym-side per-task group_metrics across a rollout batch.
@@ -141,11 +147,15 @@ def compute_off_policy_round_metrics(
 
 
 def compute_off_policy_metrics(args: Any, all_samples: list, rollout_id: int | None = None) -> dict[str, float]:
-    """Wrapper that extracts weight_versions from samples and calls the core function."""
+    """Read the gym weight versions from each sample's metadata and call the core function.
+
+    The versions are in ``Sample.metadata[ARENA_WEIGHT_VERSIONS_KEY]``, one string
+    per turn (ADR-0016). A sample without the key counts as untagged.
+    """
     if not all_samples:
         return {}
     return compute_off_policy_round_metrics(
-        per_sample_weight_versions=[s.weight_versions for s in all_samples],
+        per_sample_weight_versions=[(s.metadata or {}).get(ARENA_WEIGHT_VERSIONS_KEY) or [] for s in all_samples],
         interval=getattr(args, "update_weights_interval", 1),
         reference_step=rollout_id,
     )

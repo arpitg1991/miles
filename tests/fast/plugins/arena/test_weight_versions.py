@@ -1,4 +1,6 @@
-"""Tests that gym weight_version flows onto Sample.weight_versions.
+"""Tests that gym weight_version flows into Sample.metadata["arena_weight_versions"].
+
+Sample.weight_versions stays empty: it holds miles span objects (ADR-0016).
 
 Covers the GenerateClient fast path in ``_result_to_samples_full_trajectory``
 (``has_generate_tokens`` steps carry real token-level data, so no tokenizer is
@@ -54,27 +56,31 @@ def test_fast_path_uses_parallel_weight_versions_list():
     result = _result([_gen_step()], weight_versions=[3, 4])
     samples = _convert(result)
     assert len(samples) == 1
-    assert samples[0].weight_versions == ["3", "4"]
+    assert samples[0].metadata["arena_weight_versions"] == ["3", "4"]
+    assert samples[0].weight_versions == []
 
 
 def test_fast_path_falls_back_to_per_step_versions():
     result = _result([_gen_step(weight_version=7)])
     samples = _convert(result)
     assert len(samples) == 1
-    assert samples[0].weight_versions == ["7"]
+    assert samples[0].metadata["arena_weight_versions"] == ["7"]
+    assert samples[0].weight_versions == []
 
 
 def test_fast_path_missing_version_leaves_list_empty():
     result = _result([_gen_step(weight_version=None)])
     samples = _convert(result)
     assert len(samples) == 1
+    assert samples[0].metadata["arena_weight_versions"] == []
     assert samples[0].weight_versions == []
 
 
 def test_fast_path_versions_coerced_to_str():
     result = _result([_gen_step()], weight_versions=[7])
     samples = _convert(result)
-    assert samples[0].weight_versions == ["7"]
+    assert samples[0].metadata["arena_weight_versions"] == ["7"]
+    assert samples[0].weight_versions == []
 
 
 def test_fast_path_attaches_group_metrics_to_first_sample_only():

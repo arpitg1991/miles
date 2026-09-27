@@ -29,6 +29,10 @@ RUN=$KD/$TEST/$STAMP
 
 export ARENA_CHECKPOINTS_DIR=$KD/checkpoints ARENA_DATA_DIR=$KD/run
 export MILES_LOG_PEAK_MEMORY=1
+# The ray driver folds log lines that differ only in numbers ("[repeated Nx]"), so it hides
+# the per-rank [peak-memory] lines (r11/trainer-pytorchjob.yaml saw the same). ray start and
+# the job driver inherit this.
+export RAY_DEDUP_LOGS=0
 # Kernel JIT caches on local disk (r45 pattern). All arms of a job share them, so only arm 1 compiles cold.
 export KCACHE=/tmp/kernel_cache
 export TILELANG_CACHE_DIR=$KCACHE/tilelang TRITON_CACHE_DIR=$KCACHE/triton TORCHINDUCTOR_CACHE_DIR=$KCACHE/inductor
@@ -102,7 +106,8 @@ t1)
     python3 "$HERE/make_slice_hf.py" --src "$HF" --out "$KD/data/hf/GLM-5.3-Flash-5layer" --layers 5
   build_data t1c "$T1C_GROUPS" 0,1 1 || log "data t1c: FAILED (see data-t1c.log)"
   # The T2 data build is CPU and disk only; it runs while the GPUs do T1.
-  build_data t2 "$T2_GROUPS" 40,41,42,43 2 &
+  # Rollouts 40..43 train; the loop prefetches the next id, so 44 must exist too.
+  build_data t2 "$T2_GROUPS" 40,41,42,43,44 2 &
   T2_DATA_PID=$!
 
   log "T1 parity"

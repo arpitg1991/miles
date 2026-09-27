@@ -13,8 +13,8 @@ Covers:
     dedup/DLQ state machine
   - gym_autoscaler.py: desired_replicas calculation without K8s
   - nats_rollout.py: gym drop-reason categories, rollout/failed/* and
-    rollout/dropped_groups/* (requires torch), the task-message window and
-    the startup check for the output cap and the window
+    rollout/dropped_groups/* (requires torch), the task-message limits and
+    the worker check for the output cap, the window, and top-k
 
 Run: python -m pytest tests/fast/plugins/arena/test_nats_arena.py -v
 """
@@ -316,11 +316,40 @@ class TestRolloutMaxSeqLen:
         with pytest.raises(ValueError, match="--rollout-max-context-len or --sglang-context-length"):
             _rollout_max_seq_len(SimpleNamespace(rollout_max_context_len=None, sglang_context_length=None))
 
+    def test_task_limits_feed_sample_to_task(self):
+        from miles_plugins.arena.nats_arena.message_format import sample_to_task
+        from miles_plugins.arena.nats_arena.nats_rollout import _task_limits
+
+        args = SimpleNamespace(
+            rollout_max_response_len=16384,
+            rollout_temperature=1.0,
+            rollout_top_p=0.95,
+            rollout_top_k=-1,
+            rollout_max_context_len=131072,
+            sglang_context_length=65536,
+        )
+        limits = _task_limits(args)
+        assert limits == {"max_new_tokens": 16384, "temperature": 1.0, "top_p": 0.95, "max_seq_len": 65536}
+        # The publish loop passes the dict as keyword arguments, so each key
+        # MUST be a sample_to_task parameter.
+        sample = SimpleNamespace(
+            metadata={"instance_id": "t", "lakefs_uri": "lakefs://r/b/tasks/t/", "lakefs_commit_id": "c"},
+            index=0,
+            group_index=0,
+        )
+        task = sample_to_task(sample, **limits)
+        assert task["sampling_params"] == {"max_new_tokens": 16384, "temperature": 1.0, "top_p": 0.95}
+        assert task["max_seq_len"] == 65536
+
     @pytest.mark.parametrize(
-        ("response_len", "context_len", "match"),
-        [(None, 131072, "--rollout-max-response-len"), (16384, None, "--rollout-max-context-len")],
+        ("response_len", "context_len", "top_k", "match"),
+        [
+            (None, 131072, -1, "--rollout-max-response-len"),
+            (16384, None, -1, "--rollout-max-context-len"),
+            (16384, 131072, 20, "--rollout-top-k 20"),
+        ],
     )
-    def test_worker_stops_at_startup(self, response_len, context_len, match):
+    def test_worker_stops_at_startup(self, response_len, context_len, top_k, match):
         from miles_plugins.arena.nats_arena.nats_rollout import NATSRolloutWorker
 
         # The check runs before the tokenizer load and before any publish.
@@ -330,6 +359,7 @@ class TestRolloutMaxSeqLen:
             rollout_max_response_len=response_len,
             rollout_max_context_len=context_len,
             sglang_context_length=None,
+            rollout_top_k=top_k,
         )
         with pytest.raises(ValueError, match=match):
             NATSRolloutWorker(args, data_source=None)

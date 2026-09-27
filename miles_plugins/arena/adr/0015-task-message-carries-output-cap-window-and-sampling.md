@@ -57,26 +57,37 @@ emits each key only when its argument is set. Thus an eval task
 ignores both keys.
 
 `max_seq_len` takes the smaller value, so the gym never plans a turn past
-the SGLang window or past the trainer sample limit. Upstream clamps on
+the trainer sample limit. The gym also stays inside the SGLang window when
+`sglang_context_length` is set. Without that value, SGLang takes its window
+from the model config, and the trainer does not read it. Upstream clamps on
 `rollout_max_context_len` only.
+
+The message carries no `top_k`. The gym reads no top-k value, so the trainer
+stops when `rollout_top_k` is set (section 3).
 
 ### 2. Publisher
 
-`NATSRolloutWorker.__init__` computes the window once with
+`NATSRolloutWorker.__init__` computes the four values once with
+`_task_limits(args)`. That function takes the window from
 `_rollout_max_seq_len(args)`. The Harbor training publish in `_worker_loop`
-passes the four values to `sample_to_task`. The eval path
+passes the dict to `sample_to_task` as keyword arguments. The eval path
 (`eval_rollout.py`, `eval_coordinator.py`) does not change.
 
-### 3. Fail at startup
+### 3. Fail before the first publish
 
 `NATSRolloutWorker.__init__` raises `ValueError` before the tokenizer load
-and before any publish in two cases:
+and before any publish in three cases:
 
 - `rollout_max_response_len` is not set.
 - Neither `rollout_max_context_len` nor `sglang_context_length` is set.
+- `rollout_top_k` is not -1. The gym reads no top-k value, so a set value
+  otherwise has no effect and gives no error.
 
 A gym that follows AREnATasks ADR-0072 fails every group whose message lacks
-a value. One startup error is easier to read than one failure per group.
+a value. One error is easier to read than one failure per group.
+
+`get_global_worker` makes the worker at the first `generate_rollout` call.
+Thus the error comes after the actor and engine init, not at process start.
 
 ### Alternatives considered
 
@@ -90,8 +101,8 @@ a value. One startup error is easier to read than one failure per group.
 ## Consequences
 
 - One miles config value sets each limit and each sampling value. The next
-  GLM run sets `rollout_max_response_len: 16384` in its `miles-config.yaml`
-  and nowhere else.
+  GLM run sets `rollout_max_response_len: 16384` in its `miles-config.yaml`.
+  No other file carries the value.
 - Deploy order: MUST deploy the trainer image with this change before a gym
   image with AREnATasks ADR-0072. An older trainer sends no keys, so that
   gym fails every group with a `ValueError` that names this ADR.
@@ -100,9 +111,30 @@ a value. One startup error is easier to read than one failure per group.
 - NEVER run an old gym image on a template without the gym env entries.
   That gym falls back to the `ArenaSGLangLLM` defaults of 8192 output
   tokens and a 32768 window and gives no error.
-- The W&B chart `raw_response_length/response_length_clip_ratio`
-  (`log_utils.py`) compares the whole multi-turn response with the per-call
-  cap. At 16384 it reads near 1. Only the chart is wrong.
+- `rollout_max_response_len` has other readers in the trainer. A smaller
+  cap changes their output too:
+  - The W&B chart `raw_response_length/response_length_clip_ratio`
+    (`log_utils.py`) compares the whole multi-turn response with the
+    per-call cap. At 16384 it reads near 1.
+  - The `correct_length/pNN` buckets (`log_utils.py`) use the cap as their
+    top edge. A longer response falls in no bucket.
+  - The dashboard truncation advisory (`dashboard/advisory.py`) names the
+    cap as the probable cause of truncation.
+  - The in-training eval: `eval_rollout.py` sends the value as the eval gym
+    `ARENA_MAX_TOKENS`, and `eval_config.py` uses it when
+    `eval_max_response_len` is not set.
+
+  None of these changes the training loss. The eval cap can change the
+  eval scores.
+- The 27B recipes (`examples/arena/harbor-rl-27b` and
+  `examples/arena/harbor-rl-27b-snorkel`) ran the gym with
+  `ARENA_ROLLOUT_CONTEXT_LIMIT` 32768, and their trainer configs set both
+  window values to 131072. On a gym with ADR-0072 the window becomes 131072.
+  To keep the r5 parity, such a run MUST set `rollout_max_context_len` to
+  32768. `harbor-rl-27b-snorkel/smoke-3node/gym-worker.yaml` also sets env
+  names that stop a gym with ADR-0072 at startup.
 - Tests: `tests/fast/plugins/arena/test_nats_arena.py`
-  (`TestBuildTaskMessage`, `TestSampleToTask`, `TestRolloutMaxSeqLen`). No
-  test drives the async publish loop, so the publish call site has no test.
+  (`TestBuildTaskMessage`, `TestSampleToTask`, `TestRolloutMaxSeqLen`).
+  `_task_limits` has a test that passes its dict to `sample_to_task`, so a
+  key that is not a `sample_to_task` parameter fails. No test drives the
+  async publish loop, so the `**self._task_limits` call site has no test.

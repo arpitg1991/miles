@@ -124,8 +124,18 @@ manifest's `NATS_URL` is `nats://rl-snork27b5-nats:4222` and `sglang-svc.yaml`
 publishes `rl-snork27b5-sglang`), set `replicas` back to 128, and keep the
 worker's `--nats-url` / `--model-base-url` consistent with those names.
 
-- Worker sampling env (`ARENA_MAX_TOKENS=2048`, `ARENA_TEMPERATURE=1.0`) is
-  already in parity with this trainer config.
+- History (run5 gym image): the worker sampling env (`ARENA_MAX_TOKENS=2048`,
+  `ARENA_TEMPERATURE=1.0`, `ARENA_ROLLOUT_CONTEXT_LIMIT=32768`) was in
+  parity with this trainer config.
+- **ADR-0015 caveat for worker redeploys:** a gym image with AREnATasks
+  ADR-0072 takes the output cap, the sampling values, and the window from
+  the task message (plugin ADR-0015). It stops at startup when
+  `ARENA_MAX_TOKENS`, `ARENA_TEMPERATURE`, or `ARENA_ROLLOUT_CONTEXT_LIMIT`
+  is set. Thus remove these env entries from `smoke-3node/gym-worker.yaml`
+  for such an image. The window is then the smaller of
+  `rollout_max_context_len` and `sglang_context_length`, which is 131072 in
+  this config. To keep the run5 window of 32768, set
+  `rollout_max_context_len: 32768` in the trainer config.
 - **ADR-0046 caveat for worker redeploys:** the run5 `gym-worker.yaml` exec
   line and its pinned image (`rl-smoke-20260821b`) predate ADR-0046. If you
   rebuild the worker image from current AREnATasks head, add `--mode rollout`

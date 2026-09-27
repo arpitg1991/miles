@@ -13,6 +13,8 @@ import torch
 from miles.backends.training_utils import loss as loss_utils
 from miles.backends.training_utils.loss_hub.advantages import apply_advantage_scale
 
+from .loss_test_utils import make_parallel_state
+
 # This module intentionally has no explicit CI registration call: modules under
 # tests/fast are implicitly assigned to the stage-a-cpu suite by the CI collector.
 
@@ -72,6 +74,9 @@ def _args() -> Namespace:
 
 @pytest.fixture
 def fixed_advantages(monkeypatch):
+    # compute_advantages_and_returns returns early off the last pipeline stage (#3125).
+    make_parallel_state(is_pp_last_stage=True)
+
     def fake_compute_advantages(**kwargs):
         adv = torch.tensor(_ADV)
         return [adv], [adv.clone()]

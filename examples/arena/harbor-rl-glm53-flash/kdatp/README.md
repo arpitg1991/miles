@@ -114,9 +114,32 @@ Phases (results in `kdatp/t1/<stamp>/`):
    failure. The peak memory difference against `none` gives the saved
    activations per recompute setting.
 
+## Warm-up: one node per kernel set
+
+A cold T2 job compiles kernels for about an hour, and most GPUs wait at low
+power. The idle-GPU reaper (AREnAThanatos) deletes a job whose 60-minute mean
+GPU power stays below 10%. It deleted `kdatp-t2-20260927b` 65 minutes after
+the start, in the first step. MUST warm the kernel cache before T2:
+
+```bash
+for ARMS in baseline kdatp; do
+  W=${STAMP}w$ARMS
+  sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$W#g" -e "s#kdatp-t1-#kdatp-w1-#g" \
+      -e "s#kdatp-run.sh t1#kdatp-run.sh warm#" \
+      -e "s#- {name: KDATP_STAMP, value: $W}#&\n            - {name: WARM_ARMS, value: $ARMS}#" \
+      t1-job.yaml | $K create -f -
+done
+```
+
+Each job trains one step of the T2 rows on the 5-layer slice and writes
+`kdatp/kcache/<stamp>.tar`. The replicated and the split KDA compile different
+kernels, so each arm set gets its own job. Give the T2 job both tarballs in
+`KDATP_KCACHE` (space-separated). Each pod unpacks them before the start.
+
 ## T2: eight nodes, the r45 layout
 
-Run T2 after T1 passes. It needs `data/t2/manifest.json`.
+Run T2 after T1 passes. It needs `data/t2/manifest.json` and the warm-up
+tarballs.
 
 ```bash
 sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" t2-job.yaml | $K create -f -

@@ -3,6 +3,7 @@
 #
 #   kdatp-run.sh t1   # 1 node: T1 parity, then the T1c 5-layer train-only arms
 #   kdatp-run.sh t2   # 8 nodes: the T2 train-only arms on the r45 layout
+#   kdatp-run.sh warm # 1 node: compile the kernels of the T2 rows, save the kernel cache
 #
 # Writes only under $KDATP_DIR (default /mnt/scratch-s3files-rw/guparpit/kdatp).
 # Reads the base DCP, the r43 iter_0000039 DCP and HF export, the r43 staged
@@ -25,6 +26,9 @@ T1C_GROUPS=${T1C_GROUPS:-243}
 T2_GROUPS=${T2_GROUPS:-243,284,307,258,239,306,276,309}
 T1C_ARMS=${T1C_ARMS:-baseline kdatp selective kdatp-selective none kdatp-none}
 T2_ARMS=${T2_ARMS:-baseline kdatp kdatp-block10 baseline2 kdatp-selective}
+WARM_ARMS=${WARM_ARMS:-baseline kdatp}
+# Space-separated kernel cache tarballs (from `warm`) to unpack before the start.
+KDATP_KCACHE=${KDATP_KCACHE:-}
 ARM_TIMEOUT=${ARM_TIMEOUT:-7200}
 RUN=$KD/$TEST/$STAMP
 
@@ -38,6 +42,15 @@ export RAY_DEDUP_LOGS=0
 export KCACHE=/tmp/kernel_cache
 export TILELANG_CACHE_DIR=$KCACHE/tilelang TRITON_CACHE_DIR=$KCACHE/triton TORCHINDUCTOR_CACHE_DIR=$KCACHE/inductor
 mkdir -p "$TILELANG_CACHE_DIR" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+# A cold T2 job compiles for about an hour at low GPU power, and the idle-GPU reaper deletes
+# it (kdatp-t2-20260927b). A warm cache lets the first step do GPU work at once.
+for tarball in $KDATP_KCACHE; do
+  if tar -C "${KCACHE%/*}" -xf "$tarball"; then
+    echo "[kdatp] kernel cache unpacked: $tarball"
+  else
+    echo "[kdatp] kernel cache FAILED: $tarball"
+  fi
+done
 ulimit -n 1000000
 
 if [ "${REPLICA_IDX:-0}" != "0" ]; then
@@ -145,6 +158,22 @@ t2)
     fi
     stop_ray_jobs
   done
+  ;;
+warm)
+  export REPLICA=1 REPLICA_TRAINER=1
+  test -f "$KD/data/t2/manifest.json" || { log "no T2 data: run t1 first"; exit 1; }
+  mkdir -p "$KD/data/warm"
+  for i in 0 1; do  # rollout 1 is the prefetch
+    ln -sfn ../t2/rollout_40.pt "$KD/data/warm/rollout_$i.pt"
+  done
+  python3 "$HERE/gen_arm_configs.py" warm --data-dir "$KD/data" --out "$RUN/arms" --arms "$WARM_ARMS" || exit 1
+  for arm in $WARM_ARMS; do
+    run_arm warm "$arm"
+  done
+  mkdir -p "$KD/kcache"
+  tar -C "${KCACHE%/*}" -cf "$KD/kcache/$STAMP.tar.part" "${KCACHE##*/}" &&
+    mv "$KD/kcache/$STAMP.tar.part" "$KD/kcache/$STAMP.tar"
+  log "kernel cache: $KD/kcache/$STAMP.tar $(du -h "$KD/kcache/$STAMP.tar" 2>&1 | cut -f1)"
   ;;
 *)
   log "unknown test $TEST"

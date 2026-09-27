@@ -55,6 +55,7 @@ import typer
 from omegaconf import OmegaConf
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 
 app = typer.Typer()
 
@@ -277,7 +278,7 @@ def _build_train_args(args: ScriptArgs) -> tuple[str, str]:
     return model_arch, train_args
 
 
-def _wait_for_ray_nodes(head_addr: str, num_nodes: int) -> None:
+def _wait_for_ray_nodes(backend: BaseCommandBackend, head_addr: str, num_nodes: int) -> None:
     """entrypoint.sh's wait-for-all-workers loop, bounded: count Active nodes in ray
     status; after 10 minutes submit anyway so the job's own error names the shortfall."""
     count_cmd = (
@@ -285,22 +286,23 @@ def _wait_for_ray_nodes(head_addr: str, num_nodes: int) -> None:
         "| sed -n '/^Active:/,/^Pending:/p' | grep -c 'node_' || true"
     )
     for _ in range(120):
-        active = (U.exec_command_cpu(count_cmd, capture_output=True) or "").strip() or "0"
+        active = (backend.exec_command_cpu(count_cmd, capture_output=True) or "").strip() or "0"
         if int(active) >= num_nodes:
             print(f"[ray] cluster ready: {active}/{num_nodes} active nodes")
             break
         print(f"waiting for all workers up... ({active}/{num_nodes} active)")
-        U.exec_command_cpu("sleep 5")
-    U.exec_command_cpu(f"ray status --address={head_addr}:6379")
+        backend.exec_command_cpu("sleep 5")
+    backend.exec_command_cpu(f"ray status --address={head_addr}:6379")
 
 
-def _wait_for_head_port(head_addr: str) -> None:
+def _wait_for_head_port(backend: BaseCommandBackend, head_addr: str) -> None:
     for _ in range(120):
         # exec_command_cpu raises on a non-zero exit, so the probe reports through stdout.
-        if U.exec_command_cpu(f"nc -z {head_addr} 6379 2>/dev/null; echo $?", capture_output=True).strip() == "0":
+        probe = backend.exec_command_cpu(f"nc -z {head_addr} 6379 2>/dev/null; echo $?", capture_output=True)
+        if probe.strip() == "0":
             return
         print(f"waiting for ray head {head_addr}:6379 ...")
-        U.exec_command_cpu("sleep 5")
+        backend.exec_command_cpu("sleep 5")
 
 
 # Raylet memory-monitor guard (run-2 root cause: ray 2.58's ThresholdMemoryMonitor
@@ -322,8 +324,9 @@ def _pin_raylet_env() -> None:
 
 def _execute_train(args: ScriptArgs) -> None:
     megatron_model_type, train_args = _build_train_args(args)
+    backend = args.create_backend()
     dirs = " ".join(shlex.quote(path) for path in (args.ckpt_dir, args.log_dir, args.tb_dir, args.wandb_dir))
-    U.exec_command_cpu(f"mkdir -p {dirs}")
+    backend.exec_command_cpu(f"mkdir -p {dirs}")
 
     extra_env_vars = {
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
@@ -343,12 +346,12 @@ def _execute_train(args: ScriptArgs) -> None:
         ),
     }
 
-    U.execute_train(
+    backend.execute_train(
         train_args=train_args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=megatron_model_type,
         train_script="miles_plugins/arena/train_async_arena.py",
-        before_ray_job_submit=lambda: _wait_for_ray_nodes(args.head_addr, args.replicas),
+        before_ray_job_submit=lambda: _wait_for_ray_nodes(backend, args.head_addr, args.replicas),
         extra_env_vars=extra_env_vars,
         config=args,
         megatron_path=args.megatron_path,
@@ -371,11 +374,14 @@ def train(args: ScriptArgs):
 @U.dataclass_cli
 def worker(args: ScriptArgs):
     """Worker role (replicas 1..N-1): join the head's ray cluster and block."""
+    backend = args.create_backend()
     # A restarted pod inherits the previous run's agents, and ray refuses to join with them alive.
-    U.exec_command_cpu("pkill -9 sglang; sleep 3; ray stop --force; pkill -9 ray; pkill -9 miles; sleep 3; true; ")
+    backend.exec_command_cpu(
+        "pkill -9 sglang; sleep 3; ray stop --force; pkill -9 ray; pkill -9 miles; sleep 3; true; "
+    )
     _pin_raylet_env()
-    _wait_for_head_port(args.head_addr)
-    U.exec_command_cpu(
+    _wait_for_head_port(backend, args.head_addr)
+    backend.exec_command_cpu(
         f"ray start --address={args.head_addr}:6379 "
         f"--num-gpus={args.num_gpus_per_node} "
         "--disable-usage-stats "

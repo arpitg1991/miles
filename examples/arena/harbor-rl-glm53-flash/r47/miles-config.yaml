@@ -19,14 +19,15 @@
 # recipe table): the first GLM runs kept overlap off as a cautious engine
 # default from the arena precedent (AGISlime run5 and the smoke), marked as a
 # candidate to lift later. r42 lifted it.
-# Trainer image miles-glm53-r16-20260928a (candidate): miles
-# arpit-kda-shared-layer-rebased 389d2630 (arpit-glm-53 41efa9d0a plus 12
-# commits). It runs KDA across TP on the shared head-sharded layer with
-# safe_gate on, and it has the offline converter fix and the kernel-cache
-# seed. The launch waits for the shared-layer grad_norm gate. The fallback is
-# miles-glm53-r15-20260927a. r15 and later write no HF export per save (no
-# arena_save_hf key here). Everything else is r45: output cap 16384, window
-# 131072, 32 engines, GBS 256, lr 1.5e-6, TIS, and R3.
+# Trainer image miles-glm53-r17-20260928a: miles arpit-glm-53 4716a367a
+# (b2f41c864 plus the first-port KDA split of arpit-kda-tp-recompute).
+# glm5_next_kda_tp true splits the 64 KDA heads across the TP ranks, 8 heads
+# per rank (user decision 2026-09-28: launch on the first port). The
+# checkpoint keys and the global shapes do not change. The shared layer
+# (candidate image miles-glm53-r16-20260928a) is not released. r15 and later
+# write no HF export per save (no arena_save_hf key here). Everything else is
+# r45: output cap 16384, window 131072, 32 engines, GBS 256, lr 1.5e-6, TIS,
+# and R3.
 # Flip A is on (user decision 2026-09-28): skip_actor_forward_only true,
 # rollout_batch_size 64 -> 32, and arena_inflight_multiplier 4 -> 8. The miles
 # validator passes, and each rollout is one optimizer step. Flip B (the
@@ -401,6 +402,11 @@ decoder_last_pipeline_num_layers: 12
 context_parallel_size: 1
 expert_model_parallel_size: 16
 expert_tensor_parallel_size: 1
+# r47: KDA across TP, first port (miles 3803da20d, rebased as a9207dd7d).
+# Each TP rank holds 8 of the 64 KDA heads. The module requires
+# sequence_parallel. kdatp T2 (8 nodes, r45 layout): actor_train -21.3%,
+# peak 105-110 GiB DCGM against 160-165 GiB, step-1 grad_norm -0.69%.
+glm5_next_kda_tp: true
 # ---- perf block: upstream GLM recipe ----
 # r47 flip B (selective recompute): OFF. It ran out of memory in the T2 test
 # (8 nodes, r45 layout). The lines stay as a record. T1 runs (1 node, 5-layer

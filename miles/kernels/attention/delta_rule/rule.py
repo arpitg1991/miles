@@ -80,7 +80,7 @@ class KimiDeltaRule(DeltaRule):
             output_final_state=False,
             use_qk_l2norm_in_kernel=True,
             use_gate_in_kernel=True,
-            safe_gate=True,
+            safe_gate=False,
             lower_bound=self.gate_lower_bound,
             transpose_state_layout=True,
             **boundaries,

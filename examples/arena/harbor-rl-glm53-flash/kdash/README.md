@@ -13,7 +13,8 @@ kdatp branch are gone. These tests run away from the live runs.
 | `miles/kernels/attention/delta_rule/` | The fla kernel calls, from upstream (`PROVENANCE.md`). |
 | `miles_plugins/models/linear_attn.py` | `LinearAttentionLayer`, `DeltaRuleAttention`, `KimiDeltaAttention`, from upstream. |
 | `miles_plugins/models/glm5_next/kda.py` | `Glm5NextDeltaAttention` (KDA with the GLM low-rank output gate and bf16 convs) and `Glm5NextKDAAttention` (the `self_attention` layer). `sharded_state_dict` keeps the checkpoint keys `self_attention.kda.*`, `o_norm`, `o_proj` and the packed `conv1d.weight`. |
-| `miles/backends/megatron_utils/megatron_to_hf/glm5_next.py` | Weight sync: the runtime names `self_attention.linear_attn.*` to the HF names. |
+| `miles/backends/megatron_utils/megatron_to_hf/glm5_next.py` | Weight sync: the runtime names `self_attention.linear_attn.*` to the HF names. The offline DCP-to-HF tools: the stored keys `self_attention.kda.*` to the same HF names, and the packed conv to the three HF convs. |
+| `tools/convert_torch_dist_to_hf_ray.py` | The three `alpha_*` of one hyper-connection site go to one task, so the tool writes each `hc_*_scale`. |
 | `miles_plugins/mbridge/glm5_next.py` | The same names for HF to DCP conversion. The base TP split and merge are correct now. |
 
 The kernel call changes too. The old trainer computed the gate with
@@ -41,6 +42,7 @@ It is a test image only: NEVER use it for a live run.
 | `make_slice_hf.py` | Config-only HF dir of the 5-layer slice. |
 | `gen_arm_configs.py` | Arm YAMLs from `../r45/miles-config.yaml`. |
 | `parse_logs.py` | Per-arm metrics, peak memory per stage, and exit codes to JSON. |
+| `check_dcp_to_hf.py` | CPU: both offline DCP-to-HF tools on the KDA and hyper-connection keys of a DCP, compared bit for bit with the HF source. |
 
 ## Rules
 

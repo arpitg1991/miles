@@ -7,7 +7,11 @@ half-swap can never run (GLM-5.3 has ``qk_rope_head_dim == 0``). The KDA layers
 run on the shared head-sharded layer, so their parameters are
 ``self_attention.linear_attn.*`` with one conv per q, k and v, as in the HF
 checkpoint; ``norm`` and ``out_proj`` are the HF ``o_norm`` and ``o_proj``. The
-weight-sync gather gives the full tensors. The three ``alpha_*`` parameters
+weight-sync gather gives the full tensors. The Megatron checkpoint keeps the
+keys of the old replicated layer (``miles_plugins/models/glm5_next/kda.py``):
+``self_attention.kda.<HF name>`` and one packed ``conv1d.weight`` ``[q; k; v]``.
+The offline DCP-to-HF tools (``tools/convert_torch_dist_to_hf*.py``) read these
+keys, so they are mapped too. The three ``alpha_*`` parameters
 (always on the same rank) are buffered per (layer, site) and emitted as one
 ``hc_*_scale`` tensor once all have arrived.
 """
@@ -37,6 +41,14 @@ _KDA_SUFFIX_MAPPING = {
         ("norm.weight", "o_norm.weight"),
         ("out_proj.weight", "o_proj.weight"),
     ]
+}
+
+_KDA_CONVS = ("q_conv1d.weight", "k_conv1d.weight", "v_conv1d.weight")
+_STORED_KDA_CONV = "self_attention.kda.conv1d.weight"
+_STORED_KDA_SUFFIX_MAPPING = {
+    f"self_attention.kda.{hf_suffix.removeprefix('self_attn.')}": hf_suffix
+    for hf_suffix in _KDA_SUFFIX_MAPPING.values()
+    if hf_suffix.removeprefix("self_attn.") not in _KDA_CONVS
 }
 
 _INDEXER_SUFFIX_MAPPING = {
@@ -85,9 +97,20 @@ def convert_glm5_next_to_hf(args, name, param):
     if match:
         layer_idx, rest = match.groups()
 
-        hf_suffix = _KDA_SUFFIX_MAPPING.get(rest) or _INDEXER_SUFFIX_MAPPING.get(rest) or _HC_SUFFIX_MAPPING.get(rest)
+        hf_suffix = (
+            _KDA_SUFFIX_MAPPING.get(rest)
+            or _STORED_KDA_SUFFIX_MAPPING.get(rest)
+            or _INDEXER_SUFFIX_MAPPING.get(rest)
+            or _HC_SUFFIX_MAPPING.get(rest)
+        )
         if hf_suffix is not None:
             return [(f"model.layers.{layer_idx}.{hf_suffix}", param)]
+
+        if rest == _STORED_KDA_CONV:
+            return [
+                (f"model.layers.{layer_idx}.self_attn.{conv}", part)
+                for conv, part in zip(_KDA_CONVS, param.chunk(len(_KDA_CONVS), dim=0), strict=True)
+            ]
 
         alpha_match = _HC_ALPHA_PATTERN.match(rest)
         if alpha_match:

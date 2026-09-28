@@ -41,7 +41,9 @@ MILES_BASE_IMAGE=<glm53next-upstream-20260902>` at the repo root. Digest
 in us-east-1 and ap-south-1. Image checks: `git rev-parse HEAD` =
 `2340ced4d`, a clean tree, and the 6 CPU tests of
 `test_glm5_next_kda_tp.py` pass in the image. It is r15 plus this branch,
-so it is a test image only: NEVER use it for a live run.
+so it is a test image only: NEVER use it for a live run. The cluster jobs
+used the later test tags `-20260927b` and `-20260927d`. `RESULTS.md` holds
+their digests, the results and the GO / NO-GO decision per item.
 
 ## Files
 

@@ -5,7 +5,7 @@ Chronological record of how the arena RL training path (AGISlime's
 miles and then exercised: what was tried, what happened, what was decided and
 why. It exists so the git history reads as an investigation rather than a code
 drop. Per-job run logs (launches, images, rewards, RCAs) live next to each
-example in `examples/arena/<job>/RUNLOG.md`; decisions with lasting effect are
+example in `examples/arena/<job>/RUNLOG.md` (GLM-5.3: `training-runs/`); decisions with lasting effect are
 ADRs in `adr/`. Evidence too large for the repo is archived under
 `/workplace/guparpit/miles/arena-port-artifacts/` (analysis, impl and verify
 reports; the e2e harnesses).
@@ -821,7 +821,7 @@ help text, the ADRs and the GLM example run log.
 First plugin feature after the port, written in answer to the GLM run-1/run-2
 loss-masking finding while run 2 (`rl-glm53f-gbash-r1`, image b) was still
 alive. Decision and outcome: ADR-0009. Run-side chronology:
-`examples/arena/harbor-rl-glm53-flash/RUNLOG.md`.
+`training-runs/harbor-rl-glm53-flash/RUNLOG.md`.
 
 **Trigger.** Run 1 (image a): rollout 0 on the wire 272 success / 54 failed /
 0 truncated, but only 23/256 training samples carried loss (91% removed by the
@@ -876,7 +876,7 @@ r5 - the GLM runs reuse the r1..r7 labels.
 node to Ray 2.58's memory monitor, which measured the whole p6 node (no cgroup
 limit visible inside the privileged container) and killed the `SGLangEngine` +
 8 `_HttpPosterActor`s at 95% of host MemTotal (full RCA in
-`examples/arena/harbor-rl-glm53-flash/RUNLOG.md`). The raylet reads `RAY_*`
+`training-runs/harbor-rl-glm53-flash/RUNLOG.md`). The raylet reads `RAY_*`
 from ITS OWN process environment (`ray_config.h` ReadEnv), i.e. from the env
 `ray start` inherits; ray-job `runtime_env.env_vars` never reach it — run 2's
 runtime env carried only `RAY_enable_open_telemetry_metrics=false`. The
@@ -975,7 +975,7 @@ the r3 launch (01:32 PT, image c, so r3 does not carry it). ADR-0010.
   rollout 0, 222-245/256 per step after. r5 (2026-09-03 evening PT) was the
   first to enable it: `kept_timeout` 183-221/256, `truncated_ratio`
   0.71-0.86 — the metric and the removed fraction diverge from here on by
-  design. Run narrative in `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`.
+  design. Run narrative in `training-runs/harbor-rl-glm53-flash/RUNLOG.md`.
 - The cause (wall clock vs thinking length) is gym-side: timeout multiplier,
   reasoning effort and SGLang request timeout followed in AREnATasks
   (ADR-0047 there); the trainer-side flag only stops discarding what the gym
@@ -985,7 +985,7 @@ the r3 launch (01:32 PT, image c, so r3 does not carry it). ADR-0010.
 
 What `miles_plugins/arena` is at this commit, what has exercised it, and what
 is still open. GLM r7 (`rl-glm53f-gbash-r7`) is running; its read-out belongs
-in `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`, not here.
+in `training-runs/harbor-rl-glm53-flash/RUNLOG.md`, not here.
 
 ### Tests (verified 2026-09-05 on the equivalent tree: fork + PR #2786 + port)
 
@@ -1076,7 +1076,7 @@ the GLM example depends on it):
   `high`; whether the 1800 s SGLang request timeout removed r6's ~8% failed
   samples; the effort=high context-ceiling / `context_error` observation that
   no on-disk source records yet) -> the placeholder row in
-  `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`, in a follow-up docs commit.
+  `training-runs/harbor-rl-glm53-flash/RUNLOG.md`, in a follow-up docs commit.
 
 ## 2026-09-27 — Reconcile with upstream `main` (branch `arpit-reconcile-upstream`)
 

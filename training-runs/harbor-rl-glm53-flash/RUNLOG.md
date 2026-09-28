@@ -1,11 +1,14 @@
 # Run log: GLM-5.3-Flash on the arena Harbor gym (`harbor-rl-glm53-flash`)
 
+Closed on 2026-09-28. This file is the legacy chronological log (r1 to r47).
+New entries go into `r<N>/RECORD.md`; `../README.md` holds the convention.
+
 Dated history of the GLM-5.3-Flash (321B MoE, `glm5_next`) GRPO bring-up on
 prod-bom against `snorkel-general-bash-harbor` over NATS: what was tried, what
 happened (with the numbers the logs actually carried), root causes, what was
 decided and why, and the identity of every run (`EXPERIMENT_NAME`, trainer and
 gym image tags, W&B group). It is the run-history counterpart of
-`miles_plugins/arena/adr/` (decisions) and of this directory's `README.md`
+`miles_plugins/arena/adr/` (decisions) and of `examples/arena/harbor-rl-glm53-flash/README.md`
 (the current runbook). Driver logs survive only on EFS under
 `/mnt/scratch-s3files-rw/guparpit/logs/<EXPERIMENT_NAME>/trainer-<idx>.log`
 (the kubeflow operator deletes a failed PyTorchJob with its pods); metrics are
@@ -624,7 +627,7 @@ GLM image. Run 2's death and the fix set itself are in the next entry.
   terminal 00:34 PT) left `hf/rollout_3` with 178 weight shards and no
   `config.json` / tokenizer / `model.safetensors.index.json` because `copy2`'s
   metadata step raised `[Errno 524] ENOTSUPP` (RCA in
-  `harbor-rl-27b-snorkel/RUNLOG.md`). This job is the sharper case the fix
+  `examples/arena/harbor-rl-27b-snorkel/RUNLOG.md`). This job is the sharper case the fix
   comment names: `hf_checkpoint` is the BF16 tree on fast scratch
   (mountpoint-S3, a FUSE mount), the launcher appends
   `--save-hf <ckpt>/hf/rollout_{rollout_id}`, and `save_hf_model` runs after
@@ -704,7 +707,7 @@ at 21:15 PT while the RCA ran.
 
 ## 2026-09-02 22:27-22:49 PT — memprobe Jobs, r2 fix set (integration 3098ae1d3, image c) and r2 launch (`rl-glm53f-gbash-r2`)
 
-**memprobe/ (files 22:22-22:27 PT; how to read the CSVs: `memprobe/README.md`).**
+**memprobe/ (files 22:22-22:27 PT; how to read the CSVs: `examples/arena/harbor-rl-glm53-flash/memprobe/README.md`).**
 A single-node SGLang host-memory experiment to decide hypotheses R1-R5 (Ray
 accounting scope; 79 GiB = snapshot; co-tenants; leak under load; own
 shmem/kernel) in ~75 min on ONE p6 node instead of a 12-node multi-hour run.

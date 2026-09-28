@@ -2,7 +2,7 @@
 
 Context-overflow experiments for the snorkel-general-bash-harbor run family.
 Each row lists status, effort, expected benefit, and the stability risk.
-Read `RUNLOG.md` for per-run history and `README.md` for the task.
+Read `RUNLOG.md` for per-run history and `examples/arena/harbor-rl-glm53-flash/README.md` for the task.
 
 ## The problem r8 exposed
 

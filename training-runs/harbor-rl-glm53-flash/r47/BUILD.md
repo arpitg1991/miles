@@ -48,7 +48,7 @@ r47 runs the first port of KDA tensor parallelism
 Each TP rank holds 8 of the 64 KDA heads. The shared head-sharded layer
 (candidate image `miles-glm53-r16-20260928a`) is not released.
 
-Why the first port (`../kdatp/RESULTS.md`):
+Why the first port (`examples/arena/harbor-rl-glm53-flash/kdatp/RESULTS.md`):
 
 - It passed each kdatp gate. T1 passed 48 of 48 checks. E1 gave the same
   HF tensors as the replicated layer, bit for bit. R1 loaded a first-port
@@ -96,7 +96,7 @@ Shared-layer status:
 | Rollout ids, data position | 40.., r43 offset | 0.., row 0 |
 | Epochs in 300 rollouts | 17.4 or more | 12.5 or more (23.9 rollouts per epoch at 32 kept groups). The dynamic sampling filter drops each group with no reward spread, and the rollout takes more prompts to fill its 32 groups. Thus the count is a lower bound |
 | W&B | project `rl-glm53f-adebt-v3` | project `rl-glm53f-adebt-766`, a new run |
-| `sglang_disable_overlap_schedule` | `true`: a cautious engine default of the first GLM runs, from the arena precedent (AGISlime run5 and the smoke), marked as a candidate to lift later (`../README.md`, recipe table). r42 lifted it | `false` (as r42, r44, r46) |
+| `sglang_disable_overlap_schedule` | `true`: a cautious engine default of the first GLM runs, from the arena precedent (AGISlime run5 and the smoke), marked as a candidate to lift later (`examples/arena/harbor-rl-glm53-flash/README.md`, recipe table). r42 lifted it | `false` (as r42, r44, r46) |
 | Trainer image | `miles-glm53-r14-20260927a` | `miles-glm53-r17-20260928a` (the first-port KDA split); fallback `miles-glm53-r15-20260927a` without the `glm5_next_kda_tp` key |
 | `glm5_next_kda_tp` | not set: each TP rank holds all 64 KDA heads | `true`: each TP rank holds 8 KDA heads |
 | `skip_actor_forward_only` (flip A) | off | on |

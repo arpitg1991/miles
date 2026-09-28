@@ -1,16 +1,30 @@
 # r47: agentic debt on agentic-debt-766, fresh from the base model
 
-Prepared 2026-09-27. Not launched. The trainer image is a placeholder. r45
+Prepared 2026-09-27. Finalized 2026-09-28. Not launched. The trainer image
+is the candidate `miles-glm53-r16-20260928a`. The launch waits for the
+shared-layer `grad_norm` gate (see "Pending items"). r45
 (`rl-glm53f45-vvqhg`) keeps its nodes until the r47 launch (user decision,
-2026-09-27). Generated with:
+2026-09-27). Generated with this full command, from
+`examples/arena/harbor-rl-glm53-flash/`:
 
 ```
 /workplace/guparpit/arena/src/AREnATasks/.venv/bin/python gen-workflow.py 47 --base r45 --template guparpit-miles-deployer-v10 \
   --experiment-name rl-glm53f-adebt-766-r47 \
   --gym-image 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adr72-20260927a \
-  --trainer-image 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:TODO-KDA-RELEASE-IMAGE \
-  --param 'agent-kwargs={}' --param 'publish-jobs-dir='
+  --trainer-image 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-r16-20260928a \
+  --param 'agent-kwargs={}' --param 'publish-jobs-dir=' --param 'gym=agentic-debt' \
+  --param 'ack-wait=172000' --param 'trainer-task-deadline-secs=176000'
 ```
+
+- NEVER drop `--template` or `--experiment-name`. The script defaults are
+  `guparpit-miles-deployer-v4` and `rl-glm53f-gbash-r47`. Without v10, the
+  gym has no `DOCKER_CONFIG` and no us-east-1 login, and each trial fails
+  with "pull access denied" (r41, r41b).
+- The dataset is the `prompt-data-list` key of `miles-config.yaml`. It is
+  not a workflow parameter. `gym` `agentic-debt` is the r45 value and the
+  `gym_name` of the manifest entry.
+- `publish-jobs-dir` MUST stay an explicit `''`. The template default is not
+  empty.
 
 ## Why
 
@@ -34,10 +48,14 @@ cap, and the radix cache.
 | Task pin in each row | `77c2239b` | `3cadc6b0a9a6c71bd8e7485e2d9da1cb04e2e608bfa1b9b531cb1df37cd82140` |
 | Start point | r43 `iter_0000039`, seeded into the r45 dir | base DCP (`ref_load`) |
 | Rollout ids, data position | 40.., r43 offset | 0.., row 0 |
-| Epochs in 300 rollouts | 17.4 | 12.5 (23.9 rollouts per epoch) |
+| Epochs in 300 rollouts | 17.4 or more | 12.5 or more (23.9 rollouts per epoch at 32 kept groups). The dynamic sampling filter drops each group with no reward spread, and the rollout takes more prompts to fill its 32 groups. Thus the count is a lower bound |
 | W&B | project `rl-glm53f-adebt-v3` | project `rl-glm53f-adebt-766`, a new run |
-| `sglang_disable_overlap_schedule` | `true` | `false` (as r42, r44, r46) |
-| Trainer image | `miles-glm53-r14-20260927a` | `TODO-KDA-RELEASE-IMAGE`; fallback `miles-glm53-r15-20260927a` |
+| `sglang_disable_overlap_schedule` | `true`: a cautious engine default of the first GLM runs, from the arena precedent (AGISlime run5 and the smoke), marked as a candidate to lift later (`../README.md`, recipe table). r42 lifted it | `false` (as r42, r44, r46) |
+| Trainer image | `miles-glm53-r14-20260927a` | `miles-glm53-r16-20260928a` (candidate: KDA on the shared head-sharded layer, safe_gate on); fallback `miles-glm53-r15-20260927a` |
+| `skip_actor_forward_only` (flip A) | off | on |
+| `rollout_batch_size` | 64 | 32 |
+| `arena_inflight_multiplier` | 4 | 8 (the cap stays 256 groups) |
+| `ack-wait` / `trainer-task-deadline-secs` | 86000 / 90000 | 172000 / 176000 (48 h) |
 | HF export per save | yes (the r14 launcher always adds `--save-hf`) | no (r15 and later add it only on `arena_save_hf: true`) |
 | Names | `rl-glm53f-adebt-v3-r45`, `rl-glm53f45-` | `rl-glm53f-adebt-766-r47`, `rl-glm53f47-` |
 | Sample summary dir | `debug/rl-glm53f-adebt-v3-r45/sample_summary` | `debug/rl-glm53f-adebt-766-r47/sample_summary` |
@@ -48,32 +66,60 @@ generation 1), `agent-kwargs` `{}` (Vulcan `max_compactions` 4),
 `publish-jobs-dir` `''`, `rollout_max_response_len` 16384, window 131072,
 radix cache on, `replicas` 40 (8 actor nodes and 32 SGLang engines),
 `gym-replicas` 288, `gym` `agentic-debt`, `agent-timeout-multiplier` 4,
-`ack-wait` 86000, trainer deadline 90000, GBS 256, `rollout_batch_size` 64,
-`arena_inflight_multiplier` 4, `lr` 1.5e-6, TIS, R3, `save_interval` 10,
+GBS 256, `lr` 1.5e-6, TIS, R3, full recompute, `save_interval` 10,
 `num_rollout` 300, and `excluded-nodes`.
 
 Diff check:
 
 - The workflow parameters are those of `r45/workflow.yaml`, in the same
-  order. Only `experiment-name`, `trainer-image`, and `miles-config`
-  change. `generateName` is the only other change.
-- A local copy of the launcher `_flatten` gives 173 argv tokens for r47 and
-  174 for r45. r47 has no `--sglang-disable-overlap-schedule`. The W&B
-  project, the sample summary path, and `--prompt-data` are the only other
-  token changes.
+  order. Only `experiment-name`, `trainer-image`, `miles-config`,
+  `ack-wait`, and `trainer-task-deadline-secs` change. `generateName` is
+  the only other change. Against the prepared file (`41efa9d0a`), only
+  `trainer-image`, `miles-config`, and the two deadlines change.
+- The launcher of the candidate image (`_build_train_args`) gives 188 argv
+  tokens for r47 and for r45. r47 drops `--sglang-disable-overlap-schedule`
+  and adds `--skip-actor-forward-only`. The other token changes are
+  `--rollout-batch-size` 32, `--arena-inflight-multiplier` 8,
+  `--prompt-data`, the W&B project and group, the sample summary path, and
+  `--load` and `--save`. No `--save-hf`. The 2026-09-27 count (173 and
+  174) came from a local copy of `_flatten` only.
 - No `slime_experiments/rl-glm53f-adebt-766-r47` dir exists, and no
   `logs/`, `debug/`, or `routing/` path with that name exists (S3 list of
   `arena-scratch-prod-bom-ap-south-1/guparpit/`, 2026-09-27 23:41Z). Thus
   miles loads `ref_load` with `finetune` and starts at rollout 0.
-- No workflow `rl-glm53f47-*` and no r47 PyTorchJob exists in
-  `arena-tasks`.
+- No workflow `rl-glm53f47-*` exists in `arena-tasks` (checked again
+  2026-09-28).
+- The lakeFS check of 2026-09-28: `manifest.jsonl` on `main` and at
+  `327e057c` is the same (766 rows, md5
+  `cc78c1ca74df94480a2239402e7fcce0`). `327e057c` is still the last `main`
+  commit under the path.
+- No wrong-dataset string ("oracle", "v3-locked", `77c2239b`, "acuadron",
+  "le5") is in a config value or a workflow parameter. They occur only in
+  history comments.
+- Server dry-run 2026-09-28 of the committed file: accepted as
+  `rl-glm53f47-5qt22`, not created. Template v10 has uid
+  `16ddd530-501f-4734-82ae-88500671bed8`, generation 1.
 - `excluded-nodes` is the r45 list (83 instance ids). On 2026-09-27 23:45Z
   none of them was among the 450 cluster nodes, so the list excludes no
   node. A non-empty list selects the `deploy-trainer-pinned` step, as on
   r45.
 
-Images in ap-south-1 `arena-slime-dev` (ECR read, 2026-09-27):
+Images in ap-south-1 `arena-slime-dev` (ECR read, 2026-09-27 and
+2026-09-28):
 
+- Trainer `miles-glm53-r16-20260928a` (candidate):
+  `sha256:ca9505454ad7e2bcaac433e48f86443074534a9e936a336d5b0c8f6154af5e87`
+  in us-east-1 and ap-south-1 (local image id `f71d6b6575bb`). Built
+  2026-09-28 from miles `arpit-kda-shared-layer-rebased` `389d2630` with
+  `examples/arena/Dockerfile` on `glm53next-upstream-20260902` and
+  `--build-context kernel-cache=/workplace/guparpit/kdash/kcache-seed`.
+  Image checks: `git rev-parse HEAD` = `389d2630`, a clean tree. The
+  shared-layer files, the converter tools, and the launcher match the
+  branch blob for blob. `rule.py` calls the kernel with `safe_gate=True`.
+  `/tmp/kernel_cache` holds 15,794 files (540M). The launcher gives no
+  `--save-hf`. The arena fast tests pass on the host (339 passed, 1
+  skipped: it needs Megatron) and in the image (17 passed: the KDA
+  shared-layer CPU test, the layout test, and the launcher test).
 - Gym `gym-glm53-adr72-20260927a`:
   `sha256:57f0ed616892c50f727247a7b6eedf972bd35b98e70bd0ab4283f570554cdd0d`.
 - Fallback trainer `miles-glm53-r15-20260927a`:
@@ -133,16 +179,16 @@ of memory and have no score.
 | Mean steps reached per trial | 2.77 | about 5.1 (Opus depth on all 766; GLM equals Opus depth on the 348 shared chains) |
 | Training rows per episode | 1x | about 1.8x |
 | Group wall time | mean 11,661 s, p90 20,902 s, max 44,058 s | mean 16,000-24,000 s |
-| Groups over the gym deadline (85,700 s) | 0 of 1,173 | 0 to 34 of 766 (0-4.4%), all long chains |
-| Train step | log-prob pass 916-986 s, actor train 3,676-4,022 s (rollouts 48-50) | about 1.8x on the r15 image |
+| Groups over the gym deadline | 0 of 1,173 (85,700 s) | 171,700 s now. At 85,700 s the estimate was 0 to 34 of 766 (0-4.4%), all long chains |
+| Train step | log-prob pass 916-986 s, actor train 3,676-4,022 s (rollouts 48-50) | about 1.8x the rows. Flip A removes the log-prob pass. The shared layer cut the actor train time by 24% in kdash T2 |
 
 The r45 output queue holds 262-320 finished groups (rollouts 48-50), so the
 trainer sets the pace. The KDA image and flip A (below) cut the train step.
 
-## Deadlines (open decision)
+## Deadlines (user decision 2026-09-28)
 
-r47 keeps the r45 values: `ack-wait` 86000 and `trainer-task-deadline-secs`
-90000.
+r47 sets `ack-wait` 172000 and `trainer-task-deadline-secs` 176000 (48 h).
+r45 ran 86000 and 90000.
 
 - `agent-timeout-multiplier` 4 has no effect. The dataset declares no agent
   timeout.
@@ -153,29 +199,28 @@ r47 keeps the r45 values: `ack-wait` 86000 and `trainer-task-deadline-secs`
 - A cut turns the unfinished trials into removed pads. Those are the
   deepest trials, which are usually the best. Thus a cut biases the group
   reward low.
-- Alternative: `--param ack-wait=172000 --param trainer-task-deadline-secs=176000`.
-  The cost is more off-policy lag on the long groups, and a stuck worker
-  holds its slot for 48 h, not 24 h.
-- If r47 keeps 86000, count `rollout deadline exceeded` in the gym logs
-  after each epoch.
+- The cost of 48 h is more off-policy lag on the long groups, and a stuck
+  worker holds its slot for 48 h, not 24 h. The tasks stream has no
+  `max_age`, so 172000 is safe.
+- Count `rollout deadline exceeded` in the gym logs after each epoch.
 
 ## Pending items
 
 | Item | State | How to turn it on | Gate before the launch |
 | --- | --- | --- | --- |
-| KDA across TP, shared head-sharded layer | Code on miles `arpit-kda-shared-layer` (`8770fcbab`, arpit-glm-53 plus 10 commits). Test image `miles-glm53-kdash-test-20260927a`. kdash T1 and T2 in workflow `wf_cce1530b-ce9`. | Put the release tag in place of `TODO-KDA-RELEASE-IMAGE`. No config key changes. | T1 parity and T2 pass. Release image from the branch head, in ap-south-1 and us-east-1. |
-| Flip A: `--skip-actor-forward-only` | Prepared. Upstream miles `23ec9e534`, in r15 and later. | The three `# r47 flip A:` lines: `skip_actor_forward_only: true`, `rollout_batch_size: 32`, `arena_inflight_multiplier: 8`. | User decision. |
-| Flip B: selective recompute | Candidate. | The five `# r47 flip B:` lines. | kdash T2 at the r45 layout with no OOM. |
-| Token-level loss average (r46) | OFF. | `calculate_per_token_loss: true` | r46 shows a clear win over r44. |
+| KDA across TP, shared head-sharded layer | Code on miles `arpit-kda-shared-layer-rebased` `389d2630` (arpit-glm-53 `41efa9d0a` plus 12 commits; the rebase of `arpit-kda-shared-layer` `ab6069ac9`). Candidate image `miles-glm53-r16-20260928a` (safe_gate on). | Set in `workflow.yaml`. No config key changes. | The shared-layer `grad_norm` gate. At step 1 (rollout 40, r43 `iter_0000039`) the shared layer reads +1.196% against the old layer, and a correct rewrite (the first port) read -0.69%. The launch waits until the debug finds a `grad_norm` count artifact, or until a fix passes the gate. A fix gives a new image. |
+| Flip A: `--skip-actor-forward-only` | ON (user decision 2026-09-28). Upstream miles `23ec9e534`, in r15 and later. | Applied: `skip_actor_forward_only: true`, `rollout_batch_size: 32`, `arena_inflight_multiplier: 8`. | Passed: the miles validator of the candidate image. |
+| Flip B: selective recompute | OFF. It ran out of memory in the 8-node T2 test at the r45 layout. | The five `# r47 flip B:` lines stay commented. | Not applicable. |
+| Token-level loss average (r46) | OFF (user decision 2026-09-28). | `calculate_per_token_loss: true` | r46 shows a clear win over r44. |
 | PP split 12/11/11/11 | Follow-up, not prepared. | `decoder_first_pipeline_num_layers: 12`, `decoder_last_pipeline_num_layers: 11` | A memory and time test. |
-| Persistent TileLang and Triton caches | Follow-up, not prepared. | `TILELANG_CACHE_DIR` and `TRITON_CACHE_DIR` on shared storage | A template env change. |
+| Persistent TileLang and Triton caches | The r16 image has the kernel-cache seed at `/tmp/kernel_cache` (15,794 files). Caches on shared storage are a follow-up. | `TILELANG_CACHE_DIR` and `TRITON_CACHE_DIR` on shared storage | A template env change. |
 
 To apply a flip group, remove the `# r47 flip X: ` prefix from each line of
 the group. When the next line sets the same key, delete that next line.
-OmegaConf stops on a duplicate key. Then run `gen-workflow.py` again with
-the final `--trainer-image`, so that the `miles-config` block changes too.
+OmegaConf stops on a duplicate key. Then run the full `gen-workflow.py`
+command at the top again, so that the `miles-config` block changes too.
 
-### Flip A: skip the actor forward-only pass
+### Flip A: skip the actor forward-only pass (ON)
 
 - The arena rollout collects `global_batch_size / n_samples_per_prompt` =
   32 groups (256 episodes) per rollout (`nats_rollout.py`
@@ -193,9 +238,14 @@ the final `--trainer-image`, so that the `miles-config` block changes too.
   cap (`arena_inflight_multiplier` x `rollout_batch_size`). Multiplier 8
   keeps the cap at 256 groups. `num_rollout` is set, so no epoch count
   reads `rollout_batch_size`.
-- Local check: the flipped config has no duplicate key, and the miles
-  validator passes. Without the two batch lines the validator fails with
-  "requires exactly one optimizer step for 512 rollout samples".
+- Check 2026-09-28 on the candidate image: the image launcher builds the
+  r47 argv, and the Megatron and miles parser of the image reads it.
+  `validate_skip_actor_forward_only` passes: 32 x 8 = 256 =
+  `global_batch_size`, so each rollout is one optimizer step.
+  `num_steps_per_rollout` None, `hidden_dropout` and `attention_dropout` 0,
+  `kl_coef` 0, `keep_old_actor` False, R3 on. The config has no duplicate
+  key. Without the two batch lines the validator fails with "requires
+  exactly one optimizer step for 512 rollout samples" (2026-09-27 check).
 - The other asserts pass: `keep_old_actor` false, `kl_coef` 0, dropout 0,
   no OPD. R3 (`use_rollout_routing_replay`) is allowed. Upstream tests
   cover R3 with the flag (`test_deepseek_v32_5layer_fp8.py`,
@@ -204,7 +254,10 @@ the final `--trainer-image`, so that the `miles-config` block changes too.
   `rollout/log_probs`. The drift check moves to
   `train/train_rollout_logprob_abs_diff` and `train/train_rollout_kl`.
 
-### Flip B: selective recompute
+### Flip B: selective recompute (OFF)
+
+The 8-node T2 test at the r45 layout ran out of memory with selective
+recompute. Thus r47 keeps full recompute. The data below is the record.
 
 T1 runs, 1 node, 5-layer slice, PP1:
 
@@ -241,35 +294,40 @@ T1 runs, 1 node, 5-layer slice, PP1:
    `jupyterlab-translate_s0` (2/3). A segment can be impossible.
 7. With `arena_train_segments` `all`, a long chain adds more rows than a
    short chain. Its loss weight depends on the loss average.
-8. A later move from the r15 image to the KDA image changes the KDA layer
-   code. The kdash branch tests a checkpoint round trip. Do a resume
-   across the change only after that test passes.
+8. r47 starts on the shared layer. Its saves keep the old keys, global
+   shapes, and dtypes, and they load back into the old layout bit for bit
+   (`test_glm5_next_kda_shared_layer.py`, passed in the candidate image).
+   Thus an image with the old layer can resume an r47 save.
+9. The shared layer reads a `grad_norm` 1.2% to 1.8% higher than the old
+   layer at steps 1 and 2. The clip at 1.0 never fires. The gate decides if
+   this is a count artifact or a missing TP all-reduce of a replicated
+   parameter gradient.
 
 ## Launch checklist
 
-1. Decide the open items: the trainer image (KDA release or the r15
-   fallback), the deadlines, and flips A and B.
-2. Put the image tag in place of `TODO-KDA-RELEASE-IMAGE`, and apply the
-   chosen flips. Run `gen-workflow.py` again with the final
-   `--trainer-image`. Commit and push.
-3. `kubectl create --dry-run=server -f r47/workflow.yaml`. On 2026-09-27 a
-   copy with the r15 image was accepted (`rl-glm53f47-k24cr`, not
-   created).
-4. Check for an r45 watcher. On 2026-09-27 23:40Z no `/tmp/r45-*` script
-   and no r45 watcher process ran on this host. If one runs, stop it by
-   PID, never with `pkill -f`.
+1. The open items are decided (2026-09-28): the candidate image, the 48 h
+   deadlines, flip A on, flip B off, and the token-level loss off. The
+   shared-layer `grad_norm` gate MUST pass before the launch.
+2. If the gate gives a new image, run the full command at the top with the
+   new `--trainer-image`. Diff against the committed `workflow.yaml`: only
+   `trainer-image` may change. Commit and push.
+3. `kubectl create --dry-run=server -f r47/workflow.yaml`. On 2026-09-28
+   the committed file was accepted (`rl-glm53f47-5qt22`, not created).
+4. Check for an r45 watcher (`/tmp/r45-resume.sh`). If one runs, stop it by
+   PID, never with `pkill -f`. Do not touch `/tmp/r25-resume.sh`.
 5. Record the r45 tracker and its latest `iter_*` dir, so that r45 can
    resume later.
 6. Stop r45 (`rl-glm53f45-vvqhg`) with `shutdown: Stop`, on the user's go.
-   Wait until its PyTorchJob and pods are gone. Do not touch r44, r46,
-   other users' runs, or the `kdatp-*`, `kdash-*`, and `recon-*` jobs.
+   Wait until its PyTorchJob and pods are gone. Do not touch r44
+   (`rl-glm53f44-qvjnv`), r46 (`rl-glm53f46-rxn6b`), other users' runs, or
+   the `kdatp-*`, `kdash-*`, `kdfast-*`, and `recon-*` jobs.
 7. `kubectl create -f r47/workflow.yaml`. Record the workflow name.
 8. trainer-worker-0 argv:
    - the chosen trainer image
    - `--prompt-data` with the `327e057c` URI
    - no `--sglang-disable-overlap-schedule` and no `--save-hf`
    - `--load` = `--save` = `.../slime_experiments/rl-glm53f-adebt-766-r47`
-   - with flip A: `--skip-actor-forward-only`, `--rollout-batch-size 32`,
+   - flip A: `--skip-actor-forward-only`, `--rollout-batch-size 32`,
      `--arena-inflight-multiplier 8`
 9. `trainer-0.log`:
    - `Pulled lakefs://arena-inspect/327e057c.../agentic-debt-766/manifest.jsonl`
@@ -280,7 +338,9 @@ T1 runs, 1 node, 5-layer slice, PP1:
     `disable_overlap_schedule=False`, and
     `mamba_radix_cache_strategy='extra_buffer'`.
 11. On one gym pod, read `HARBOR_AGENT_KWARGS` (`{}`), `DOCKER_CONFIG`
-    (`/root/.docker`), and `ARENA_PUBLISH_JOBS_DIR` (empty).
+    (`/root/.docker`), `ARENA_PUBLISH_JOBS_DIR` (empty), and
+    `ARENA_NATS_ACK_WAIT` (172000). On trainer-worker-0, read
+    `NATS_TASK_DEADLINE_SECS` (176000).
 12. In the gym logs, each task download MUST read
     `Downloading lakefs://arena-inspect/3cadc6b0a9a6c71bd8e7485e2d9da1cb04e2e608bfa1b9b531cb1df37cd82140/internal/agentic-debt-r3/agentic-debt-766/tasks/...`.
     A `77c2239b` commit or a `20260923-v3-locked` path means the wrong
@@ -292,6 +352,6 @@ T1 runs, 1 node, 5-layer slice, PP1:
       and `rollout deadline exceeded`
     - chains with K > 5 reach step 6 or more
 14. First train step: `train_rollout_logprob_abs_diff`, `train_rollout_kl`,
-    and `grad_norm` near the r45 values. `ppo_kl` near 0, or exactly 0 with
-    flip A. Record `perf/actor_train_time`, `perf/log_probs_time`, and the
-    peak memory.
+    and `grad_norm` near the r45 values. `ppo_kl` and `pg_clipfrac` exactly
+    0 (flip A). Record `perf/actor_train_time` and the peak memory. No
+    log-prob pass runs.

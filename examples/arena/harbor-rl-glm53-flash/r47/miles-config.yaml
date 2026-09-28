@@ -1,5 +1,6 @@
-# r47 deltas vs r45 (2026-09-27): agentic debt on the dataset that the user
-# gave, fresh from the base model, on the latest configuration.
+# r47 deltas vs r45 (prepared 2026-09-27, final 2026-09-28): agentic debt on
+# the dataset that the user gave, fresh from the base model, on the latest
+# configuration.
 # Dataset lakefs://arena-inspect/main/internal/agentic-debt-r3/agentic-debt-766/
 # (766 chains, 6,070 segments, K 2..66, mean K 7.92). prompt-data-list pins
 # the manifest at commit 327e057c, the last change under the path
@@ -14,17 +15,26 @@
 # and the data position starts at row 0. W&B project rl-glm53f-adebt-766.
 # sglang_disable_overlap_schedule true -> false: radix cache on and overlap
 # on, as r42, r44, and r46. SGLang then selects the extra_buffer Mamba cache.
-# r45 kept overlap off from the r34 lineage. No record gives a reason.
-# Trainer image TODO-KDA-RELEASE-IMAGE: the release image of
-# arpit-kda-shared-layer (KDA across TP), after its tests pass. The fallback
-# is miles-glm53-r15-20260927a. r15 and later write no HF export per save
-# (no arena_save_hf key here). Everything else is r45: output cap 16384,
-# window 131072, 32 engines, GBS 256, lr 1.5e-6, TIS, and R3.
-# Lines "# r47 flip A: KEY: VALUE" (skip the actor forward-only pass) and
-# "# r47 flip B: KEY: VALUE" (selective recompute) are prepared, not
-# validated. To apply a group, remove the prefix from each of its lines. When
-# the next line sets the same key, delete that next line. r47/BUILD.md gives
-# the check for each group.
+# r45 kept overlap off from the r34 lineage. The reason is in README.md (the
+# recipe table): the first GLM runs kept overlap off as a cautious engine
+# default from the arena precedent (AGISlime run5 and the smoke), marked as a
+# candidate to lift later. r42 lifted it.
+# Trainer image miles-glm53-r16-20260928a (candidate): miles
+# arpit-kda-shared-layer-rebased 389d2630 (arpit-glm-53 41efa9d0a plus 12
+# commits). It runs KDA across TP on the shared head-sharded layer with
+# safe_gate on, and it has the offline converter fix and the kernel-cache
+# seed. The launch waits for the shared-layer grad_norm gate. The fallback is
+# miles-glm53-r15-20260927a. r15 and later write no HF export per save (no
+# arena_save_hf key here). Everything else is r45: output cap 16384, window
+# 131072, 32 engines, GBS 256, lr 1.5e-6, TIS, and R3.
+# Flip A is on (user decision 2026-09-28): skip_actor_forward_only true,
+# rollout_batch_size 64 -> 32, and arena_inflight_multiplier 4 -> 8. The miles
+# validator passes, and each rollout is one optimizer step. Flip B (the
+# "# r47 flip B: KEY: VALUE" lines, selective recompute) stays off, because
+# it ran out of memory in the 8-node T2 test. The token-level loss average
+# stays off.
+# The deadlines are workflow parameters: ack-wait 172000 and
+# trainer-task-deadline-secs 176000 (48 h, user decision 2026-09-28).
 # r45 deltas vs r43 (2026-09-27): r43 continued from its latest saved
 # checkpoint on the new images, with rollout_max_response_len 32768 ->
 # 16384. The trainer sends the output cap, the window (max_seq_len 131072),
@@ -294,14 +304,16 @@ rollout_skip_special_tokens: true
 # to 128 groups so the 16 engines see ~64 requests each instead of ~130.
 # r25: 300, so the run reaches 100+ optimizer steps before a verdict.
 num_rollout: 300
-# r47: 766 chains / 32 groups per rollout = 23.9 rollouts per epoch, so 300
-# rollouts are 12.5 epochs (r45: 17.4 on 551 chains).
+# r47: 766 chains / 32 kept groups per rollout = 23.9 rollouts per epoch, so
+# 300 rollouts are 12.5 epochs or more (r45: 17.4 or more on 551 chains).
+# The dynamic sampling filter drops each group with no reward spread, and the
+# rollout takes more prompts to fill its 32 groups. Thus the epoch count is
+# a lower bound.
 # The arena rollout collects global_batch_size / n_samples_per_prompt = 32
 # groups per rollout, so each rollout is one optimizer step. Here
 # rollout_batch_size sets only the publisher in-flight cap (with
 # arena_inflight_multiplier) and the check of --skip-actor-forward-only.
-# r47 flip A: rollout_batch_size: 32
-rollout_batch_size: 64
+rollout_batch_size: 32
 n_samples_per_prompt: 8
 # 2026-09-02 user-directed, with the gym's ARENA_MAX_TOKENS=32768 /
 # ARENA_ROLLOUT_CONTEXT_LIMIT=131072 (was 2048/32768, r5 parity): GLM at
@@ -316,9 +328,10 @@ n_samples_per_prompt: 8
 # 131072 window (AREnATasks ADR-0063 amendment 2026-09-27).
 rollout_max_response_len: 16384
 rollout_temperature: 1
-# r25: 512 -> 256. One rollout is 64 prompts x 8 samples = 512 episodes, so
-# 256 gives two optimizer steps per rollout: the second step sees a PPO
-# ratio != 1, so eps_clip 0.2/0.28 and TIS are live instead of inert.
+# r25: 512 -> 256. The r25 note said that 256 gives two optimizer steps per
+# 64 x 8 rollout. That is wrong. The arena rollout collects
+# global_batch_size / n_samples_per_prompt = 32 groups (256 episodes), so each
+# rollout is one optimizer step (r44 and r45 logs: 256 samples per rollout).
 global_batch_size: 256
 balance_data: true
 # ---- sglang block: upstream GLM-5.3-Flash recipe (PR #2786) ----
@@ -389,7 +402,8 @@ context_parallel_size: 1
 expert_model_parallel_size: 16
 expert_tensor_parallel_size: 1
 # ---- perf block: upstream GLM recipe ----
-# r47 flip B (selective recompute, candidate only). T1 runs (1 node, 5-layer
+# r47 flip B (selective recompute): OFF. It ran out of memory in the T2 test
+# (8 nodes, r45 layout). The lines stay as a record. T1 runs (1 node, 5-layer
 # slice, PP1): peak 77-82 GiB against 41 GiB for full recompute, and the
 # same grad_norm to 5 digits. T1 times one step per arm (JIT included), so
 # the kdash T2 steps 2-4 give the time. The real layout holds 11-12 layers
@@ -558,8 +572,8 @@ arena_sample_mode: full_trajectory
 # Size the gym Deployment replicas above this cap (gym-worker.yaml: 288).
 # r25: 4 -> 2 (128 groups in flight). At 4x a sample waited 6-7 optimizer
 # steps between generation and training; 2x cuts that to 2-3.
-# r47 flip A: arena_inflight_multiplier: 8  # the cap stays 8 x 32 = 256 groups
-arena_inflight_multiplier: 4  # r28: 2 -> 4 (the r11 value); a chain holds a worker for up to 5 segments
+# r47: 4 -> 8 with rollout_batch_size 64 -> 32 (flip A), so the cap stays 256 groups.
+arena_inflight_multiplier: 8  # r28: 2 -> 4 (the r11 value); a chain holds a worker for up to 5 segments
 # r25 (REQUIRES a trainer image with the arena-truncated-turn-rule arg): how
 # the trainer treats a turn the gym continued after a per-turn token
 # cut-off (ARENA_TRUNCATED_TURN_MAX).
@@ -624,7 +638,7 @@ arena_sample_summary_dir: /mnt/scratch-s3files-rw/guparpit/debug/rl-glm53f-adebt
 # An all-failed group is left alone; paying its shortest attempt would reward
 # giving up early.
 arena_length_reward_coef: 0  # r28: off (r27 ran 0.10)
-# ---- r47 pending items (prepared, not validated) ----
+# ---- r47 flip A (on) and pending items ----
 # --skip-actor-forward-only (upstream miles 23ec9e534, in r15 and later).
 # It skips the actor forward-only pass (r45: 915-986 s per step) and reuses
 # the detached log-probs of the train forward. With one optimizer step per
@@ -635,8 +649,9 @@ arena_length_reward_coef: 0  # r28: off (r27 ran 0.10)
 # kl_coef 0, and zero dropout. actor.py asserts one optimizer step. Thus
 # flip A sets the three lines together: this key, rollout_batch_size 32,
 # and arena_inflight_multiplier 8. train/ppo_kl and train/pg_clipfrac then
-# read 0, and W&B has no rollout/log_probs.
-# r47 flip A: skip_actor_forward_only: true
+# read 0, and W&B has no rollout/log_probs. The drift check moves to
+# train/train_rollout_logprob_abs_diff and train/train_rollout_kl.
+skip_actor_forward_only: true
 # Token-level loss average (r46): OFF. On rollouts 10..23, r46 and r44 have
 # the same post-filter reward (about 0.45). The A/B has no result yet.
 # calculate_per_token_loss: true

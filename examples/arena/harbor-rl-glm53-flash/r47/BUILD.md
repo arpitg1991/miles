@@ -1,13 +1,13 @@
 # r47: agentic debt on agentic-debt-766, fresh from the base model
 
-Prepared 2026-09-27. Finalized 2026-09-28 on the first port. Not launched
-when this file was committed. The trainer image is
-`miles-glm53-r17-20260928a` (miles `arpit-glm-53` `4716a367a`), and the
-config sets `glm5_next_kda_tp: true`. User decision 2026-09-28: launch r47
-on the first port now, and finish the shared-layer check in parallel (see
-"KDA layer choice"). r45 (`rl-glm53f45-vvqhg`) keeps its nodes until the
-r47 launch (user decision, 2026-09-27). Generated with this full command,
-from `examples/arena/harbor-rl-glm53-flash/`:
+Prepared 2026-09-27. Finalized 2026-09-28 on the first port. Launched
+2026-09-28 09:45:34Z as `rl-glm53f47-wxj87` (see `../RUNLOG.md`). The
+trainer image is `miles-glm53-r17-20260928a` (miles `arpit-glm-53`
+`4716a367a`), and the config sets `glm5_next_kda_tp: true`. User decision
+2026-09-28: launch r47 on the first port now, and finish the shared-layer
+check in parallel (see "KDA layer choice"). r45 (`rl-glm53f45-vvqhg`) keeps
+its nodes until the r47 launch (user decision, 2026-09-27). Generated with
+this full command, from `examples/arena/harbor-rl-glm53-flash/`:
 
 ```
 /workplace/guparpit/arena/src/AREnATasks/.venv/bin/python gen-workflow.py 47 --base r45 --template guparpit-miles-deployer-v10 \

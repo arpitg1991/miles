@@ -2316,3 +2316,101 @@ stopped. r44 and r45 continue.
 - **Watch items.** Compare the episode length and the reward against r44
   at the same rollout indices. A length drop on the failed episodes is the
   expected effect.
+
+## 2026-09-28 — r47: agentic-debt-766 on the first-port KDA image (`rl-glm53f47-wxj87`); r45 retired
+
+The user gave the go on 2026-09-28: "ok go ahead" to the plan "Launch r47
+now on the first port, and finish checking the shared layer in parallel".
+The plan names the r45 Stop. The run record is `r47/` (`BUILD.md`,
+`miles-config.yaml`, `workflow.yaml`).
+
+- **Launch inputs.**
+  - Dataset `lakefs://arena-inspect/main/internal/agentic-debt-r3/agentic-debt-766/`.
+    `prompt-data` pins the manifest at commit
+    `327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480`
+    (766 rows, md5 `cc78c1ca74df94480a2239402e7fcce0`). Each row pins its
+    task at commit `3cadc6b0`.
+  - Trainer image `miles-glm53-r17-20260928a`
+    (`sha256:e6f04a9ca1abc9df17a7bbf9e3d2aaf6a643f40ed5a457c98a4114719972bcd0`,
+    miles `arpit-glm-53` `4716a367a`), with `glm5_next_kda_tp: true`.
+  - Gym image `gym-glm53-adr72-20260927a`. Template
+    `guparpit-miles-deployer-v10` (uid `16ddd530`, generation 1).
+  - Server dry run again at 09:21Z: accepted as `rl-glm53f47-jw7fz`, not
+    created.
+- **r45 retired.** No `/tmp/r45-resume.sh` file and no process that names
+  r45 existed. `/tmp/r25-resume.sh` (PID 740610) was not touched. At
+  09:22Z r45 was in `actor_train` of step 55. Its next save was at rollout
+  59, so no save was in progress. Kueue had 0 pending workloads. The Stop
+  patch went in at 09:23:31Z. The phase reads `Failed`, "Stopped with
+  strategy 'Stop'", finished 09:27:32Z. At 09:27:57Z no PyTorchJob,
+  Deployment, Service, or pod with the name existed.
+- **r45 last complete checkpoint** (read 09:22Z, tracker read again after
+  the Stop, under
+  `s3://arena-scratch-prod-bom-ap-south-1/guparpit/checkpoints/slime_experiments/rl-glm53f-adebt-v3-r45/`):
+
+  | Tracker | Save time (UTC) | `iter_0000049` | Sidecar `slime_extra_state.json` | Data source state | HF export |
+  | --- | --- | --- | --- | --- | --- |
+  | 49 | 2026-09-28 00:26-00:47 | 64 `.distcp` shards, `.metadata`, `metadata.json`, the sidecar; 583.8 GiB | `rollout_id` 49, `wandb_run_id` `ajsur4ej` | `rollout/arena_data_source_state_49.pt` (108063 bytes) | `hf/rollout_49` with `.complete` |
+
+  r45 trained steps 50 to 54 after this save, and step 55 was in progress
+  at the Stop. These steps are lost. They stay in W&B run `ajsur4ej` only.
+  The r43 seed `iter_0000039` is also in the dir.
+- **First launch failed: `rl-glm53f47-qtzlx`.** Created 09:28:16Z. Kueue
+  admitted the PyTorchJob at about 09:31:25Z. Then it logged
+  `EvictedDueToNodeFailures` for TAS nodes `i-00cfa767b52449c6f` and
+  `i-06bf42135a1b37f40`. The ttl 0 removed the PyTorchJob. The workflow
+  stayed `Running` in `wait-trainer-nats` with no trainer (the zombie
+  signature of 2026-09-18 and of the first r45 launch).
+  - Cause: Karpenter AMI drift. `i-06bf42135a1b37f40` has had
+    `Drifted=True` (`AMIDrift`) since 2026-09-23. It went `NotReady` with
+    `karpenter.sh/disrupted` at 09:32:52Z. When r45 freed its nodes,
+    Karpenter started to replace the drifted ones: 15 drifted B200 nodes
+    were in disruption at 09:41Z.
+  - At 09:41Z all 53 drifted live B200 nodes held arena-tasks pods, most
+    with `karpenter.sh/do-not-disrupt`. Thus no free drifted node was left
+    for a new placement.
+  - The zombie held only NATS and the wait pod: no trainer, no gym, no
+    checkpoint. I stopped it at 09:42:09Z. Its teardown ended at 09:45:12Z.
+- **Second launch: `rl-glm53f47-wxj87`.** Created 09:45:34Z from the same
+  `r47/workflow.yaml`. Workload admitted 09:48:47Z with no wait, `PodsReady`
+  09:49:07Z. 40 trainer workers `Running` at 09:50:35Z. The worker-0 image
+  digest is `sha256:e6f04a9c...`. The gym Deployment was 288/288 at about
+  10:09Z. At 10:22Z 330 pods were `Running`, with 0 restarts and no
+  terminated container state.
+- **Checks (09:50Z-10:22Z, read-only):**
+
+  | Check | Result |
+  | --- | --- |
+  | Trainer argv (worker-0 `/proc` cmdline, 257 tokens) | `--skip-actor-forward-only`, `--rollout-max-response-len 16384`, `--glm5-next-kda-tp`, `--sequence-parallel`, `--rollout-batch-size 32`, `--arena-inflight-multiplier 8`, `--global-batch-size 256`, `--rollout-max-context-len 131072`, `--recompute-granularity full`. `--prompt-data` is the `327e057c` agentic-debt-766 manifest. `--load` = `--save` = `.../slime_experiments/rl-glm53f-adebt-766-r47`. No `--save-hf`, no `--sglang-disable-overlap-schedule`, no `--sglang-disable-radix-cache`, no `--calculate-per-token-loss`. |
+  | Fresh start | `finetune` True, `start_rollout_id` 0, `successfully loaded checkpoint from .../dcp/glm5.3-flash_torch_dist ... at iteration 0`. New W&B run `0ix3m75e` in project `rl-glm53f-adebt-766`. |
+  | Expected warning | `Failed to load slime extra state: invalid literal for int() with base 10: 'release'`. With no r47 dir, `load` falls back to `ref_load`, and that tracker reads `release`. The sidecar read is log-only, and a fresh start has no W&B id to restore. |
+  | Manifest | 09:51:38Z `Pulled lakefs://arena-inspect/327e057c.../agentic-debt-766/manifest.jsonl`. The pod copy has 766 rows, md5 `cc78c1ca74df94480a2239402e7fcce0`. |
+  | SGLang engines | 32 of 32 "fired up" 10:03:36Z-10:03:55Z. Server args: `disable_radix_cache=False`, `disable_overlap_schedule=False`, `mamba_radix_cache_strategy='extra_buffer'`, `context_length=131072`. The `freeze_gc` connection-refused lines are the known warmup noise. |
+  | First weight sync | `update_weights` `ok=true`, 44.9 s, end 10:05:32Z. The 128 `destroy_weights_update_group` HTTP 400 lines at 10:04:47Z are startup only. |
+  | NATS | 10:05:33Z `Rollout 0: collecting 32 groups (GBS=256, n_samples=8, queue=0)` and `NATS worker started: ... max_in_flight=256`. `NATS_TASK_DEADLINE_SECS` 176000 on worker-0. |
+  | Gym pod env (`rl-glm53f47-wxj87-gym-dcc8bd575-244ds`, container `gym-worker`) | `DOCKER_CONFIG=/root/.docker`, `HARBOR_AGENT_KWARGS={}`, `ARENA_PUBLISH_JOBS_DIR` empty, `ARENA_NATS_ACK_WAIT=172000`, `ARENA_TOOL_CALL_PARSER=glm47`. None of the seven removed ADR-0072 names is in the live env or in the `arena-infra-config` ConfigMap. No literal `{{` value. |
+  | Task downloads (all 288 gym pods, 10:20Z) | All 440 `Downloading` lines read `lakefs://arena-inspect/3cadc6b0a9a6c71bd8e7485e2d9da1cb04e2e608bfa1b9b531cb1df37cd82140/internal/agentic-debt-r3/agentic-debt-766/tasks/...`. 0 `77c2239b`, 0 `20260923-v3-locked`, 0 `manifest-le5`. 258 rollout jobs on 258 different tasks. |
+  | lakeFS start burst | About 256 task downloads started at once. 111 failed attempt 1 of 3 and 73 failed attempt 2 of 3, with connection errors to `prod.artifact-vault.agi.amazon.dev`. 0 tasks failed all 3 attempts (10:22Z). |
+  | First results | 10:17:37Z first result (`realdiff_alonfnt_notata_s0`, zero std at 0.0, dropped). 10:18:54Z first kept group (`realdiff_benavlabs_fastcrud_s0`): 16 samples, reward 0.5. Two groups at 10:19Z had zero std at 1.0 and were dropped. At 10:20Z rollout 0 had 1/32 groups kept after 4 examined. All four task ids are rows of the manifest. Each result has `gym_name` `agentic-debt`. |
+  | Errors | Trainer-worker-0 log: 0 "Requested token count exceeds", 0 `POST /generate` HTTP 400, 0 "maximum context length". Gym logs: 0 `Traceback`, 0 `ERROR`, 0 `pull access denied`, 0 out-of-memory lines, 0 `rollout deadline exceeded`. 51 "turn truncated at max_tokens" warnings. |
+  | Not errors | 2,128 gym log lines hold the text `except ValueError:`. They are lines of the agentic-debt-766 lockdown script, which the gym echoes at trial setup. They are not exceptions. |
+
+- **Not touched.** r44 `rl-glm53f44-qvjnv` and r46 `rl-glm53f46-rxn6b`
+  run on (10:22Z). No run of another user and no `recon-*` job was touched.
+- **Check at the first train step.**
+  - `train/train_rollout_logprob_abs_diff` MUST be near 0.0272 (kdatp T2
+    on r43 `iter_0000039`). A large value means a wrong SGLang weight sync
+    (`r47/BUILD.md` risk 9). Then stop and report.
+  - `train/ppo_kl` and `train/pg_clipfrac` read exactly 0 (flip A), and no
+    log-prob pass runs.
+  - Record `train/grad_norm`, `train/train_rollout_kl`,
+    `perf/actor_train_time`, the step time, and the peak memory (kdatp T2:
+    105-110 GiB, against 160-165 GiB on the replicated layer).
+  - The r17 image has no kernel-cache seed. In kdatp T2 the cold log-prob
+    pass took 2,135 s, against 312 s warm. Flip A removes that pass, so
+    the compile time goes into the first `actor_train`.
+  - After each epoch, count `rollout deadline exceeded`, verifier
+    out-of-memory exits, `rollout/dropped_groups/too_large`, and the chains
+    with K > 5 that reach step 6 or more.
+  - A `lakeFS download failed for` line in the gym logs means a task that
+    failed all 3 attempts. A gym restart gives a new start burst.

@@ -10,12 +10,15 @@ and each rank holds one head slice. Each path below fails silently when its layo
   and into the old layout (rollback), bit for bit;
 - weight sync: the production gather plus ``convert_glm5_next_to_hf`` gives the HF tensors of the old
   layout, bit for bit;
-- mbridge: the two converters give the same HF names, and the TP split and merge restore each tensor.
+- mbridge: the two converters give the same HF names, and the TP split and merge restore each tensor;
+- offline conversion: ``tools/convert_torch_dist_to_hf.py`` and ``tools/convert_torch_dist_to_hf_ray.py``
+  read the stored keys of a DCP and write the HF tensors of the weight sync, bit for bit.
 
 The GPU parity of the layer is ``tests/fast-gpu/test_delta_rule_head_sharded.py``.
 """
 
 import contextlib
+import pickle
 import socket
 from argparse import Namespace
 from types import SimpleNamespace
@@ -36,6 +39,8 @@ SMALL = dict(hidden=64, heads=8, head_dim=16)
 REAL = dict(hidden=4096, heads=64, head_dim=128)
 SHARDED_ROWS = ("q_proj", "k_proj", "v_proj", "b_proj", "f_b_proj", "g_b_proj")
 CONVS = ("q_conv1d", "k_conv1d", "v_conv1d")
+HC_SCALES = {"self_attention_hyper_connection": "hc_attn_scale", "mlp_hyper_connection": "hc_ffn_scale"}
+HC_ALPHAS = ("alpha_pre", "alpha_post", "alpha_res")
 
 
 def old_layout(hidden: int, heads: int, head_dim: int) -> dict[str, tuple[tuple[int, ...], torch.dtype]]:
@@ -301,3 +306,86 @@ def _weight_sync_hf_name(name: str) -> str:
     megatron_name = f"module.module.decoder.layers.3.self_attention.{name}"
     [(hf_name, _)] = convert_glm5_next_to_hf(Namespace(), megatron_name, torch.empty(1))
     return hf_name
+
+
+def _stored_dcp(ckpt_dir: str, layer: int) -> dict[str, torch.Tensor]:
+    """Save a torch_dist checkpoint of one layer with the stored keys. Return the HF tensors of the weight sync.
+
+    The checkpoint holds the 13 KDA tensors under ``self_attention.kda.`` and the three alphas of each
+    hyper-connection site. The weight sync emits the alphas of a site as one ``hc_*_scale`` tensor.
+    """
+    import torch.distributed.checkpoint as dist_cp
+
+    old = random_old_tensors(SMALL, seed=2)
+    prefix = f"decoder.layers.{layer}."
+    state = {f"{prefix}self_attention.kda.{name}": t for name, t in old.items()}
+    want = expected_hf(old, layer)
+    generator = torch.Generator().manual_seed(3)
+    for site, scale in HC_SCALES.items():
+        alphas = [torch.randn(1, generator=generator) for _ in HC_ALPHAS]
+        state.update({f"{prefix}{site}.{alpha}": t for alpha, t in zip(HC_ALPHAS, alphas, strict=True)})
+        want[f"model.layers.{layer}.{scale}"] = torch.cat(alphas)
+    dist_cp.save(state, storage_writer=dist_cp.FileSystemWriter(ckpt_dir), no_dist=True)
+    return want
+
+
+def _read_safetensors(out_dir) -> dict[str, torch.Tensor]:
+    import safetensors.torch
+
+    tensors = {}
+    for path in sorted(out_dir.glob("*.safetensors")):
+        shard = safetensors.torch.load_file(str(path))
+        assert not set(shard) & set(tensors), path
+        tensors.update(shard)
+    return tensors
+
+
+def _assert_bit_exact(got: dict[str, torch.Tensor], want: dict[str, torch.Tensor]) -> None:
+    assert sorted(got) == sorted(want)
+    bad = [n for n, t in want.items() if not (got[n].dtype == t.dtype and torch.equal(got[n], t))]
+    assert not bad, f"mismatch {bad}"
+
+
+def test_offline_tools_convert_the_stored_keys(tmp_path, monkeypatch):
+    """The two DCP-to-HF tools write the HF tensors of the weight sync from a checkpoint with the stored keys.
+
+    The Ray tool runs each task in one actor of many, and the alpha buffer is per process. So each task that
+    starts a ``hc_*_scale`` tensor also completes it.
+    """
+    import torch.distributed.checkpoint as dist_cp
+
+    from miles.backends.megatron_utils.megatron_to_hf import glm5_next
+
+    monkeypatch.setattr(pickle, "Unpickler", pickle.Unpickler)  # the tools replace it at import
+    from tools import convert_torch_dist_to_hf as tool
+    from tools import convert_torch_dist_to_hf_ray as ray_tool
+
+    ckpt = str(tmp_path / "dcp")
+    want = _stored_dcp(ckpt, layer=3)
+    # The fields of the common.pt args that the tools read for these keys.
+    megatron_args = Namespace(num_layers=4, vocab_size=None)
+    assert not glm5_next._hc_scale_buffers
+
+    state_dict = {}
+    dist_cp.state_dict_loader._load_state_dict(
+        state_dict,
+        storage_reader=tool.WrappedStorageReader(ckpt),
+        planner=tool.EmptyStateDictLoadPlanner(),
+        no_dist=True,
+    )
+    tool.save_tensors(megatron_args, "glm5_next", state_dict, str(tmp_path / "hf"), chunk_size=2**30)
+    _assert_bit_exact(_read_safetensors(tmp_path / "hf"), want)
+    assert not glm5_next._hc_scale_buffers
+
+    metadata = ray_tool.WrappedStorageReader(ckpt).read_metadata()
+    tensor_metadata = ray_tool.tensor_metadata_from_checkpoint_metadata(metadata)
+    tasks = ray_tool.plan_conversion_tasks(tensor_metadata, metadata, q_lora_rank=None, task_group_bytes=0)
+    staging = tmp_path / "hf_ray"
+    staging.mkdir()
+    for task in tasks:
+        prepared = ray_tool.prepare_whole_source_task_tensors(task, ckpt, megatron_args, "glm5_next", metadata)
+        assert not glm5_next._hc_scale_buffers, f"task {task.keys} leaves a hc_*_scale incomplete"
+        ray_tool.write_prepared_tensor_groups(
+            str(staging), task.task_id, prepared.groups, megatron_args, None, 2**30, None
+        )
+    _assert_bit_exact(_read_safetensors(staging), want)

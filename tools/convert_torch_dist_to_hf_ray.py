@@ -19,7 +19,7 @@ System flow:
 +------------------------+
 | read_metadata_and_plan |
 |------------------------|
-| read common.pt         |
+| read the common state  |
 | read DCP metadata      |
 | build task plan        |
 | publish metadata ref   |
@@ -91,6 +91,7 @@ import ray
 import safetensors.torch
 import torch
 import torch.distributed.checkpoint as dist_cp
+from megatron.core.dist_checkpointing.serialization import load_common_state_dict
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from torch.distributed._shard._utils import narrow_tensor_by_index
 from torch.distributed.checkpoint.metadata import MetadataIndex
@@ -724,6 +725,15 @@ def _mla_pair_group(key: str) -> str:
     )
 
 
+# glm5_next packs the three alphas of one hyper-connection site into one hc_*_scale tensor. Its buffer is
+# per process, so the three alphas must be in the same task. Otherwise the tensor is not written.
+_HC_ALPHA_KEY_RE = re.compile(r"_hyper_connection\.alpha_(pre|post|res)$")
+
+
+def _hc_alpha_group(key: str) -> str:
+    return _HC_ALPHA_KEY_RE.sub("_hyper_connection.HC_ALPHAS", key)
+
+
 def group_small_tasks(
     atomic_tasks: list[tuple[int, tuple[str, ...]]],
     task_group_bytes: int,
@@ -756,7 +766,8 @@ def plan_whole_source_tasks(
 ) -> list[TaskSpec]:
     grouped: dict[str, list[str]] = {}
     for key in tensor_metadata:
-        group = _mla_pair_group(key) if q_lora_rank is not None else key
+        group = _hc_alpha_group(key)
+        group = _mla_pair_group(group) if q_lora_rank is not None else group
         grouped.setdefault(group, []).append(key)
 
     atomic_tasks = []
@@ -1270,10 +1281,11 @@ def prepare_output_dir(output_dir: str, force: bool) -> str:
 
 
 def load_megatron_args(input_dir: str, model_name_override: str | None, vocab_size: int | None) -> tuple[Any, str]:
-    megatron_args = torch.load(os.path.join(input_dir, "common.pt"), weights_only=False)["args"]
+    # Current Megatron saves keep the args in the common_state object of the DCP, older saves in common.pt.
+    megatron_args = load_common_state_dict(input_dir)["args"]
     model_name = model_name_override or getattr(megatron_args, "original_hf_model_name", None)
     if model_name is None:
-        raise ValueError("Model name is required when common.pt does not include original_hf_model_name")
+        raise ValueError("Model name is required when the checkpoint args do not include original_hf_model_name")
     if vocab_size is not None:
         megatron_args.vocab_size = vocab_size
     if not hasattr(megatron_args, "sglang_enable_ep_moe"):
@@ -1297,9 +1309,6 @@ def convert_torch_dist_to_hf_ray(args: Args) -> str:
     reject_cloud_path(args.input_dir, "input_dir")
     if args.origin_hf_dir is not None:
         reject_cloud_path(args.origin_hf_dir, "origin_hf_dir")
-    common_pt = os.path.join(args.input_dir, "common.pt")
-    if not os.path.exists(common_pt):
-        raise FileNotFoundError(f"Expected {common_pt}")
 
     hf_config = load_hf_config(args.origin_hf_dir)
     vocab_size = get_hf_vocab_size(hf_config)

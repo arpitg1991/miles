@@ -9,6 +9,7 @@ import time
 import safetensors.torch
 import torch
 import torch.distributed.checkpoint as dist_cp
+from megatron.core.dist_checkpointing.serialization import load_common_state_dict
 from typing_extensions import override
 
 from miles.backends.megatron_utils.megatron_to_hf import convert_to_hf, remove_padding
@@ -60,6 +61,12 @@ class EmptyStateDictLoadPlanner(dist_cp.default_planner.DefaultLoadPlanner):
                 v = torch.empty(v.size, dtype=v.properties.dtype)  # type: ignore[assignment]
             state_dict[k] = v
         super().set_up_planner(state_dict, metadata, is_coordinator)
+
+
+def load_megatron_args(input_dir):
+    """The ``args`` of the checkpoint. Current Megatron saves keep them in the ``common_state`` object of the
+    DCP, older saves in ``common.pt``. ``load_common_state_dict`` reads both."""
+    return load_common_state_dict(input_dir)["args"]
 
 
 def get_expert_param(args, name, param):
@@ -200,7 +207,7 @@ if __name__ == "__main__":
     state_dict = {}
     print(f"loading model from {args.input_dir}")
     t = time.time()
-    megatron_args = torch.load(os.path.join(args.input_dir, "common.pt"), weights_only=False)["args"]
+    megatron_args = load_megatron_args(args.input_dir)
     dist_cp.state_dict_loader._load_state_dict(
         state_dict,
         storage_reader=WrappedStorageReader(args.input_dir),

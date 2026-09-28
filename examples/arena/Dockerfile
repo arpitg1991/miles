@@ -5,6 +5,7 @@
 #
 #   docker build -f examples/arena/Dockerfile \
 #       --build-arg MILES_BASE_IMAGE=radixark/miles:latest \
+#       [--build-context kernel-cache=<dir that holds kernel_cache.tar>] \
 #       -t <registry>/miles-arena-dev:<tag> .
 #
 # MILES_BASE_IMAGE must be a miles GPU runtime image produced by docker/build.py
@@ -18,6 +19,10 @@
 # PR#89 — or its ECR mirror, e.g. arena-slime-dev:glm53next-upstream-20260902);
 # the mainline base lacks the KDA/DSA engine support.
 ARG MILES_BASE_IMAGE=radixark/miles:latest
+
+# The optional kernel-cache seed. `--build-context kernel-cache=<dir>` replaces this empty stage.
+FROM scratch AS kernel-cache
+
 FROM ${MILES_BASE_IMAGE}
 
 # Arena runtime deps (mirrors setup.py's [arena] extra). The AGISlime
@@ -56,6 +61,22 @@ RUN apt-get update \
     && cd /tmp \
     && rm -rf aws-efa-installer aws-efa-installer.tar.gz \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Kernel-cache seed. A cold GLM-5.3 trainer compiles the TileLang and Triton kernels in its first
+# step for about an hour at low GPU power, and the idle-GPU reaper can delete the run
+# (kdatp-t2-20260927b). The seed is the tilelang/ and triton/ trees of a kdash `warm` tarball
+# (kdash/kcache/<stamp>.tar, members kernel_cache/*). They go to /tmp/kernel_cache, the cache path
+# of the trainer command and of kdash-run.sh, because the Triton group files keep absolute paths.
+# A kernel whose source, compiler or GPU changed misses the cache and compiles as before. Without
+# the build context this step does nothing.
+# ponytail: the seed is only at /tmp/kernel_cache. If a manifest moves the cache, copy the seed there at start.
+RUN --mount=type=bind,from=kernel-cache,target=/kernel-cache \
+    if [ -f /kernel-cache/kernel_cache.tar ]; then \
+        tar -C /tmp -xf /kernel-cache/kernel_cache.tar kernel_cache/tilelang kernel_cache/triton \
+        && echo "kernel cache seed: $(find /tmp/kernel_cache -type f | wc -l) files, $(du -sh /tmp/kernel_cache | cut -f1)"; \
+    else \
+        echo "kernel cache seed: none (no kernel-cache build context)"; \
+    fi
 
 # Replace the base's baked checkout with this fork. The base's editable install
 # points at /root/miles, so overwriting the tree is the whole install; removing

@@ -48,6 +48,11 @@ Pushed to us-east-1 (the only region `arena-ecr-dev` can push to); the
 repository replicates to ap-south-1, where prod-bom pulls. Each GLM tag is a
 superset of the previous one. miles argparse is strict: a config key whose flag
 the image does not know kills the trainer at start, so bump the tag with the key.
+A GLM tag MUST carry the kernel-cache seed. Put a kdash `warm` tarball
+(`/mnt/scratch-s3files-rw/guparpit/kdash/kcache/<stamp>.tar`) in an empty dir as
+`kernel_cache.tar` and add `--build-context kernel-cache=<dir>` to the build. The
+build log then shows `kernel cache seed: <N> files`. Without the seed, the first
+train step compiles the TileLang and Triton kernels for about an hour.
 
 | tag | base | adds | used by |
 |---|---|---|---|

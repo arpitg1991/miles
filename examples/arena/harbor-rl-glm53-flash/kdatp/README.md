@@ -54,7 +54,7 @@ their digests, the results and the GO / NO-GO decision per item.
 | `t1_parity.py` | T1 module parity, 8 GPUs (`torchrun`). |
 | `build_rollout_data.py` | Train-only rollout files from r45 groups and r43 staged tokens and routing. |
 | `make_slice_hf.py` | Config-only HF dir of the 5-layer slice. |
-| `gen_arm_configs.py` | Arm YAMLs from `../r45/miles-config.yaml`. |
+| `gen_arm_configs.py` | Arm YAMLs from `training-runs/harbor-rl-glm53-flash/r45/miles-config.yaml`. |
 | `parse_logs.py` | Per-arm metrics, peak memory per stage, and exit codes to JSON. |
 
 ## Rules

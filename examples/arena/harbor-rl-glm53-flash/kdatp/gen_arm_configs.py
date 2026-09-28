@@ -30,7 +30,7 @@ from pathlib import Path
 import yaml
 
 HERE = Path(__file__).resolve().parent
-R45_CONFIG = HERE.parent / "r45" / "miles-config.yaml"
+R45_CONFIG = HERE.parents[3] / "training-runs" / "harbor-rl-glm53-flash" / "r45" / "miles-config.yaml"
 
 KDA_TP = {"glm5_next_kda_tp": True}
 SELECTIVE = {

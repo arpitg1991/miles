@@ -202,7 +202,7 @@ and adr71, still read both env names.
 - The code paths of ADR-0009 and ADR-0010 no longer exist in the repo. They
   were removed, not disabled. Both ADRs are marked superseded and stay as
   history.
-- Historical run directories `examples/arena/harbor-rl-glm53-flash/r9` to
+- Historical run directories `training-runs/harbor-rl-glm53-flash/r9` to
   `r35` and the RUNLOGs keep the old keys (`arena_mask_clipped_final_turn`,
   `arena_keep_timeout_trajectories`,
   `arena_keep_context_error_trajectories`, `arena_truncated_turn_*`) as

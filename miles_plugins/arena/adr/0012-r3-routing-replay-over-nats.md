@@ -203,7 +203,7 @@ Trainer side (miles fork, new image):
 - Materialization of 64 groups (512 samples) takes 74 s at drain time on the
   nfs4 scratch mount. Step 0 took 54 min because of the TileLang JIT of
   `sparse_mla_bwd_kernel`; later steps take 26-29 min.
-- Run log: `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`, 2026-09-09 entry.
+- Run log: `training-runs/harbor-rl-glm53-flash/RUNLOG.md`, 2026-09-09 entry.
 
 ## References
 

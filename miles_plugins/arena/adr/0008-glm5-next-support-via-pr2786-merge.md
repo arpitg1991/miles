@@ -105,5 +105,5 @@ Harder / open:
   so an image built from a tree without this merge silently trains the stale
   checkout. Bring-up findings against this model code (fla/triton kernel
   incompatibility, KDA replicated across TP, CP unsupported by the kpool
-  indexer) are recorded in `examples/arena/harbor-rl-glm53-flash/RUNLOG.md`
+  indexer) are recorded in `training-runs/harbor-rl-glm53-flash/RUNLOG.md`
   as they were found.

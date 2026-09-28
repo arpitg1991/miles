@@ -6,6 +6,13 @@ hyper-connections; MTP layer 45 dropped for training) GRPO against the
 `snorkel-general-bash-harbor` Harbor gym over NATS, 12x p6-b200.48xlarge on
 prod-bom (kueue queue `gpu.p6-b200-48xlarge`).
 
+Run records: `training-runs/harbor-rl-glm53-flash/` holds one folder per run
+(`r<N>/RECORD.md`, `miles-config.yaml`, `workflow.yaml`, `BUILD.md`), the
+legacy `RUNLOG.md`, and `experiment-list.md`. This directory holds the recipe
+and the code: this runbook, the base manifests, `gen-workflow.py`, `kdatp/`,
+and `memprobe/`. `gen-workflow.py <N>` writes into the run folder and
+refreshes the `RECORD.md` header (`training-runs/README.md`).
+
 Two parents, merged deliberately:
 
 - **Arena wiring, batch shape, GRPO block** — r5-faithful from

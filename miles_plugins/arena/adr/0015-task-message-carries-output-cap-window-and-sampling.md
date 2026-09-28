@@ -9,7 +9,7 @@
 date) and the 2026-09-27 amendment of AREnATasks ADR-0063 (the gym clamps
 `max_new_tokens` to the room left in the window)
 **Reverses:** the r8 rejections R2 and R3 in
-`examples/arena/harbor-rl-glm53-flash/experiment-list.md`
+`training-runs/harbor-rl-glm53-flash/experiment-list.md`
 
 ## Summary
 

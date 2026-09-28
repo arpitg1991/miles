@@ -8,7 +8,9 @@ and why a run ended.
 
 ```text
 training-runs/
-  README.md                       this convention and the index
+  README.md                       this convention
+  INDEX.md                        the index: Runs table (generated) and Studies table
+  build_index.py                  rewrites the Runs table of INDEX.md
   TEMPLATE.md                     run record (r<N>/RECORD.md)
   STUDY-TEMPLATE.md               investigation record (studies/<slug>/STUDY.md)
   <family>/
@@ -76,10 +78,14 @@ The dataset comes from the `prompt-data-list` key of `r<N>/miles-config.yaml`.
 When the key is absent or has no `path`, the script exits with `FAIL` before
 it writes `workflow.yaml`. Thus a record cannot omit the dataset line.
 
-`tests/fast/plugins/arena/test_gen_workflow.py` is the runnable check:
+`tests/fast/plugins/arena/test_gen_workflow.py` is the runnable check. Run it
+with a Python that has `pytest` and `pyyaml`; `--confcutdir` keeps the root
+`tests/conftest.py` (it imports `miles.rollout`, which needs `sglang`) out:
 
 ```bash
-PYTHONPATH=$PWD python -m pytest tests/fast/plugins/arena/test_gen_workflow.py -q
+PYTHONPATH=$PWD python -m pytest --confcutdir=tests/fast/plugins/arena \
+  tests/fast/plugins/arena/test_gen_workflow.py \
+  tests/fast/plugins/arena/test_training_runs_index.py -q
 ```
 
 ## How to add a run
@@ -93,7 +99,9 @@ PYTHONPATH=$PWD python -m pytest tests/fast/plugins/arena/test_gen_workflow.py -
 4. Add a Timeline row for each launch, admission, save, resume, and retire
    event. Add the resume workflow as `workflow-resume<K>.yaml`.
 5. At the end, fill Results, Outcome, and the last save. Set Status.
-6. Add or update the row of this run in the index below.
+6. Run `python training-runs/build_index.py` to refresh the Runs table of
+   [INDEX.md](INDEX.md). `test_committed_index_is_current` fails on a stale
+   table.
 
 ## How to add a study
 
@@ -102,7 +110,7 @@ setting, a throughput gate) gets `training-runs/studies/<slug>/STUDY.md`
 from [STUDY-TEMPLATE.md](STUDY-TEMPLATE.md). Name the runs, the data, the
 code SHAs, and the workflow journal ids it used. Mark each number you cannot
 re-verify against a primary source as "not re-verified". Add a row to the
-Studies index.
+Studies table of [INDEX.md](INDEX.md).
 
 ## Legacy logs
 
@@ -120,23 +128,9 @@ secret, a Midway cookie, or a W&B key.
 
 ## Index
 
-### Runs
-
-One row per `RECORD.md`, newest first.
-
-| Family | Run | Date | Status | Record |
-| --- | --- | --- | --- | --- |
-| `harbor-rl-glm53-flash` | r47 | 2026-09-28 | record pending | [r47/](harbor-rl-glm53-flash/r47/) |
-| `harbor-rl-glm53-flash` | r46 | 2026-09-27 | record pending | [r46/](harbor-rl-glm53-flash/r46/) |
-| `harbor-rl-glm53-flash` | r45 | 2026-09-27 | record pending | [r45/](harbor-rl-glm53-flash/r45/) |
-| `harbor-rl-glm53-flash` | r44 | 2026-09-27 | record pending | [r44/](harbor-rl-glm53-flash/r44/) |
-
-### Studies
-
-One row per `studies/<slug>/STUDY.md`, newest first.
-
-| Date | Study | Status | Record |
-| --- | --- | --- | --- |
+[INDEX.md](INDEX.md) holds the Runs table (one row per `RECORD.md`, written
+by `python training-runs/build_index.py` from the record headers) and the
+Studies table (one row per `studies/<slug>/STUDY.md`, hand-written).
 
 ### Families
 

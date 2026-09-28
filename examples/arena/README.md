@@ -140,7 +140,8 @@ parameter `agent-kwargs` (the gym `--agent-kwargs` JSON) overrides them.
 
 - `examples/arena/<job>/RUNLOG.md`: launches, numbers, RCAs and decisions per job, chronological, times in PT.
 - `training-runs/<family>/r<N>/RECORD.md`: one record per GLM-5.3 run (dataset, images, template, checkpoints, outcome);
-  `training-runs/studies/<slug>/STUDY.md`: one record per investigation. `training-runs/README.md` holds the index.
+  `training-runs/studies/<slug>/STUDY.md`: one record per investigation. `training-runs/INDEX.md` holds the index;
+  `training-runs/README.md` the convention (ADR-0017).
 - `miles_plugins/arena/RUNLOG.md`: package milestones (port, verification, post-port flags, test state).
 - `miles_plugins/arena/adr/`: 0001 port scope and module mapping; 0002 NATS wire contract bit-identical;
   0003 group identity via `group_index`; 0004 per-trajectory loss weighting and rollout logprobs;

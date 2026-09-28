@@ -1,5 +1,8 @@
+import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
-from ray.util.state import list_nodes
+
+# Ray gives the head node this custom resource (ray._common.constants.HEAD_NODE_RESOURCE_NAME).
+_HEAD_NODE_RESOURCE = "node:__internal_head__"
 
 
 class Box:
@@ -22,7 +25,11 @@ def compute_ray_pin_head_options():
 
 
 def _get_head_node_id() -> str:
-    for node in list_nodes():
-        if node.is_head_node:
-            return node.node_id
+    # ray.nodes() reads the GCS, so any node can call it. The state API (ray.util.state.list_nodes)
+    # goes through the dashboard, which `ray start --head` binds to 127.0.0.1 by default: the
+    # RayWorkerManager actor calls this function and can run on a worker node, where that
+    # request is refused (ServerUnavailable) and the launch stops.
+    for node in ray.nodes():
+        if node.get("Alive") and _HEAD_NODE_RESOURCE in node.get("Resources", {}):
+            return node["NodeID"]
     raise RuntimeError("Could not find a head node in the Ray cluster")

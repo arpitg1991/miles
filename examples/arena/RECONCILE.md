@@ -13,7 +13,7 @@ are in plugin ADR-0016 (`miles_plugins/arena/adr/0016-reconcile-with-upstream-ma
 | merge base | `2799fe386` (2026-08-31) |
 | fork side | 171 commits: 167 non-merge commits and 4 merge commits |
 | upstream side | 750 commits |
-| result | 139 kept fork commits, 1 restore commit, and 8 new commits on top of `23d41d711`. The commit that adds this file is the branch tip |
+| result | 139 kept fork commits, 1 restore commit, and the new commits in "New commits after the rebase", on top of `23d41d711` |
 
 ## Method
 
@@ -142,7 +142,11 @@ It restores three files from `38921ae45` without change, right after
 | `aed3522de` | the advantage-scale tests set a one-rank parallel state (upstream #3125) |
 | `7466bc9cc` | the `run_glm5_3_flash` launcher snapshot regenerated for the merged #2786 script |
 | `9a5b6216d` | the plugin RUNLOG entry |
-| this commit | this file |
+| `77cd880d4` | this file |
+| `c5b138782` | `patches/fla_kda_next_power_of_2.py` finds fla with `importlib.util.find_spec` and accepts the upstream form of the patch (see "Test images") |
+| `4d6c39a7d` | `patches/fla_conv_int64_offsets.py`: the int64 lines of fla PR #1082 for `causal_conv1d` (see "GPU validation") |
+| `4316e4957` | `miles/utils/ray_utils.py` finds the head node with `ray.nodes()` (see "GPU validation") |
+| this commit | the test images, the GPU validation, and the open items in this file; the image lineage rows; the plugin RUNLOG entry |
 
 ## Upstream changes that alter a run on this branch
 
@@ -151,12 +155,14 @@ It restores three files from `38921ae45` without change, right after
 | GLM-5.3 DSA indexer | the final #2786 applies RMSNorm to the indexer query. The fork copy fed the raw query; SGLang `9a26e749` feeds the normalized query | the live runs on `arpit-glm-53` have this train/rollout mismatch in all 11 DSA layers. The fix changes the top-k selection and the log-probs |
 | GLM-5.3 MLP | `scripts/models/glm5.3-flash.py` adds `--activation-func-clamp-value 10`. The checkpoint sets `swiglu_limit` 10, and SGLang clamps | a second train/rollout mismatch goes away |
 | GLM-5.3 mHC | the mean output contraction comes from a Megatron spec, not a monkeypatch | no checkpoint format change is expected. A GPU load of an r45 checkpoint must prove it |
-| fault tolerance | with `use_fault_tolerance`, upstream turns on the mini fault-tolerance controller on `api_server_port` 18080. `--control-server-port` is gone | new auto-heal of failed engines. Set `mini_ft_controller_enable: false` for a like-for-like test |
-| checkpoint dir | `save_debug_event_data` defaults to `<save>/events` (#2505); each checkpoint gets a copy of the event logs | extra files in the checkpoint dir. The Megatron DCP format, the data-source state path, and the single-policy dir layout do not change |
+| fault tolerance | with `use_fault_tolerance`, upstream turns on the mini fault-tolerance controller on `api_server_port` 18080. `--control-server-port` is gone | new auto-heal of failed engines. No r44, r45, or r46 config sets `mini_ft_controller_enable`, so a relaunch from these files turns the controller on. Set `mini_ft_controller_enable: false` for a like-for-like run. In the train-only GPU jobs the controller started and polled an empty cell list |
+| event logger | `save_debug_event_data` defaults to `<save>/events` (#2505), and no flag turns it off. The event logger is then on in every process. `update_weights` runs `check_weights(action="checksum")` on every engine at each weight update (`miles/ray/placement_group.py`), and each save copies the whole events dir into the checkpoint | with `update_weights_interval: 1`, one checksum pass on each engine per rollout, and a copy that grows at each save. The GPU jobs of this file have no engines, so they do not measure the checksum time. The Megatron DCP format, the data-source state path, and the single-policy dir layout do not change |
 | metrics | `train_rollout_logprob_abs_diff` and `train_rollout_kl` come from trainer-scored log-probs (#3655) | values before and after the rebase are not directly comparable |
 | weight-version metrics | the upstream `weight_version/*` metrics read span objects | arena samples carry no spans, so these metrics are absent. `rollout/off_policy_round/*` does not change |
 | TIS, PPO, R3 | the math does not change. R3 still sets `enable_return_routed_experts` and reads `rollout_routed_experts` | low. The upstream GLM launcher forces `--sglang-moe-runner-backend triton` for R3; the arena configs keep `auto`, which r16 validated |
-| dependencies | the upstream Dockerfile moves SGLang v0.5.18 to v0.5.20, TileLang 0.1.8 to 0.1.14, Megatron-Bridge `7f0fb345` to `8cd3466d`, and adds a patch for fla 0.5.2 | the arena base `glm53next-upstream-20260902` keeps SGLang `9a26e749`, Megatron `e8f57451`, fla 0.4.2, and TileLang 0.1.9. The upstream GLM-5.3 docs pin the same SGLang and Megatron pair. No new base image is necessary for the CPU checks |
+| dependencies | the upstream Dockerfile moves SGLang v0.5.18 to v0.5.20, TileLang 0.1.8 to 0.1.14, Megatron-Bridge `7f0fb345` to `8cd3466d`, and adds a patch for fla 0.5.2. Upstream starts each SGLang engine with `--gated-launch-port` (#2096), and since #3031 the launch stops when SGLang does not serve it | SGLang `9a26e749` of `glm53next-upstream-20260902` does not serve `--gated-launch-port`, so this branch needs a new base. The test images use `recon-miles-base-20260927a` (see "Test images") |
+| fla 0.5.2 | `causal_conv1d` computes token offsets in int32 (fla PR #1062). fla fixed it after 0.5.2 in PR #1082, with no release yet | a GLM-5.3 row longer than 87,381 tokens stops the train step with an illegal memory access. `4d6c39a7d` patches the kernel at image build |
+| head pinning | `compute_ray_pin_head_options()` runs in the RayWorkerManager actor, not in the driver. It read the head node from the dashboard at 127.0.0.1:8265 | with `pin_rollout_manager_to_head: true` (r44, r45, r46), the launch stopped with `ServerUnavailable` when Ray placed that actor on a worker node. `4316e4957` reads the GCS node table |
 
 ## Validation (2026-09-27)
 
@@ -167,18 +173,140 @@ It restores three files from `38921ae45` without change, right after
 | launcher snapshots: `tests/manual/launch_scripts/test_py_launch_scripts.py -k "run_arena_harbor or run_glm5_3_flash"` | 6 passed. The whole manual suite has no failure that upstream `main` does not also have |
 | `tests/fast` sweep in the venv, by directory, against upstream `main` | 6545 passed on this branch, 6205 on upstream. 341 tests pass only on this branch; they are fork tests. One test changes from pass to fail: `tests/fast/doc/test_sync_example_docs.py::test_docs_examples_matches_the_readmes`, because `examples/README.md` does not list `examples/arena`. The fork tip fails the same test. All other outcomes are identical |
 | image `arena-slime-dev:miles-glm53-r15-20260927a` (SGLang `9a26e749`, Megatron `e8f57451`), tree mounted on `PYTHONPATH` | the `examples/arena/Dockerfile` import smoke passes, including `miles_plugins.arena.train_async_arena`. `run_arena_harbor.py --help` passes. The arena, launcher, loss, `test_train_data_conversion`, `test_samples`, `test_loss_mask_qwen3_5`, and `test_types` tests: 574 passed, 13 failed; upstream `main` has the same 13 failures in that image (12 loss snapshots that clone an artifact repository, and `test_workplace_backend`). With network access, `test_loss_snapshot.py --compare` passes (12) |
+| fast tests at `4316e4957`, same venv | arena 325 passed, `test_run_arena_harbor.py` 6 passed, `tests/fast/utils/test_ray_utils.py` 4 passed. In the recon test image, `test_ray_utils.py` and `tests/fast/utils/workers/test_ray_worker_manager.py`: 135 passed |
 | argv parse: `_build_train_args` of the launcher, the model args of `scripts/models/glm5.3-flash.py`, and `--deploy-component all`, then `miles.utils.arguments.parse_args()` in the r15 image | all five configs parse: `r44/miles-config.yaml`, `r44/miles-config-r0.yaml`, `r45/miles-config.yaml`, `r46/miles-config.yaml`, `r46/miles-config-r0.yaml`. Against the fork tip, the argv adds `--activation-func-clamp-value 10` and `--deploy-component all` only. The resolved values change for `activation_func_clamp_value` (None to 10.0), `mini_ft_controller_enable` (False to True), `save_debug_event_data` (None to `<save>/events`), `session_sample_picker_path` (renamed default), and `rollout_health_check_first_wait` (0 to 0.0) |
+
+## Test images (2026-09-27)
+
+TEST ONLY. NEVER use these tags for a live run.
+
+| tag | tree | ap-south-1 digest | result |
+| --- | --- | --- | --- |
+| base `recon-miles-base-20260927a` | upstream `docker/build.py --variant cu13-x86` at `23d41d711` | `sha256:f83c7828a756` | the base of the three test tags |
+| `miles-glm53-recon-test-20260927a` | `c5b138782` | `sha256:8f5fe3dc5715` | T1 passes. The warm-up train step fails (fla int32 offsets) |
+| `miles-glm53-recon-test-20260927b` | `4d6c39a7d` | `sha256:429d4ebffec4` | the warm-up passes. T2 fails at the launch (head pinning) |
+| `miles-glm53-recon-test-20260927c` | `4316e4957` | `sha256:2cd2c030c567` | T2 passes |
+
+The base comes from the upstream recipe only:
+`python3 docker/build.py --variant cu13-x86 --image-tag custom --custom-tag recon-miles-base-20260927a --build-arg SGLANG_COMMIT=571212b636baca45e10fa3b4da11a289123f3235 --build-arg MEGATRON_COMMIT=f148a32b4385b758b66a77c9c3ad1641f1295d4b --build-arg MILES_COMMIT=23d41d711f3b80544fda655898ed4f051ed644fe`.
+Each test tag is `docker build -f examples/arena/Dockerfile --build-arg MILES_BASE_IMAGE=<base>` on a clean clone of this branch.
+
+| part | `glm53next-upstream-20260902` (live runs) | `recon-miles-base-20260927a` |
+| --- | --- | --- |
+| SGLang | `9a26e749` | `sglang-miles` `571212b6` (0.5.21.dev63, on `lmsysorg/sglang:v0.5.20`) |
+| Megatron-LM | `e8f57451` | `miles-main` `f148a32b` (the merge commit of PR #89) |
+| fla | 0.4.2 | 0.5.2, with the upstream KDA patch and `4d6c39a7d` |
+| Megatron-Bridge | `7f0fb345` | `8cd3466d` |
+| TileLang | 0.1.9 | 0.1.14 |
+| torch / TE | 2.13.0+cu130 / 2.17.0 | the same |
+
+## GPU validation (2026-09-27, prod-bom `recon-*` jobs)
+
+The jobs use the queue, the priorities, and the excluded nodes of the live
+runs. They write only under `/mnt/scratch-s3files-rw/guparpit/recon/`. They
+read the r45 `iter_0000039` DCP (links to r43), the r43 `hf/rollout_39`
+export, and the kdatp T2 rows. No job saves a checkpoint. No job uses W&B.
+The harness is outside the repo: ConfigMap `recon-harness-20260927a` (the
+kdatp harness pattern). The reference image is `miles-glm53-r15-20260927a`
+(`bc31f88ac`, the same code as the fork tip).
+
+T1, one node (TP 8 with SP, EP 8, PP 1; jobs `recon-t1-{ref,new}-20260927b`,
+image a). Each image loads the r45 `iter_0000039` DCP with its own
+`load_checkpoint`, runs its own `forward_only` log-prob pass on 4 real r45
+rows (3,509 to 6,538 tokens), and runs its own HF weight iterator.
+
+| check | ref (r15) | new (image a) |
+| --- | --- | --- |
+| load | iteration 39, 528 s, 81.1 GiB and 43,490,708,478 parameters per GPU | the same values, 509 s |
+| HF gather (weight sync and HF export) | 37,534 tensors, SHA-256 equal to r43 `hf/rollout_39` | 37,534 tensors, SHA-256 equal to r43 `hf/rollout_39` and to ref |
+
+Log-prob differences on the 6,578 trainable tokens. The noise floor is
+pass 1 (one row per micro-batch) against pass 2 (the 4 rows packed in one
+micro-batch) in the same image:
+
+| comparison | mean abs | p99 | max |
+| --- | --- | --- | --- |
+| ref pass 1 against ref pass 2 (floor) | 0.0458 | 0.491 | 1.53 |
+| new pass 1 against new pass 2 (floor) | 0.0448 | 0.466 | 1.29 |
+| new, clamp off, against ref | 0.0373 | 0.366 | 1.03 |
+| new, clamp 10 (default), against ref | 0.0476 | 0.486 | 1.51 |
+| ref against SGLang rollout log-probs | 0.0506 | 0.534 | 1.84 |
+| new, clamp 10, against SGLang rollout log-probs | 0.0472 | 0.517 | 1.69 |
+
+The SGLang log-probs come from the r43 policy at or before iteration 39, so
+they are an approximate reference. The clamp (`--activation-func-clamp-value
+10`, the SGLang `swiglu_limit`) moves the trainer 7% closer to them.
+
+Logits over all 18,829 positions and the full vocabulary: new (clamp off)
+against ref gives a max abs difference of 25.9, a max of (max abs
+difference / max abs logit) of 0.557, a worst-row relative L2 error of
+0.192, and a top-1 agreement of 92.1%. The same-image floor has a
+relative L2 error of 0.22 and a max abs difference of 26.7. In 3 of the 4
+rows the first 6 to 11 positions are bitwise equal; the difference grows
+with the position. Gate (the kdatp rule): relative L2 error at most 2 x floor
++ 2**-8, and mean log-prob difference at most 2 x floor + 1e-3. Both
+new runs pass. Images b and c change the `causal_conv1d` offsets (the output
+is bitwise equal below 87,381 tokens, see the fla check) and the head
+lookup only, so the T1 values also apply to them.
+
+fla check (`recon-convchk-20260927a`, one GPU of image a): ShortConvolution
+with 24,576 channels, forward and backward. The installed fla 0.5.2 passes
+at 80,000 tokens and fails at 131,070 tokens (illegal memory access). With
+`fla_conv_int64_offsets.py` it passes at 131,070 tokens (relative L2 error
+1.7e-3 against an fp32 reference, for y, dx, and dw). At 80,000 tokens the
+patched output is bitwise equal to the installed output.
+
+Warm-up (`recon-warm-20260927{a,b}`, one node): the 5-layer slice trains one
+step on the T2 rows. Image a stops in the first log-prob pass
+(`causal_conv1d_fwd_kernel`, illegal memory access). Image b passes in
+46 min and writes the kernel cache for T2.
+
+T2, eight nodes (the r45 layout: TP 8 with SP, PP 4, EP 16, DP 2; R3 and
+TIS on; job `recon-t2-20260927c`, image c): train only, rollouts 40 to 42 of
+the kdatp T2 rows (314 rows, 22.3M tokens, up to 131,070 tokens per row),
+from the r45 `iter_0000039` DCP. The reference is the kdatp T2 `baseline`
+arm (`kdatp-t2-20260927e`, the r15 code with the KDA split off). Image b
+stopped at the launch (head pinning); image c has the fix.
+
+| rollout | metric | kdatp baseline | recon |
+| --- | --- | --- | --- |
+| 40 | grad_norm | 0.1274 | 0.1263 |
+| 40 | loss | -3.6e-6 | -4.8e-5 |
+| 40 | ppo_kl | -8.5e-6 | 1.8e-5 |
+| 40 | train_rollout_logprob_abs_diff | 0.02721 | 0.02576 |
+| 40 | train_rollout_kl | 0.00212 | 0.00197 |
+| 40 | step time (first step, kernel compile) | 1,687 s | 2,097 s |
+| 41 | grad_norm | 0.1233 | 0.1244 |
+| 41 | loss | -5.30e-4 | -5.45e-4 |
+| 41 | step time | 1,278 s | 1,306 s |
+| 41 | log-prob time / actor train time | 219 s / 989 s | 265 s / 1,015 s |
+| 42 | grad_norm | 0.1215 | 0.1358 |
+| 42 | loss | -1.86e-3 | -1.90e-3 |
+| 42 | step time | 1,284 s | 1,315 s |
+| 42 | log-prob time / actor train time | 229 s / 993 s | 270 s / 1,019 s |
+| 40, 41 | peak allocated GiB, PP stages 0 / 1 / 2 / 3 | 128.8 / 129.7 / 124.7 / 124.9 | 136.8 / 137.7 / 132.7 / 132.9 |
+
+At one optimizer step per rollout, `train_rollout_logprob_abs_diff` of both
+trees compares the trainer log-probs of the same weights with the SGLang
+log-probs, so #3655 does not change its value here. The recon peak window
+starts at the log-prob pass (hook `recon_hooks.py`); the kdatp window starts
+at the `train` call. The +8.0 GiB is the same on each stage; its source is
+not isolated.
 
 ## Open items
 
 1. The owner accepts or changes ADR-0016 decision 4 (the weight versions in
    `Sample.metadata`, no spans).
-2. Build the test trainer image `arena-slime-dev:miles-glm53-recon-test-20260927a`
-   with `examples/arena/Dockerfile` on `glm53next-upstream-20260902`. Add the
-   lineage row in `examples/arena/README.md` when the image exists.
-3. GPU test jobs (`recon-*`): the import smoke, a load of an r45-lineage
-   checkpoint copy, and one train step with R3 and TIS. Compare the step-0
-   log-prob gap and `ppo_kl` with r45.
+2. Test the engine path before a relaunch from r44, r45, or r46: SGLang
+   `sglang-miles` `571212b6` with the r45 engine flags, one weight update, the
+   event-logger checksum on each engine, and the mini fault-tolerance
+   controller. The GPU jobs of this file have no engines.
+3. The steady log-prob pass is 18% to 21% slower (219 to 229 s against 265 to
+   270 s), and the peak allocated memory is 8.0 GiB higher on each stage.
+   Isolate the source before a long run.
+4. Move the base to a fla release that has PR #1082. Then
+   `fla_conv_int64_offsets.py` reports "already applied" and can go.
+5. Offer `4316e4957` (head lookup from the GCS) to upstream.
 
 ## Appendix: kept commits, fork to rebased
 

@@ -1101,3 +1101,32 @@ upstream"). Upstream merged PR #2786 as `cc76e2391` on 2026-09-24.
 - Not done: no trainer image, no GPU job, and no change to r44, r45, or r46.
   ADR-0016 stays Proposed until the owner accepts the weight-version decision
   and a GPU test job passes.
+
+## 2026-09-27 (PT) — Reconcile GPU tests (`recon-*` jobs on prod-bom)
+
+Not a run. GPU tests of branch `arpit-reconcile-upstream`. The tables are in
+`examples/arena/RECONCILE.md` ("Test images", "GPU validation"). Times are
+16:04 to 19:24 PDT (23:04 to 02:24 UTC).
+
+- New base: upstream `main` stops each SGLang launch without
+  `--gated-launch-port` (#3031), which SGLang `9a26e749` does not serve. The
+  test images use `recon-miles-base-20260927a` from the upstream
+  `docker/build.py` (SGLang `571212b6`, Megatron-LM `f148a32b`, fla 0.5.2).
+- T1, one node, r45 `iter_0000039`: the load, the forward pass, and the HF
+  gather of the upstream tree agree with the r15 image. The 37,534 gathered
+  tensors are bitwise equal to r43 `hf/rollout_39` in both images. The
+  log-prob difference is below the noise floor of micro-batch packing.
+- Blocker 1: fla 0.5.2 `causal_conv1d` overflows int32 offsets for a row
+  longer than 87,381 tokens (24,576 channels). The warm-up train step stopped
+  with an illegal memory access. Fix `4d6c39a7d` (fla PR #1082 lines).
+- Blocker 2: the head-node lookup of `pin_rollout_manager_to_head` read the
+  dashboard at 127.0.0.1 from an actor on a worker node. The 8-node launch
+  stopped with `ServerUnavailable`. Fix `4316e4957` (GCS node table).
+- T2, eight nodes, the r45 layout, 3 train-only steps on image
+  `miles-glm53-recon-test-20260927c`: rc 0. grad_norm at step 1 is within 1%
+  of the kdatp baseline, and `train_rollout_logprob_abs_diff` is 5% lower.
+  The steady step time is 2% longer, the log-prob pass 18% to 21% longer, and
+  the peak allocated memory 8.0 GiB higher on each stage.
+- Not done: an engine-path test (SGLang `571212b6`, weight updates, the
+  event-logger checksums, the mini fault-tolerance controller). No change to
+  r44, r45, r46, or `arpit-glm-53`. ADR-0016 stays Proposed.

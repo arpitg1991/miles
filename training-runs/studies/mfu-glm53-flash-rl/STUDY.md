@@ -337,3 +337,15 @@ TileLang sparse MLA, and unfused mHC; only a profile can.
   at `220e9039`, radixark/miles PR #2353, #2038, #2219, #1825, #3597,
   #3609, LMSYS post 2026-08-20 on Mooncake rollout data transfer,
   DeepEP README.
+
+## Follow-up
+
+The profile that this study asked for ran on 2026-09-29 as the `kdatp-prof`
+harness (two jobs, both deleted). Both traces came back empty: Kineto ran
+out of its 33 default CUPTI buffers in the warmup step, and torch 2.13 then
+stopped device collection. The record
+[trainer-core-profile-glm53-flash](../trainer-core-profile-glm53-flash/STUDY.md)
+holds the cause chain, the config-only fix, the clean r47-layout step times
+(778.6 s `actor_train` for the T2 rows with `skip_actor_forward_only`), a
+first-principles time budget that explains 47% of the step, and the ranked
+candidate causes for the rest.

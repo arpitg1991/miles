@@ -1,13 +1,15 @@
-# kdatp-prof: one profiled GLM-5.3-Flash train step on 8 p6-b200 nodes, the
-# r47 trainer layout on a 2-group slice of the T2 rows (prof/README.md).
-# Placeholders: __IMAGE__ (the released r47 trainer image), __STAMP__ (a fresh
-# lowercase suffix, for example 20260929a; it names the job, the run dir, the
-# checkpoint dir and the harness dir on the scratch mount).
+# kdatp-prof: train-only GLM-5.3-Flash arms on 8 p6-b200 nodes, the r47
+# trainer layout, with the torch profiler on the arms that ask for it
+# (prof/README.md). Placeholders: __IMAGE__ (the released r47 trainer image),
+# __STAMP__ (a fresh lowercase suffix, for example 20260929c; it names the
+# job, the run dir, the checkpoint dirs and the harness dir on the scratch
+# mount). Per-job settings go in harness/job.env; its values win over the
+# env below.
 #
 # Same queue, workload priority, pod priority, node exclusions, tolerations,
 # volumes and resources as t2-job.yaml. The pods run the driver from the
 # scratch mount (kdatp/prof/<stamp>/harness/), so the image code does not
-# change. No NATS, no gym, no W&B key: the arm runs train only and never saves.
+# change. No NATS, no gym, no W&B key: the arms run train only and never save.
 apiVersion: kubeflow.org/v1
 kind: PyTorchJob
 metadata:
@@ -150,7 +152,8 @@ spec:
             image: __IMAGE__
             imagePullPolicy: Always
             command: [bash, -c]
-            # The desktop uploads the driver to S3; the mount imports it within minutes.
+            # The desktop uploads the harness files to S3; the mount imports them within minutes.
+            # The driver waits for job.env and the other files it needs.
             args:
             - |
               S=/mnt/scratch-s3files-rw/guparpit/kdatp/prof/__STAMP__/harness/kdatp-prof-run.sh

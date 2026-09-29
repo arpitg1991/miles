@@ -29,15 +29,27 @@ events) and records nothing in step 1. Both runs hit this:
 | `20260929ab` | groups 239,258: 66 rows, 4.72M tokens | 33 | 401 s | `Exceeded max GPU buffer count (33 >= 33) - terminating tracing` at 09:23:37, then `Processed 2782134 GPU records (196977624 bytes)` per rank | 64 stubs, 15 to 18 KB |
 
 One 33-microbatch step (with the cold TileLang compile of step 0) produces
-2.78M GPU records, about 197 MB, per rank: about 84K records per microbatch
-(kernel, memcpy, memset and runtime API records). The cap holds about 1.8M
-records. A slice under about 15 microbatches per DP rank (one group of 30
-rows, for example 258) fits with the stock hook; the profiled step 1 then
-runs warm. The code fix is one line in `miles/utils/profile_utils.py`:
-`experimental_config=torch._C._profiler._ExperimentalConfig(custom_profiler_config="ACTIVITIES_MAX_GPU_BUFFER_SIZE_MB=2048")`
-(a new image), or `profile_step_start: 0`, which records step 0 with no
-warmup and saves the partial GPU trace at the cap (the compile is in it).
+2.19M to 2.80M GPU records, 157 to 198 MB, per rank: 66K (stage 0) to 85K
+(stage 3) records per microbatch (kernel, memcpy, memset and runtime API
+records). The cap is 33 open CUPTI buffers of 4 MiB (1 + 128 / 4), not a
+record count: all 64 ranks cut in the same second during the gradient
+sync of step 0, with a 28% spread in volume. A smaller data slice does not
+avoid the cut. Raise the cap instead, with no image change: Kineto at the
+torch 2.13.0 pin reads the file named by `KINETO_CONFIG` (or
+`/etc/libkineto.conf`) in `prepareTrace` and honors
+`ACTIVITIES_MAX_GPU_BUFFER_SIZE_MB`; the pod `libtorch_cpu.so` holds both
+strings. The next attempt writes `/tmp/kineto.conf` with
+`ACTIVITIES_MAX_GPU_BUFFER_SIZE_MB=4096` in `kdatp-prof-run.sh` before the
+`REPLICA_IDX` branch and exports `KINETO_CONFIG=/tmp/kineto.conf` on the
+same path that delivered `KINETO_LOG_LEVEL`. Success signal: `Max GPU
+buffer size: 4096MB` on 64 ranks, zero `Exceeded`, zero `stopped early`.
+The `custom_profiler_config` one-liner in `_ExperimentalConfig` does NOT
+work on torch 2.13 (it is wrapped as `CUSTOM_CONFIG=...` and the parse
+fails). Fallback: `profile_step_start: 0`, `profile_step_end: 1`, which
+records the cold step 0 and saves the partial trace at the cap. `nsys` on
+rank 0 needs a code change in the Ray submit path and is not cheaper.
 Both runs gave clean r47-layout step times, in `kdatp/prof/<stamp>/kdatp-prof/trainer-0.log`.
+The study record is `training-runs/studies/trainer-core-profile-glm53-flash/STUDY.md`.
 
 | File | Use |
 | --- | --- |

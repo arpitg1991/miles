@@ -1,7 +1,7 @@
 """Write the ``kdatp-prof`` arm from the ``kdatp`` T2 arm YAML of ``gen_arm_configs.py``.
 
     python3 patch_prof_arm.py <kdatp.yaml> <kdatp-prof.yaml> --tensorboard-dir <dir> \
-        [--sample-summary-dir <dir>] [--skip-actor-forward-only]
+        [--sample-summary-dir <dir>] [--skip-actor-forward-only] [--set key=value ...]
 
 The arm keeps every key of the ``kdatp`` T2 arm (the r47 trainer layout) and
 adds the torch profiler on the ``train_overall`` target: step 0 (rollout 40)
@@ -9,6 +9,11 @@ warms up, step 1 (rollout 41) is profiled, step 2 (rollout 42) runs clean to
 measure the profiler overhead. ``debug_exit_after_rollout`` 3 stops the run
 after rollout 42. ``num_rollout`` stays 300: the train loop force-saves at
 ``num_rollout - 1``, so a smaller value adds a checkpoint save.
+
+``--set key=value`` (YAML value) overrides any other key, for example the
+data file and the batch shape of a smaller step: Kineto holds at most 128 MiB
+of GPU activity records per trace, and torch 2.13 skips the record phase when
+the warmup step alone fills that buffer (run 20260929a: a full T2 step did).
 """
 
 import argparse
@@ -41,6 +46,7 @@ def main() -> None:
         action="store_true",
         help="r47 flip A: reuse the train-forward log probs, no separate log-prob pass",
     )
+    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="YAML value")
     cli = parser.parse_args()
     config = yaml.safe_load(Path(cli.src).read_text())
     for key, value in TRAIN_ONLY.items():
@@ -53,6 +59,10 @@ def main() -> None:
         config["arena_sample_summary_dir"] = cli.sample_summary_dir
     if cli.skip_actor_forward_only:
         config["skip_actor_forward_only"] = True
+    for item in cli.set:
+        key, _, value = item.partition("=")
+        assert key and _ == "=", f"--set expects KEY=VALUE, got {item!r}"
+        config[key] = yaml.safe_load(value)
     Path(cli.dst).write_text(yaml.safe_dump(config, sort_keys=False))
     base = yaml.safe_load(Path(cli.src).read_text())
     for key in sorted(set(config) | set(base)):

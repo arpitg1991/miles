@@ -1,5 +1,5 @@
 # kdatp-prof: one profiled GLM-5.3-Flash train step on 8 p6-b200 nodes, the
-# r47 trainer layout (the kdatp T2 arm plus the torch profiler; prof/README.md).
+# r47 trainer layout on a 2-group slice of the T2 rows (prof/README.md).
 # Placeholders: __IMAGE__ (the released r47 trainer image), __STAMP__ (a fresh
 # lowercase suffix, for example 20260929a; it names the job, the run dir, the
 # checkpoint dir and the harness dir on the scratch mount).
@@ -160,6 +160,7 @@ spec:
             - {name: KDATP_STAMP, value: __STAMP__}
             - {name: KDATP_KCACHE, value: /mnt/scratch-s3files-rw/guparpit/kdatp/kcache/20260927dwkdatp.tar}
             - {name: PROF_SKIP_ACTOR_FORWARD_ONLY, value: "1"}
+            - {name: PROF_GROUPS, value: "239,258"}
             - {name: REPLICA, value: "8"}
             - {name: REPLICA_TRAINER, value: "8"}
             - {name: USER, value: guparpit}

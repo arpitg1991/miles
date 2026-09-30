@@ -39,4 +39,4 @@ spec:
     - name: agent-kwargs
       value: '{}'
     - name: publish-jobs-dir
-      value: ''
+      value: /mnt/scratch-s3files-rw/harbor-training

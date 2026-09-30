@@ -589,7 +589,7 @@ arena_sample_mode: full_trajectory
 # r25: 4 -> 2 (128 groups in flight). At 4x a sample waited 6-7 optimizer
 # steps between generation and training; 2x cuts that to 2-3.
 # r47 and guparpit-cadgym-v1: 4 -> 8 with rollout_batch_size 64 -> 32 (flip A), so the cap stays 256 groups.
-arena_inflight_multiplier: 8  # r28: 2 -> 4 (the r11 value); a chain holds a worker for up to 5 segments
+arena_inflight_multiplier: 4  # r28: 2 -> 4 (the r11 value); a chain holds a worker for up to 5 segments
 # r25 (REQUIRES a trainer image with the arena-truncated-turn-rule arg): how
 # the trainer treats a turn the gym continued after a per-turn token
 # cut-off (ARENA_TRUNCATED_TURN_MAX).

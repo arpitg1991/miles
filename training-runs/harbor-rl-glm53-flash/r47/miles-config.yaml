@@ -643,7 +643,7 @@ arena_sample_summary_dir: /mnt/scratch-s3files-rw/guparpit/debug/rl-glm53f-adebt
 # (677 of 766 observed drops are zero_std_1.0).
 # An all-failed group is left alone; paying its shortest attempt would reward
 # giving up early.
-arena_length_reward_coef: 0  # r28: off (r27 ran 0.10)
+arena_length_reward_coef: 0.10  # r47 resume 2026-09-30, user go; check: cadgym-v1/length-reward.md
 # ---- r47 flip A (on) and pending items ----
 # --skip-actor-forward-only (upstream miles 23ec9e534, in r15 and later).
 # It skips the actor forward-only pass (r45: 915-986 s per step) and reuses

@@ -22,7 +22,7 @@ __all__ = [
 _POSITIONAL_PARAMS = ("est_time", "suite")
 
 # All accepted keyword arguments (in addition to the positional pair above).
-_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled"})
+_VALID_KWARGS = frozenset({"est_time", "suite", "labels", "nightly", "disabled", "hardware"})
 
 _REGISTER_NAMES = frozenset({"register_cpu_ci", "register_cuda_ci", "register_rocm_ci"})
 
@@ -75,6 +75,7 @@ def register_cuda_ci(
     suite: str,
     *,
     labels: list[str],
+    hardware: list[str] | None = None,
     nightly: bool = False,
     disabled: str | None = None,
 ):
@@ -82,6 +83,9 @@ def register_cuda_ci(
 
     `labels` must contain at least one domain label so GPU tests run only when
     an explicit or broad scope selects them.
+
+    `hardware` is accepted and ignored. Upstream miles #2701 adds it; the
+    cherry-picked kernel tests pass it.
     """
     return None
 
@@ -176,9 +180,9 @@ class RegistryVisitor(ast.NodeVisitor):
                 raise ValueError(f"{self.filename}: duplicated argument '{kw.arg}' in {func_name}()")
             if kw.arg not in _VALID_KWARGS:
                 raise ValueError(f"{self.filename}: unknown argument '{kw.arg}' in {func_name}()")
-            if kw.arg == "labels":
-                parsed["labels"] = _extract_list_constant(
-                    kw.value, context=f"{self.filename}: labels in {func_name}()"
+            if kw.arg in ("labels", "hardware"):
+                parsed[kw.arg] = _extract_list_constant(
+                    kw.value, context=f"{self.filename}: {kw.arg} in {func_name}()"
                 )
             else:
                 v = _extract_constant(kw.value)

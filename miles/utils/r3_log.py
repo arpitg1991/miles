@@ -13,12 +13,14 @@ inside a value:
 them. ``rank`` is the global torch rank, or ``rm`` on the RolloutManager.
 """
 
+import hashlib
 import logging
 import socket
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 
+import torch
 import torch.distributed as dist
 
 
@@ -73,4 +75,34 @@ def r3_timing(
     t1 = time.time()
     log_r3_timing(
         log, rank=rank, rollout=rollout, phase=phase, nbytes=extra.pop("bytes"), t0=t0, t1=t1, **fields, **extra
+    )
+
+
+def replay_digest(buffers: Sequence[torch.Tensor]) -> str:
+    """sha256 over the raw bytes of ``buffers`` as stored, in order.
+
+    The kdatp offline check (check_r3_fill.py) calls this function too, so the
+    in-job digest and the reference digest hash the same bytes.
+    """
+    digest = hashlib.sha256()
+    for buf in buffers:
+        digest.update(memoryview(buf.contiguous().numpy()))
+    return digest.hexdigest()
+
+
+def log_replay_digest(log: logging.Logger, *, rollout: int, buffers: Sequence[torch.Tensor]) -> None:
+    """One ``[r3-digest]`` line; ``seconds`` is the hash time, so the fill time does not include it."""
+    t0 = time.time()
+    digest = replay_digest(buffers)
+    log.info(
+        r3_line(
+            "digest",
+            rank=train_rank(),
+            rollout=rollout,
+            sha256=digest,
+            buffers=len(buffers),
+            bytes=sum(buf.nbytes for buf in buffers),
+            dtype=dtype_name(buffers),
+            seconds=time.time() - t0,
+        )
     )

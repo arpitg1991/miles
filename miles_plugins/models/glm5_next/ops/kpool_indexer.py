@@ -3,8 +3,8 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
+from miles.kernels.attention.dsa.tilelang.indexer_fwd import indexer_fwd_interface
 from miles.utils.replay_base import indexer_replay_manager
-from miles_plugins.models.glm5.ops.tilelang_indexer_fwd import indexer_fwd_interface
 
 SPARSE_MLA_BLOCK = 64
 _SELECT_BLOCK = 256

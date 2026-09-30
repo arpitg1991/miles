@@ -8,6 +8,7 @@ import asyncio
 from ray.util.placement_group import PlacementGroup
 
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
+from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 
@@ -107,6 +108,23 @@ class RayTrainGroup:
             attempt=0,
             external_data=external_data,
         )
+
+    async def prefetch_rollout_data(self, rollout_id, rollout_data_pack_future):
+        """--prefetch-rollout-data: pull the shards of rollout ``rollout_id`` to the train nodes when it is ready.
+
+        The v2 group has the same method. It is here too because the arena driver
+        (miles_plugins/arena/train_async_arena.py) gets this v1 group when
+        MILES_EXPERIMENTAL_FT_TRAINER is unset, and without it the flag stops the
+        driver. A failed prefetch only makes train() fetch the shard itself, so it
+        logs a warning and does not raise.
+        """
+        rollout_data_pack = await rollout_data_pack_future
+        refs = [
+            actor.prefetch_rollout_data.remote(rollout_id, rollout_data_pack["data_ref"])
+            for actor in self._actor_handles
+        ]
+        outputs = await asyncio.gather(*refs, return_exceptions=True)
+        AsyncioGatherUtils.log_error(outputs, debug_name=f"prefetch_rollout_data#rollout={rollout_id}")
 
     async def save_model(self, rollout_id, force_sync=False):
         """Save actor model"""

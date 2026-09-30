@@ -1,5 +1,6 @@
 """--prefetch-rollout-data: the prefetch of the next shard and its hand-off to the fetch of train()."""
 
+import asyncio
 import logging
 import threading
 import time
@@ -203,3 +204,38 @@ def test_prefetch_runs_next_to_train_and_hands_over_the_right_shard(ray_cluster,
     assert f"ref={key}" in done and "dp=1" in done
     assert f"ref={key}" in fetch and "prefetch=hit" in fetch and "local_before=1" in fetch
     assert f"routing_bytes={4 * 45 * 8 * 2}" in fetch
+
+
+class _FailingTrainer:
+    def prefetch_rollout_data(self, rollout_id: int, rollout_data_ref) -> None:
+        raise RuntimeError("object lost")
+
+
+async def test_v1_train_group_prefetches_every_rank_and_survives_a_failed_rank(ray_cluster, caplog):
+    from miles.ray.actor_group import RayTrainGroup
+
+    options = _concurrency_options(_args(use_fault_tolerance=True))
+    actor_cls = ray.remote(**options)(_with_ft_concurrency_groups(_with_prefetch_concurrency_group(_Trainer)))
+    trainers = [actor_cls.remote(dp_rank=dp) for dp in range(2)]
+    refs = [Box(ray.put({"tokens": [dp], "rollout_routed_experts": []})) for dp in range(2)]
+    group = object.__new__(RayTrainGroup)
+    group._actor_handles = [*trainers, ray.remote(_FailingTrainer).remote()]
+
+    # The call of train_async_arena.py: the prefetch task and the driver loop both await generate(N+1).
+    @ray.remote
+    def generate(data_ref: list) -> dict:
+        time.sleep(0.5)
+        return {"data_ref": data_ref}
+
+    future = generate.remote(refs)
+    with caplog.at_level(logging.WARNING):
+        task = asyncio.create_task(group.prefetch_rollout_data(41, future))
+        pack = await future
+        await task
+    assert "prefetch_rollout_data#rollout=41 error index=2" in caplog.text
+    assert "object lost" in caplog.text
+    for dp, trainer in enumerate(trainers):
+        tokens, lines = await trainer.fetch.remote(41, pack["data_ref"])
+        assert tokens == [dp]
+        (fetch,) = [line for line in lines if "phase=fetch" in line]
+        assert "prefetch=hit" in fetch

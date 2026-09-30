@@ -184,3 +184,36 @@ def test_prefetch_runs_next_to_train_and_hands_over_the_right_shard(ray_cluster)
     assert f"ref={key}" in done and "dp=1" in done
     assert f"ref={key}" in fetch and "prefetch=hit" in fetch and "local_before=1" in fetch
     assert f"routing_bytes={4 * 45 * 8 * 2}" in fetch
+
+
+class _FakeCell:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.is_alive, self.fail, self.calls = True, fail, []
+
+    async def execute(self, fn_name: str, **kwargs) -> list:
+        self.calls.append((fn_name, kwargs))
+        if self.fail:
+            raise RuntimeError("object lost")
+        return [None]
+
+
+async def test_controller_prefetches_every_alive_cell_and_survives_a_failed_cell(caplog):
+    """The driver gets a TrainerController handle; a failed prefetch neither raises nor marks a cell errored."""
+    from miles.ray.train.group import TrainerController
+    from miles.utils.data import RolloutDataPack
+
+    cells = [_FakeCell(), _FakeCell(fail=True), _FakeCell()]
+    cells[2].is_alive = False
+    controller = object.__new__(TrainerController)
+    controller._cells_by_id = {f"cell-{i}": cell for i, cell in enumerate(cells)}
+    for i, cell in enumerate(cells):
+        cell.cell_index = i
+    pack = RolloutDataPack(sample_indices=[0, 1], data_ref=None)
+
+    with caplog.at_level(logging.WARNING):
+        await controller.prefetch_rollout_data(41, pack)
+
+    expected = ("prefetch_rollout_data", dict(kill_on_failure=False, rollout_id=41, rollout_data_ref=None))
+    assert cells[0].calls == cells[1].calls == [expected]
+    assert cells[2].calls == []
+    assert "execute_all_alive_and_catch#prefetch_rollout_data error index=1" in caplog.text

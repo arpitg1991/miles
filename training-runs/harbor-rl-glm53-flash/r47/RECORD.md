@@ -14,7 +14,7 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `r45`
 <!-- gen-workflow:end -->
-**Argo workflow:** `rl-glm53f47-wxj87` (second launch; the first launch `rl-glm53f47-qtzlx` was a zombie, see Issues)
+**Argo workflow:** `rl-glm53f47-5nrbn` (resume from `iter_0000049`, 2026-09-30). Earlier: `rl-glm53f47-wxj87` (2026-09-28 to 2026-09-30), `rl-glm53f47-qtzlx` (zombie, see Issues)
 **W&B run:** `0ix3m75e` (`https://mega.wandb.agi.amazon.dev/arena/rl-glm53f-adebt-766/runs/0ix3m75e`)
 **Task pin:** `3cadc6b0a9a6c71bd8e7485e2d9da1cb04e2e608bfa1b9b531cb1df37cd82140` (`lakefs_commit_id` of each of the 766 manifest rows; manifest md5 `cc78c1ca74df94480a2239402e7fcce0`)
 **Image digests:** gym `sha256:57f0ed616892c50f727247a7b6eedf972bd35b98e70bd0ab4283f570554cdd0d`, trainer `sha256:e6f04a9ca1abc9df17a7bbf9e3d2aaf6a643f40ed5a457c98a4114719972bcd0` (worker-0 `imageID` read 2026-09-28 16:03Z)
@@ -133,6 +133,36 @@ trainer-worker-0 log, and the W&B `_timestamp` of each row.
 | 15:39:41Z | `successfully saved checkpoint from iteration 9`; tracker written 15:40:43Z. No HF export. |
 | 15:48:15Z | `Rollout 11 complete: ... avg_reward=0.578 in 489.7s (queue=320)`. |
 | 16:03Z | Status read: workflow `Running`, 40 trainer pods `Running` with 0 restarts, gym 288/288 ready, 330 pods `Running`. |
+
+### Stall and resume, 2026-09-30
+
+User go on 2026-09-30: "yes / yes / yes go ahead". This covers one
+`py-spy dump`, the r47 restart from the last save, and the supply
+settings. Dataset unchanged:
+`lakefs://arena-inspect/327e057c.../internal/agentic-debt-r3/agentic-debt-766/`
+(`agentic-debt-766` on `main`, pinned by commit).
+
+| UTC | Event |
+| --- | --- |
+| 01:04:00Z | Train step 53 ends. The driver waits for `generate(54)`, which started at 23:52:26Z (2026-09-29). |
+| 01:04Z to 02:30Z | Gym results nearly stop: 17, then 4, then 1 per 10 min. One thread of the RolloutManager (pid 15059) runs at 100% CPU with 0 MB/s of reads (`/proc` samples). |
+| 02:30Z | `py-spy dump --nonblocking` (file `kdfast/scratch/r47-stall/pyspy-15059.txt`). The routing decode thread is in `routing_replay._read_ref` (`routing_replay.py:259`), called from `materialize_group_routing`. The NATS worker is blocked in `queue.put`, because the 320-group queue is full. The 100% CPU thread is Ray's `PythonGCThread`, which the dump caught waiting. The cause of its CPU use is UNVERIFIED. |
+| 02:36:15Z | Stop patch on `rl-glm53f47-wxj87`. No r47 resume watcher was running; `/tmp/r25-resume.sh` watches only `rl-glm53f25-*`. |
+| 02:37:30Z to 02:46Z | The onExit `write-report` pod finished its work, but its containers did not exit. It was deleted at 02:46Z, and the cleanup ran at 02:55Z. |
+| 02:58:52Z | `wxj87` `Failed` (Stop). The last save is `iter_0000049` (`slime_extra_state.json`: `rollout_id` 49, `wandb_run_id` `0ix3m75e`). Steps 50 to 53 and the queued groups are lost. |
+| 02:59Z, 03:16Z, 03:33Z | Three resubmits (`wvggn`, `72q56`, `5nrbn`). Each trainer PyTorchJob got `EvictedDueToNodeFailures` for TAS nodes (`i-01ec1cddb81be365b`, `i-00725f9616ab87302`, `i-0bcaeb89af3a3d152`, `i-0228b85bb39a26ebb`, `i-0ba350182fe15d705`). The pods got `PodTerminatedByKueue` (node taint), and ttl 0 removed the job. `i-00725f9616ab87302` was `NotReady` with `karpenter.sh/disrupted`. The first three nodes were added to `excluded-nodes` (86 nodes). The 2026-09-28 first launch had the same failure. |
+| 04:08:29Z | The trainer PyTorchJob of `5nrbn` was created again by hand, from the manifest that the workflow rendered (`deploy-trainer-pinned` `ARGO_TEMPLATE`). All 40 workers `Running` at 04:10:40Z. |
+| 04:11Z | `rollout_id` 49 and W&B run `0ix3m75e` loaded from the sidecar. |
+| 04:26Z | `NATS connected (initial)`. The first weight sync ran. |
+| 04:40:51Z | Gym Deployment starting (288 replicas). |
+
+Settings changed at this resume (user go; `workflow.yaml`, `miles-config.yaml`):
+- `arena_inflight_multiplier` 8 -> 10.
+- `ack-wait` 172000 -> 72000.
+- `trainer-task-deadline-secs` 176000 -> 76000. This is 20 h; the maximum observed task latency is 15.05 h.
+- `excluded-nodes` +3.
+
+Reason: gym supply measured at 38.7 groups/h, against a trainer demand of 59.3 groups/h. About 30-65 in-flight slots looked orphaned under the 48 h reclaim limit. Source: miles study `trainer-core-profile-glm53-flash`, section (j).
 
 ## Results
 

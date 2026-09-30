@@ -3,7 +3,7 @@ import logging
 
 import torch
 
-from miles.utils.r3_log import log_replay_digest, replay_digest
+from miles.utils.r3_log import log_r3_mem, log_replay_digest, replay_digest
 
 
 def test_replay_digest_hashes_the_stored_bytes_in_order():
@@ -25,3 +25,15 @@ def test_log_replay_digest_line(caplog):
     (line,) = [r.getMessage() for r in caplog.records]
     assert line.startswith("[r3-digest] rank=-1 node=")
     assert f"rollout=40 sha256={replay_digest(buffers)} buffers=1 bytes=64 dtype=int16 seconds=" in line
+
+
+def test_log_r3_mem_line(caplog):
+    with caplog.at_level(logging.INFO):
+        log_r3_mem(logging.getLogger("test"), rollout=41, at="end")
+    (line,) = [r.getMessage() for r in caplog.records]
+    fields = dict(token.split("=", 1) for token in line.removeprefix("[r3-mem] ").split())
+    assert fields["rollout"] == "41" and fields["at"] == "end"
+    for key in ("rss_gib", "rss_shmem_gib", "avail_gib", "shmem_gib", "cgroup_gib"):
+        assert float(fields[key]) >= -1
+    # Linux has /proc: the process memory is known.
+    assert float(fields["rss_gib"]) > 0

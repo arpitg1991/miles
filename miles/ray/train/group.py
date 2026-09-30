@@ -165,6 +165,16 @@ class RayTrainGroup:
 
         self._test_action_executor.run_after_step(rollout_id=rollout_id)
 
+    async def prefetch_rollout_data(self, rollout_id: int, rollout_data_pack_future) -> None:
+        """--prefetch-rollout-data: pull the shards of rollout ``rollout_id`` to the train nodes when it is ready.
+
+        A failed prefetch only makes train() fetch the shard itself, so it does not mark a cell as errored.
+        """
+        rollout_data_pack = await rollout_data_pack_future
+        await self._execute_all_alive_and_catch(
+            "prefetch_rollout_data", rollout_id, rollout_data_pack["data_ref"], kill_on_failure=False
+        )
+
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
             return None

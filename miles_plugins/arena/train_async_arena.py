@@ -106,8 +106,8 @@ def _load_extra_state(args):
         load_dir = getattr(args, "load", None)
         if not load_dir:
             return
-        from pathlib import Path
         import re
+        from pathlib import Path
 
         latest_file = Path(load_dir) / "latest_checkpointed_iteration.txt"
         if latest_file.is_file():
@@ -211,6 +211,7 @@ async def train(args):
 
     # async train loop.
     rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
+    prefetch_tasks: set[asyncio.Task] = set()  # the event loop keeps only weak references to tasks
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
@@ -219,6 +220,11 @@ async def train(args):
         # Start the next rollout early.
         if rollout_id + 1 < args.num_rollout:
             rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
+            if args.prefetch_rollout_data:
+                # When generate ends, the train nodes pull the next shards while this step trains.
+                task = asyncio.create_task(actor_model.prefetch_rollout_data(rollout_id + 1, rollout_data_next_future))
+                prefetch_tasks.add(task)
+                task.add_done_callback(prefetch_tasks.discard)
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)

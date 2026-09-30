@@ -122,6 +122,10 @@ class BaseObjectStore(ABC):
     def locate(self, ref: StoreObjectRef) -> StoreObjectInfo:
         return StoreObjectInfo(key="-", size=-1, local=-1)
 
+    def pull(self, ref: StoreObjectRef) -> None:
+        """Block until this node holds a copy of the object (--prefetch-rollout-data)."""
+        raise NotImplementedError(f"{type(self).__name__} cannot pull an object to this node")
+
 
 # ============================ ray backend ==========================
 
@@ -145,6 +149,10 @@ class RayObjectStore(BaseObjectStore):
             size=-1 if size is None else size,
             local=int(ray.get_runtime_context().get_node_id() in location["node_ids"]),
         )
+
+    def pull(self, ref: StoreObjectRef) -> None:
+        # A finished wait does not pin the local copy, so the caller gets the object right after.
+        ray.wait([ref.inner], num_returns=1, timeout=None, fetch_local=True)
 
 
 def _release_noop(value: Any) -> None:

@@ -9,6 +9,9 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus
 
+# The concurrency group of TrainRayActor.prefetch_rollout_data (--prefetch-rollout-data).
+ROLLOUT_PREFETCH_GROUP = "rollout_prefetch"
+
 
 def allocate_gpus_for_actor(
     args,
@@ -82,15 +85,9 @@ def allocate_gpus_for_actor(
         actor_impl = FSDPTrainRayActor
 
     ft = args.use_fault_tolerance
-    remote_kwargs = {"num_gpus": 1, "runtime_env": {"env_vars": env_vars}}
-    if ft:
-        remote_kwargs["concurrency_groups"] = {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
-    elif args.update_weight_transfer_mode == "rdt":
-        # update_weights() blocks this actor in ray.get() while Ray's transport
-        # threads serve the NIXL reads of the objects it owns -- one per engine rank
-        # it feeds. At concurrency 1 the blocking call starves them.
-        rdt_tp_size = getattr(args, "rollout_num_gpus_per_engine", 1)
-        remote_kwargs["max_concurrency"] = 1 + rdt_tp_size
+    remote_kwargs = {"num_gpus": 1, "runtime_env": {"env_vars": env_vars}, **_concurrency_options(args)}
+    if args.prefetch_rollout_data:
+        actor_impl = _with_prefetch_concurrency_group(actor_impl)
     TrainRayActor = ray.remote(**remote_kwargs)(_with_ft_concurrency_groups(actor_impl) if ft else actor_impl)
 
     # Create worker actors
@@ -123,6 +120,34 @@ def allocate_gpus_for_actor(
         actor_handles.append(actor)
 
     return actor_handles
+
+
+def _concurrency_options(args) -> dict:
+    """The Ray options for the train actor calls that must run next to a running call."""
+    options = {}
+    if args.use_fault_tolerance:
+        options["concurrency_groups"] = {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+    elif args.update_weight_transfer_mode == "rdt":
+        # update_weights() blocks this actor in ray.get() while Ray's transport
+        # threads serve the NIXL reads of the objects it owns -- one per engine rank
+        # it feeds. At concurrency 1 the blocking call starves them.
+        rdt_tp_size = getattr(args, "rollout_num_gpus_per_engine", 1)
+        options["max_concurrency"] = 1 + rdt_tp_size
+    if args.prefetch_rollout_data:
+        # The default group takes one call at a time, so a prefetch there would wait for train().
+        options["concurrency_groups"] = {**options.get("concurrency_groups", {}), ROLLOUT_PREFETCH_GROUP: 1}
+    return options
+
+
+def _with_prefetch_concurrency_group(actor_impl: type) -> type:
+    class _PrefetchTrainRayActor(actor_impl):
+        @ray.method(concurrency_group=ROLLOUT_PREFETCH_GROUP)
+        def prefetch_rollout_data(self, rollout_id: int, rollout_data_ref) -> None:
+            super().prefetch_rollout_data(rollout_id, rollout_data_ref)
+
+    _PrefetchTrainRayActor.__name__ = actor_impl.__name__
+    _PrefetchTrainRayActor.__qualname__ = actor_impl.__qualname__
+    return _PrefetchTrainRayActor
 
 
 def _with_ft_concurrency_groups(actor_impl: type) -> type:

@@ -19,6 +19,7 @@ import socket
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 
 import torch
 import torch.distributed as dist
@@ -106,3 +107,48 @@ def log_replay_digest(log: logging.Logger, *, rollout: int, buffers: Sequence[to
             seconds=time.time() - t0,
         )
     )
+
+
+def log_r3_mem(log: logging.Logger, *, rollout: int, at: str) -> None:
+    """One ``[r3-mem]`` line of this process and its node, in GiB, -1 where the file is missing.
+
+    RssAnon, not VmRSS: VmRSS also counts the touched pages of the shared
+    object store, and a private copy of a shard shows only in RssAnon.
+    """
+    status, meminfo = _kib_fields("/proc/self/status"), _kib_fields("/proc/meminfo")
+    try:
+        cgroup_gib = f"{int(Path('/sys/fs/cgroup/memory.current').read_text()) / 2**30:.2f}"
+    except (OSError, ValueError):
+        cgroup_gib = "-1"
+    log.info(
+        r3_line(
+            "mem",
+            rank=train_rank(),
+            rollout=rollout,
+            at=at,
+            rss_gib=_gib(status.get("RssAnon")),
+            rss_shmem_gib=_gib(status.get("RssShmem")),
+            avail_gib=_gib(meminfo.get("MemAvailable")),
+            shmem_gib=_gib(meminfo.get("Shmem")),
+            cgroup_gib=cgroup_gib,
+        )
+    )
+
+
+def _kib_fields(path: str) -> dict[str, int]:
+    """The ``Name: <n> kB`` lines of a /proc file."""
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return {}
+    fields = {}
+    for line in text.splitlines():
+        name, _, value = line.partition(":")
+        parts = value.split()
+        if len(parts) == 2 and parts[1] == "kB":
+            fields[name] = int(parts[0])
+    return fields
+
+
+def _gib(kib: int | None) -> str:
+    return "-1" if kib is None else f"{kib / 2**20:.2f}"

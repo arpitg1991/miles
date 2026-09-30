@@ -2,7 +2,7 @@
 
 Runs and studies under `training-runs/`. [README.md](README.md) holds the
 convention. `python training-runs/build_index.py` rewrites the Runs table
-from the `r<N>/RECORD.md` headers; the Studies table is hand-written.
+from the `<run>/RECORD.md` headers; the Studies table is hand-written.
 
 ## Runs
 
@@ -13,6 +13,7 @@ The record holds the full values.
 <!-- runs:begin -->
 | Run | Family | Date | Dataset | Images (gym; trainer) | Status | Outcome | Record |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| guparpit-cadgym-v1 | `harbor-rl-glm53-flash` | 2026-09-30 | `lakefs://arena-inspect/91b6618d09ea79c79b5b5167880ebdb4bf60fc6e7ba2361435322e1793a74a52/internal/cadgym-20260917/current/manifest.jsonl` (gym `cadgym`) | `arena-slime-dev:gym-glm53-adr72-20260927a`; `arena-slime-dev:miles-glm53-r17-20260928a` | Prepared | Prepared, not launched. | [guparpit-cadgym-v1/RECORD.md](harbor-rl-glm53-flash/guparpit-cadgym-v1/RECORD.md) |
 | r47 | `harbor-rl-glm53-flash` | 2026-09-28 | `lakefs://arena-inspect/327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480/internal/agentic-debt-r3/agentic-debt-766/manifest.jsonl` (gym `agentic-debt`) | `arena-slime-dev:gym-glm53-adr72-20260927a`; `arena-slime-dev:miles-glm53-r17-20260928a` | Running | Running at 2026-09-28 16:03Z. 12 rollouts complete (0 to 11), 10 train steps done (0 to 9), one save. | [r47/RECORD.md](harbor-rl-glm53-flash/r47/RECORD.md) |
 | r46 | `harbor-rl-glm53-flash` | 2026-09-27 | `lakefs://arena-inspect/dev/internal/auctioneer/caponly/caponly-1034/manifest.jsonl` (gym `auctioneer-caponly`) | `arena-slime-dev:gym-glm53-adr72-20260927a`; `arena-slime-dev:miles-glm53-r14-20260927a` | Running | Running at rollout 56 of 300 (2026-09-28 15:40Z). Reward 0.65-0.79 in rollouts 50-56 against r44 0.39-0.55 at the same indices. | [r46/RECORD.md](harbor-rl-glm53-flash/r46/RECORD.md) |
 | r45 | `harbor-rl-glm53-flash` | 2026-09-27 | `/mnt/scratch-s3files-rw/guparpit/data/agentic-debt/20260923-v3-locked-oracle/manifest-le5.jsonl` (gym `agentic-debt`) | `arena-slime-dev:gym-glm53-adr72-20260927a`; `arena-slime-dev:miles-glm53-r14-20260927a` | Retired | Retired 2026-09-28 09:23Z on the user's go, to free its 40 nodes for r47 (`rl-glm53f47-wxj87`, agentic-debt-766). r45 trained 15 optimizer steps (40 to 54) over 16 rollouts (40 to 55) in 27.5 h. | [r45/RECORD.md](harbor-rl-glm53-flash/r45/RECORD.md) |

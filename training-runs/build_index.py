@@ -1,8 +1,8 @@
-"""Rewrite the Runs table of training-runs/INDEX.md from the r<N>/RECORD.md headers.
+"""Rewrite the Runs table of training-runs/INDEX.md from the <run>/RECORD.md headers.
 
 Usage: python training-runs/build_index.py [--root training-runs] [--check]
 
-Reads every <family>/r*/RECORD.md under the root and takes the header
+Reads every <family>/<run>/RECORD.md under the root and takes the header
 fields Status, Date, Family, Dataset, Gym image, Trainer image, and Outcome.
 Then it rewrites the lines between `<!-- runs:begin -->` and
 `<!-- runs:end -->` in INDEX.md; text outside the markers stays. The
@@ -20,7 +20,6 @@ BEGIN = "<!-- runs:begin -->"
 END = "<!-- runs:end -->"
 COLUMNS = ("Run", "Family", "Date", "Dataset", "Images (gym; trainer)", "Status", "Outcome", "Record")
 _FIELD = re.compile(r"^\*\*(.+?):\*\* (.*)$", re.M)
-_RUN = re.compile(r"^r(\d+)(.*)$")
 
 
 def header(record: pathlib.Path) -> dict[str, str]:
@@ -37,16 +36,18 @@ def _outcome(value: str, sentences: int = 2) -> str:
     return " ".join(re.split(r"(?<=\.)\s+", value.strip())[:sentences])
 
 
-def _run_key(record: pathlib.Path) -> tuple[int, str]:
-    number, suffix = _RUN.match(record.parent.name).groups()
-    return int(number), suffix
+def _run_key(record: pathlib.Path) -> tuple[str, list[int | str]]:
+    # Folders are r<N> up to r47, then guparpit-<gym>-v<N> (user rule 2026-09-30).
+    # Date first; digit runs compare as numbers (r41b before r41, v10 before v9).
+    name = [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", record.parent.name)]
+    return header(record).get("Date", ""), name
 
 
 def rows(root: pathlib.Path) -> list[str]:
     """Return one Markdown table row per RECORD.md, newest run first within a family."""
     out = []
     # Newest run first (r41b, the r41 relaunch, before r41), then a stable sort by family.
-    records = sorted(sorted(root.glob("*/r*/RECORD.md"), key=_run_key, reverse=True), key=lambda r: r.parts[-3])
+    records = sorted(sorted(root.glob("*/*/RECORD.md"), key=_run_key, reverse=True), key=lambda r: r.parts[-3])
     for record in records:
         h = header(record)
         cells = (

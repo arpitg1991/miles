@@ -57,6 +57,17 @@ def test_rows_newest_first_and_text_outside_markers_kept(tmp_path: Path) -> None
     )
 
 
+def test_named_run_folders_sort_by_date_then_number(tmp_path: Path) -> None:
+    root = _tree(tmp_path)
+    for run in ("guparpit-x-v9", "guparpit-x-v10"):
+        (root / "fam" / run).mkdir()
+        record = _RECORD.format(run=run, status="Prepared").replace("2026-09-27", "2026-09-30")
+        (root / "fam" / run / "RECORD.md").write_text(record)
+    build_index.main(["--root", str(root)])
+    lines = [line for line in (root / "INDEX.md").read_text().splitlines() if "| `fam` |" in line]
+    assert [line.split(" | ")[0] for line in lines] == ["| guparpit-x-v10", "| guparpit-x-v9", "| r2b", "| r2", "| r1"]
+
+
 def test_check_reports_a_stale_table(tmp_path: Path) -> None:
     root = _tree(tmp_path)
     assert build_index.main(["--root", str(root), "--check"]) == 1

@@ -34,11 +34,17 @@ files of that run.
 
 ## What a run record is
 
-One folder per run identity (`EXPERIMENT_NAME`). The folder name is the run
-number, `r<N>`. `RECORD.md` starts with the required header, then the
-sections Goal, Setup, Timeline, Results, Issues, Follow-ups, and Sources.
-[TEMPLATE.md](TEMPLATE.md) holds the shape. Keep the record short: numbers
-with their source, decisions with their date, and the reason the run ended.
+One folder per run identity (`EXPERIMENT_NAME`). Up to r47, the folder name
+is the run number, `r<N>`. From 2026-09-30 (user rule), a new run is
+`guparpit-<gym-name>-v<N>`: the folder, the experiment name, the W&B run
+name and group, and the Argo generateName prefix. Its W&B project is
+`<gym-name>`. `gen-workflow.py` takes only `<N>`;
+[guparpit-cadgym-v1](harbor-rl-glm53-flash/guparpit-cadgym-v1/RECORD.md)
+records how its files were written. `RECORD.md` starts with the required
+header, then the sections Goal, Setup, Timeline, Results, Issues,
+Follow-ups, and Sources. [TEMPLATE.md](TEMPLATE.md) holds the shape. Keep
+the record short: numbers with their source, decisions with their date,
+and the reason the run ended.
 
 ### Required header
 
@@ -136,4 +142,4 @@ Studies table (one row per `studies/<slug>/STUDY.md`, hand-written).
 
 | Family | Recipe and code | Legacy logs | Run folders |
 | --- | --- | --- | --- |
-| `harbor-rl-glm53-flash` | `examples/arena/harbor-rl-glm53-flash/` | [RUNLOG.md](harbor-rl-glm53-flash/RUNLOG.md), [experiment-list.md](harbor-rl-glm53-flash/experiment-list.md) | `r9` to `r47` (`r36`, `r37`, `r40` were never prepared; `r41b` is the r41 relaunch) |
+| `harbor-rl-glm53-flash` | `examples/arena/harbor-rl-glm53-flash/` | [RUNLOG.md](harbor-rl-glm53-flash/RUNLOG.md), [experiment-list.md](harbor-rl-glm53-flash/experiment-list.md) | `r9` to `r47` (`r36`, `r37`, `r40` were never prepared; `r41b` is the r41 relaunch), then `guparpit-cadgym-v1` |

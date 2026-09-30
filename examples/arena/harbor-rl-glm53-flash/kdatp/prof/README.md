@@ -22,6 +22,8 @@ launch record MUST state both facts.
 | `kdatp-prof-run.sh` | Pod driver, the t2 branch of `../kdatp-run.sh`. It sources `job.env`, writes the Kineto config, runs the optional a2a bench, then runs the arms in order. |
 | `patch_prof_arm.py` | Reads the arms file, checks it, and writes `arms/<name>.yaml` and `arms/plan.tsv` from the in-image `kdatp` arm. |
 | `a2a_bench.py` | All-to-all bandwidth of the EP16 and EP8 layouts (`PROF_A2A_BENCH=1`). |
+| `parse_r3_timing.py` | Desktop only. The r3 data-path table and gates of the arms (section "r3 data path"). |
+| `check_r3_fill.py` | Desktop only. The offline byte check of the r3 replay fill and its reference digests. |
 | `job.env` | Per-job settings. You write it for each job. |
 | `<arms file>` | The arms of the job (`PROF_ARMS_FILE`). You write it for each job. |
 
@@ -49,6 +51,8 @@ runs a job on the defaults. An empty file keeps all defaults.
 | `KDATP_KCACHE` | manifest value | Space-separated kernel cache tarballs. |
 | `PROF_KINETO_BUFFER_MB` | `4096` | Kineto GPU buffer cap per rank. |
 | `KINETO_LOG_LEVEL` | `1` | Kineto INFO lines in the trainer log. |
+| `R3_SAMPLE_PERIOD_S` | `1` | Period of the node sampler (section "r3 data path"). |
+| `RAY_debug_dump_period_milliseconds` | Ray default (10000) | The raylet rewrites `debug_state.txt` at this period. Set `1000` for the node sampler. `ray start` reads it from the environment. |
 
 ## Arms file
 
@@ -241,6 +245,54 @@ fix worked.
 - Output: `a2a/a2a.json` and `a2a/a2a.md` from rank 0 (median time, per-rank
   algbw, cross-node GB/s per rank for `ep16`, range of the per-group
   medians), and `a2a/node-<n>.log` per pod. `driver.log` records `a2a_rc`.
+
+## r3 data path
+
+The image of miles branch `arpit-r3-datapath` logs the r3 data path from
+the rollout to the replay buffers. These lines are always on, one line per
+event at INFO, with `key=value` tokens (`miles/utils/r3_log.py`):
+
+- `[r3-timing] rank= node= rollout= phase= bytes= seconds= t0= t1=` and
+  more keys. The phases are `load`, `convert` and `put` on the
+  RolloutManager (`rank=rm`), and `fetch`, `fill`, `prefetch_start`,
+  `prefetch_done` and `optimizer` on each train rank. `ref` is the full
+  object id in hex: its first 16 characters are the same for the two DP
+  shards of one put task.
+- `[r3-digest]`: sha256 of every recorded replay buffer of a rank, once per
+  rollout, right after the fill.
+- `[r3-mem] at=start|end`: `RssAnon` and `RssShmem` of the rank, and
+  `MemAvailable`, `Shmem` and cgroup `memory.current` of the node.
+
+The flag `prefetch_rollout_data: true` (the `set` dict of an arm) pulls the
+next shard to each train node while the current step trains.
+
+The driver adds two outputs:
+
+- `nodes/node-<replica>.tsv`: every pod writes one row every
+  `R3_SAMPLE_PERIOD_S` seconds, from the start of the pod to its end. The
+  columns are `epoch`, `mem_avail_kb`, `shmem_kb`, `cgroup_bytes`,
+  `cpu_busy_ticks`, `cpu_total_ticks`, `raylet_ticks`, `pushes_remaining`,
+  `chunks_in_flight`, `pull_bytes_being_pulled`, `pull_bytes_available`,
+  `objects_actively_pulled`, `spill_requests` and `restore_requests`. The
+  last seven come from the raylet `debug_state.txt`. The value is -1 until
+  the raylet writes it. `node-0` is the Ray head.
+- `<arm>/raylet-head.txt`: the head `debug_state.txt` and the `Spilled` and
+  `Restored` lines of `raylet.out`, at the end of each arm.
+
+Read the arms on the desktop (paths from the plan of job `20260930r`):
+
+```bash
+PY=/workplace/guparpit/kdfast/testvenv/bin/python
+C=/workplace/guparpit/kdfast/scratch/prof/20260929c
+J=<local copy of s3://arena-scratch-prod-bom-ap-south-1/guparpit/kdatp/prof/<stamp>/>
+$PY parse_r3_timing.py base=$C/arms-20260929d/base r3=$J/r3 r3-prefetch=$J/r3-prefetch --control base \
+  --manifest $C/20260929d/t2-manifest.json --nodes $J/nodes --reference-digests <check_r3_fill.py digests> \
+  --json r3-results.json
+```
+
+`check_r3_fill.py` runs before the image build. It fills the real T2 rows
+with the fill of `4716a367a` and with the new fill, for 8 ranks, and it
+compares every buffer. Its digests are the reference of gate G4g.
 
 ## Jobs of round 20260929c
 

@@ -2,6 +2,7 @@
 
 import importlib.util
 import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,8 @@ def test_r3_lines_parse(tmp_path, caplog):
         buffers = [torch.zeros((4, 8), dtype=torch.int16)]
         # The keys of the fill line in MegatronTrainRayActor.train_actor.
         with r3_timing(logger, rank=0, rollout=rollout_id, phase="fill") as line:
+            # The lines carry 3 decimals, so a body shorter than 1 ms can log t0 == t1 (fill t1 == fetch t0).
+            time.sleep(0.02)
             line.update(bytes=64, layers=1, buffers=1)
         log_replay_digest(logger, rollout=rollout_id, buffers=buffers)
         with r3_timing(logger, rank=0, rollout=rollout_id, phase="optimizer"):
@@ -81,7 +84,7 @@ def test_r3_lines_parse(tmp_path, caplog):
     assert view["hit_ref_mismatch"] == 0
     assert view["prefetch_pull_s"]["n"] == view["prefetch_deser_s"]["n"] == 1
     assert view["fill_bytes_max"] == 64
-    assert view["pre_exact"] > 0
+    assert view["pre_exact"] >= 0.01
     assert view["optimizer_s"]["n"] == 1
     assert len(view["digests"]) == 1
     assert set(next(iter(view["mem"].values()))) == {"start", "end"}

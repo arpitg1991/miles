@@ -35,7 +35,7 @@
 # it ran out of memory in the 8-node T2 test. The token-level loss average
 # stays off.
 # The deadlines are workflow parameters: ack-wait 172000 and
-# trainer-task-deadline-secs 176000 (48 h, user decision 2026-09-28).
+# trainer-task-deadline-secs 176000 (48 h, user decision 2026-09-28); 72000 and 76000 (20 h) from the 2026-09-30 resume.
 # r45 deltas vs r43 (2026-09-27): r43 continued from its latest saved
 # checkpoint on the new images, with rollout_max_response_len 32768 ->
 # 16384. The trainer sends the output cap, the window (max_seq_len 131072),
@@ -579,7 +579,7 @@ arena_sample_mode: full_trajectory
 # r25: 4 -> 2 (128 groups in flight). At 4x a sample waited 6-7 optimizer
 # steps between generation and training; 2x cuts that to 2-3.
 # r47: 4 -> 8 with rollout_batch_size 64 -> 32 (flip A), so the cap stays 256 groups.
-arena_inflight_multiplier: 8  # r28: 2 -> 4 (the r11 value); a chain holds a worker for up to 5 segments
+arena_inflight_multiplier: 10  # resume 2026-09-30: 8 -> 10 (gym supply). r28: 2 -> 4 (the r11 value); a chain holds a worker for up to 5 segments
 # r25 (REQUIRES a trainer image with the arena-truncated-turn-rule arg): how
 # the trainer treats a turn the gym continued after a per-turn token
 # cut-off (ARENA_TRUNCATED_TURN_MAX).

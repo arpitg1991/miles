@@ -65,28 +65,34 @@ PROF_SKIP_ACTOR_FORWARD_ONLY=${PROF_SKIP_ACTOR_FORWARD_ONLY:-1}
 RUN=$KD/prof/$STAMP
 
 # Node sampler (README.md "r3 data path"): every R3_SAMPLE_PERIOD_S seconds, one row of node memory,
-# CPU, raylet CPU and the Ray push, pull and spill counters to nodes/node-<replica>.tsv, for
-# parse_r3_timing.py --nodes. The raylet rewrites debug_state.txt every
+# CPU, raylet CPU, the Ray push, pull and spill counters and the pod eth0 byte counters to
+# nodes/node-<replica>.tsv, for parse_r3_timing.py --nodes. The raylet rewrites debug_state.txt every
 # RAY_debug_dump_period_milliseconds (job.env). A value that is not there yet is -1. The loop ends
 # with the container: NEVER stop it with pkill -f.
 R3_SAMPLE_PERIOD_S=${R3_SAMPLE_PERIOD_S:-1}
 r3_node_sampler() {
-  local out=$RUN/nodes/node-${REPLICA_IDX:-0}.tsv dump=/tmp/ray/session_latest/logs/debug_state.txt pid ticks
-  printf 'epoch\tmem_avail_kb\tshmem_kb\tcgroup_bytes\tcpu_busy_ticks\tcpu_total_ticks\traylet_ticks\tpushes_remaining\tchunks_in_flight\tpull_bytes_being_pulled\tpull_bytes_available\tobjects_actively_pulled\tspill_requests\trestore_requests\n' > "$out"
+  local out=$RUN/nodes/node-${REPLICA_IDX:-0}.tsv dump=/tmp/ray/session_latest/logs/debug_state.txt pid ticks now net
+  printf 'epoch\tmem_avail_kb\tshmem_kb\tcgroup_bytes\tcpu_busy_ticks\tcpu_total_ticks\traylet_ticks\tpushes_remaining\tchunks_in_flight\tpull_bytes_being_pulled\tpull_bytes_available\tobjects_actively_pulled\tspill_requests\trestore_requests\tnet_rx_bytes\tnet_tx_bytes\n' > "$out"
   while :; do
+    # eth0 carries the Ray object transfers between pods. NCCL uses EFA, and the S3 Files mount is
+    # in the host network namespace, so neither shows here. Read it right after the epoch, so that
+    # the window edges of parse_r3_timing.py G1c are within milliseconds of the counter read.
+    now=$(date +%s.%N)
+    net=$(awk '{sub(/:/, " ")} $1 == "eth0" {printf "%s\t%s", $2, $10; found = 1} END {if (!found) printf "-1\t-1"}' /proc/net/dev)
     pid=$(pgrep -o -x raylet)
     ticks=-1
     [ -n "$pid" ] && ticks=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null)
     {
-      printf '%s\t' "$(date +%s.%N)"
+      printf '%s\t' "$now"
       awk '/^MemAvailable:/ {a = $2} /^Shmem:/ {s = $2} END {printf "%s\t%s\t", a, s}' /proc/meminfo
       printf '%s\t%s\t' "$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo -1)" \
         "$(awk '/^cpu / {b = $2 + $3 + $4 + $7 + $8 + $9; printf "%d\t%d", b, b + $5 + $6}' /proc/stat)"
       printf '%s\t' "${ticks:--1}"
       awk 'BEGIN {n = split("- num pushes remaining:|- num chunks in flight:|- num bytes being pulled (all):|- num bytes available for pulled objects:|- num objects actively pulled (all):|- cumulative spill requests:|- cumulative restore requests:", key, "|"); for (i = 1; i <= n; i++) v[i] = -1}
         {for (i = 1; i <= n; i++) if (index($0, key[i]) == 1) v[i] = $NF}
-        END {for (i = 1; i <= n; i++) printf "%s%s", v[i], (i < n ? "\t" : "\n")}' "$dump" 2>/dev/null ||
-        printf -- '-1\t-1\t-1\t-1\t-1\t-1\t-1\n'
+        END {for (i = 1; i <= n; i++) printf "%s\t", v[i]}' "$dump" 2>/dev/null ||
+        printf -- '-1\t-1\t-1\t-1\t-1\t-1\t-1\t'
+      printf '%s\n' "${net:-$'-1\t-1'}"
     } >> "$out"
     sleep "$R3_SAMPLE_PERIOD_S"
   done

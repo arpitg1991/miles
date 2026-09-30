@@ -273,9 +273,17 @@ The driver adds two outputs:
   columns are `epoch`, `mem_avail_kb`, `shmem_kb`, `cgroup_bytes`,
   `cpu_busy_ticks`, `cpu_total_ticks`, `raylet_ticks`, `pushes_remaining`,
   `chunks_in_flight`, `pull_bytes_being_pulled`, `pull_bytes_available`,
-  `objects_actively_pulled`, `spill_requests` and `restore_requests`. The
-  last seven come from the raylet `debug_state.txt`. The value is -1 until
-  the raylet writes it. `node-0` is the Ray head.
+  `objects_actively_pulled`, `spill_requests`, `restore_requests`,
+  `net_rx_bytes` and `net_tx_bytes`. Seven columns come from the raylet
+  `debug_state.txt`, and the value is -1 until the raylet writes it. The
+  last two are the pod `eth0` byte counters of `/proc/net/dev` (-1 if the
+  pod has no `eth0`). `node-0` is the Ray head.
+- Gate G1c (`parse_r3_timing.py --nodes`) divides the `eth0` bytes that a
+  node receives in its prefetch and fetch windows by the size of its
+  object. The Ray object transfers between pods use `eth0`. NCCL uses EFA,
+  and the S3 Files mount is in the host network namespace, so neither
+  shows on `eth0`. One object per remote node reads about 1.0, a second
+  copy reads 2.0, and the head reads about 0.
 - `<arm>/raylet-head.txt`: the head `debug_state.txt` and the `Spilled` and
   `Restored` lines of `raylet.out`, at the end of each arm.
 

@@ -18,7 +18,9 @@ It reads two kinds of lines:
 
 With ``--nodes``, it also reads the harness sampler files
 ``<run>/nodes/node-<K>.tsv`` (one row per second per pod; the header row
-names the columns; node-0 is the Ray head).
+names the columns; node-0 is the Ray head). The pod with hostname
+``<job>-worker-<K>`` writes ``node-<K>.tsv``. The ``eth0`` byte counters of
+these files are the wire measure of gate G1c.
 
 Columns from the first kind (seconds from ``t0``, the first ``fn=train``
 start of the rollout over all ranks):
@@ -44,6 +46,7 @@ rollouts.
 
 import argparse
 import ast
+import bisect
 import json
 import re
 import statistics
@@ -78,6 +81,9 @@ FORWARD_KEYS = (
     "train/train_rollout_logprob_abs_diff",
 )
 ROUTING_BYTES_PER_TOKEN_INT32 = 45 * 8 * 4
+# G1c bounds, in objects per remote node: TCP/IP headers and background traffic add a few percent;
+# a second copy of the shard reads 2.0.
+WIRE_OBJECTS = (0.95, 1.25)
 CLK_TCK = 100
 
 
@@ -248,9 +254,15 @@ def _r3_view(arm: Arm, rollout_id: int) -> dict:
     if fetch:
         out["fetch_s"] = _stats([f["seconds"] for f in fetch])
         out["fetch_node_bytes"] = {f["node"]: f["bytes"] for f in fetch}
-        # Ray moves the whole object: each rank's fetch bytes MUST equal the put bytes of its DP shard.
-        put_bytes = {f["dp"]: f["bytes"] for f in puts}
-        out["fetch_put_ratio"] = [f["bytes"] / put_bytes[f["dp"]] for f in fetch if put_bytes.get(f.get("dp"))]
+        # G1c: per node, the object size and the windows in which its ranks can move the shard, that is,
+        # the prefetch pulls and the fetches of train(). The fetch bytes are the owner's object_size,
+        # the same number as the put bytes, so only the eth0 counters of the node sampler measure the wire.
+        windows: dict = {}
+        for f in [*fetch, *arm.r3_lines(rollout_id, "prefetch_done")]:
+            slot = windows.setdefault(f["node"], {"bytes": -1, "intervals": []})
+            slot["intervals"].append((f["t0"], f["t1"]))
+            slot["bytes"] = max(slot["bytes"], f["bytes"])
+        out["wire_windows"] = windows
         out["prefetch_modes"] = dict(sorted(_count(str(f.get("prefetch")) for f in fetch).items()))
         out["local_before"] = sum(1 for f in fetch if f.get("local_before") == 1)
         done = {f["rank"]: f.get("ref") for f in arm.r3_lines(rollout_id, "prefetch_done")}
@@ -373,6 +385,54 @@ def window_stats(samples: list[dict], t0: float, t1: float) -> dict | None:
     }
 
 
+def sampler_name(host: str) -> str:
+    """The sampler file stem of a pod: hostname ``<job>-worker-<K>`` writes ``node-<K>.tsv``."""
+    return f"node-{str(host).rsplit('-', 1)[-1]}"
+
+
+def net_bytes(samples: list[dict], intervals: list[tuple[float, float]]) -> tuple[int, int] | None:
+    """eth0 bytes received and sent over the union of ``intervals``.
+
+    Each interval runs from the last sample at or before its start to the
+    first sample at or after its end. Intervals that share sampled seconds
+    merge, so no second counts twice. None if a bracket sample or the counter
+    is missing.
+    """
+    if not samples or samples[0].get("net_rx_bytes", -1) < 0:
+        return None
+    epochs = [s["epoch"] for s in samples]
+    spans: list[list[int]] = []
+    for t0, t1 in sorted(intervals):
+        first, last = bisect.bisect_right(epochs, t0) - 1, bisect.bisect_left(epochs, t1)
+        if first < 0 or last >= len(samples):
+            return None
+        if spans and first < spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], last)
+        else:
+            spans.append([first, last])
+    return tuple(sum(samples[b][key] - samples[a][key] for a, b in spans) for key in ("net_rx_bytes", "net_tx_bytes"))
+
+
+def add_wire(results: dict, nodes: dict) -> None:
+    """G1c inputs per rollout: eth0 rx of each node over its shard windows, in objects, and the head tx share."""
+    for arm in results.values():
+        for row in arm["rollouts"].values():
+            windows = {sampler_name(host): w for host, w in (row.get("wire_windows") or {}).items()}
+            objects = {}
+            for name, w in windows.items():
+                moved = net_bytes(nodes.get(name, []), w["intervals"])
+                if moved is not None and w["bytes"] > 0:
+                    objects[name] = moved[0] / w["bytes"]
+            remote = [w for name, w in windows.items() if name != HEAD_SAMPLER]
+            head = net_bytes(nodes.get(HEAD_SAMPLER, []), [i for w in remote for i in w["intervals"]])
+            remote_bytes = sum(w["bytes"] for w in remote)
+            row["wire"] = {
+                "objects": objects,
+                # 1.0: the head sent every remote copy; less: remote nodes served some copies to each other.
+                "head_tx_share": head[1] / remote_bytes if head is not None and remote_bytes > 0 else None,
+            }
+
+
 def add_node_windows(results: dict, nodes: dict, r3: str, prefetch: str) -> None:
     """Sampler stats per arm, per r3 fetch window, and per pull window.
 
@@ -380,6 +440,7 @@ def add_node_windows(results: dict, nodes: dict, r3: str, prefetch: str) -> None
     r3 arm gets the same window, placed at the same offset from its own
     ``put`` of rollout N, so the two arms compare the same part of the step.
     """
+    add_wire(results, nodes)
     for arm in results.values():
         arm["nodes"] = {node: window_stats(s, *arm["window"]) for node, s in nodes.items()}
         for row in arm["rollouts"].values():
@@ -462,13 +523,30 @@ def gates(
             value,
             "PASS" if routing / total >= 0.97 else "FAIL",
         )
-        wire = [x for row in rows(r3).values() for x in row.get("fetch_put_ratio", [])]
-        value = {"n": len(wire), "min": min(wire), "max": max(wire)} if wire else None
+    # One object per remote node and no second copy: 2.0 fails the upper bound, a missed pull the lower one.
+    for name in (r3, prefetch):
+        if not rows(name):
+            continue
+        objects = [
+            (node, x) for row in rows(name).values() for node, x in (row.get("wire") or {}).get("objects", {}).items()
+        ]
+        remote = [x for node, x in objects if node != HEAD_SAMPLER]
+        head = [x for node, x in objects if node == HEAD_SAMPLER]
+        value = {
+            "remote": _stats(remote),
+            "head_max": max(head, default=None),
+            "head_tx_share": [(row.get("wire") or {}).get("head_tx_share") for row in rows(name).values()],
+        }
         gate(
-            "G1c",
-            "r3 fetch bytes per rank / put bytes of its DP object (expect 1.000)",
+            f"G1c[{name}]",
+            f"eth0 rx of each remote node over its pull and fetch windows / its object bytes "
+            f"({WIRE_OBJECTS[0]}-{WIRE_OBJECTS[1]}); INFO: head (about 0), head tx share",
             value,
-            None if not wire else ("PASS" if max(abs(x - 1) for x in wire) <= 1e-3 else "FAIL"),
+            (
+                None
+                if not remote
+                else ("PASS" if all(WIRE_OBJECTS[0] <= x <= WIRE_OBJECTS[1] for x in remote) else "FAIL")
+            ),
         )
     if base and rows(r3):
         new, old = _median(warm(r3, "last")), _median(warm(base, "last"))

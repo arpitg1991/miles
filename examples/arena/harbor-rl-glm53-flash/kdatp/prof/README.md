@@ -109,8 +109,11 @@ tarball holds TP8 kernels. An arm that changes the KDA or DSA shapes (for
 example TP4) compiles its kernels cold at low GPU power. The idle-GPU reaper
 deletes a workload whose 60-minute mean GPU power is below 10%
 (`kdatp-t2-20260927b` was lost that way). Put such an arm after a warm arm.
+The driver does not save `/tmp/kernel_cache` at the arm end, so the kernels
+of a new shape are lost with the pods: the TP4 arm of `20260929e` compiled
+768 TileLang kernels in step 0 (+1,599 s) and kept none.
 
-## Kineto buffer cap fix (verified in the source, not tested live yet)
+## Kineto buffer cap fix (tested live in job 20260929c)
 
 Runs `20260929a` and `20260929ab` wrote stub traces. Kineto keeps at most
 `1 + cap / 4 MiB` CUPTI buffers per rank (default cap 128 MiB, 33 buffers).
@@ -125,6 +128,25 @@ The fix: before the `REPLICA_IDX` branch, every pod writes
 and exports `KINETO_CONFIG=/tmp/kineto.conf`. `/tmp` in the pod is the
 overlay disk. The Ray workers inherit the env of `ray start`, the same path
 that took `KINETO_LOG_LEVEL=1` to the trainer ranks in run `20260929ab`.
+
+Live result, job `kdatp-prof-20260929c` (groups 239,258, profiled step 1,
+harness `dabe8a8972`). Source: `kdatp/prof/20260929c/kdatp-prof/trainer-0.log`
+and `results.json`.
+
+| Signal | Value |
+| --- | --- |
+| `Max GPU buffer size: 4096MB` | 64 ranks (0 at `128MB`) |
+| `Exceeded max GPU buffer count` | 0 |
+| torch `activity collection was stopped early` | 0 |
+| `Processed N GPU records` | 7.36M to 8.93M per rank |
+| Traces in `tb/` | 64 files, 393.5 to 460.0 MB each (gz), 27.21 GB in total. The 8 local copies (ranks 0, 8, ..., 56) hold 5.7 to 6.7 GB each after `gunzip` |
+| Trace export after the step | 338 s on rank 0, 405 s on the slowest rank (`train_time` 594.4 s minus `actor_train` 189.4 s) |
+| Host memory while tracing | about 30 GiB more RSS per trainer rank (node 0: 113.7 to 145.0 GiB). The pod limit is 1,800 Gi |
+| Profiler cost in the step | `actor_train` 189.4 s (traced) against 186.3 s (clean step 2): at most +3.0 s (1.6%). Run `20260929ab` shows +3.9 s with no trace, so the true cost is near 0 (UNVERIFIED) |
+
+Keep a profiled arm on the 2-group slice. A traced full T2 step (156
+micro-batches) holds about 4.7x the records and can pass the pod memory
+limit (UNVERIFIED).
 
 Evidence. The pod torch is `2.13.0+cu130`, `torch.version.git_version`
 `cf30153c4c131c8164ee7798e5022d810682e2cb`, which is the `v2.13.0` tag
@@ -172,7 +194,11 @@ size` 1, `Max GPU buffer size: ` 1, `Exceeded max GPU buffer count (` 1,
 
 Success signal of a profiled arm, in `driver.log`: `arm <name> kineto: 64
 ranks at 4096MB, 0 Exceeded, 0 stopped early`, then 64 trace files far
-above the 13 to 33 KB of the stubs. Early check, about 10 minutes after
+above the 13 to 33 KB of the stubs. The `stopped early` count is the torch
+warning only. The Kineto summary line `GPU stopped early? = 0` is on every
+rank, and it read 0 also in the cut run `20260929ab`, so the driver does
+not count it. The driver of `dabe8a8972` counted it and logged `64 stopped
+early` for the clean job `20260929c`. Early check, about 10 minutes after
 `arm <name>: start`: `<name>/trainer-0.log` on S3 holds 64 `Max GPU buffer
 size: 4096MB` lines. If it shows `128MB`, the file was not read: delete the
 job and use the fallback.
@@ -182,7 +208,8 @@ Fallback (a separate job): `set: {profile_step_start: 0, profile_step_end:
 record-to-none transition saves the trace up to the cut at the stock cap: the
 cold microbatch loop of step 0 without the last gradient sync and optimizer
 step. This comes from a reading of the torch 2.13 `profiler.py` state
-machine; it is not tested live.
+machine; it is not tested live. Job `20260929c2` did not run, because the
+fix worked.
 
 ## a2a bench
 
@@ -215,10 +242,14 @@ machine; it is not tested live.
   algbw, cross-node GB/s per rank for `ep16`, range of the per-group
   medians), and `a2a/node-<n>.log` per pod. `driver.log` records `a2a_rc`.
 
-## Planned jobs of round 20260929c
+## Jobs of round 20260929c
 
-The arm lists of `20260929d` and `20260929e` come from the feasibility
-study. The lists below show the format.
+All three jobs ran to `rc 0`: `20260929c` (profile and a2a bench),
+`20260929d` (arms `ep8`, `base`, `pack`) and `20260929e` (arms `ep8pack`,
+`tp4ep8pack`). The results are in the study record
+`training-runs/studies/trainer-core-profile-glm53-flash/STUDY.md`. The arm
+lists of `20260929d` and `20260929e` come from the feasibility study. The
+lists below show the format.
 
 `20260929c`, the profile job: one profiled arm on groups 239,258 (the default
 arm) plus the a2a bench. `job.env`:
@@ -278,9 +309,18 @@ aws --profile arena-prod-bom-user s3 ls $H
 sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" kdatp-prof-job.yaml | $K create --dry-run=server -f -
 sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" kdatp-prof-job.yaml | $K create -f -
 # When driver.log says "done" or the head pod has ended:
-$K delete pytorchjob kdatp-prof-$STAMP
+$K delete pytorchjob kdatp-prof-$STAMP --ignore-not-found
 $K get pods -l app=kdatp-prof-$STAMP   # MUST show no pods
 ```
+
+Zero-second TTL. The cluster adds `ttlSecondsAfterFinished: 0` to the job
+`runPolicy` (our yaml does not set it). When a job succeeds, the operator
+removes the job, its pods and its services at once (jobs `20260929c`, `d`
+and `e`: gone within seconds of `done`). So `kubectl logs` of a finished
+job is lost. Read the live logs with a read-only `kubectl exec` into the
+head pod while the job runs, and keep every output on the scratch mount.
+The S3 view of the mount lags by some minutes. The TTL effect on a failed
+job is UNVERIFIED, so the delete command stays.
 
 Results in `kdatp/prof/<stamp>/`: `driver.log`, `arms/<name>.yaml`,
 `arms/plan.tsv`, `<name>/trainer-0.log` (`perf N:` and `[peak-memory]`

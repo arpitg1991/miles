@@ -215,10 +215,13 @@ for row in "${PLAN[@]}"; do
     log "arm $name: rc=$(cat "$RUN/$name/rc")"
     if [ "$profile" = 1 ]; then
       # Success: 64 ranks at the buffer size, 0 Exceeded, 0 stopped early.
+      # Count only the torch warning "Device profiling activity collection was stopped
+      # early at step N". The Kineto summary "GPU stopped early? = 0" is on every rank
+      # of a clean run (20260929c), and it also read 0 on the cut run 20260929ab.
       tlog=$RUN/$name/trainer-0.log
       log "arm $name kineto: $(grep -c "Max GPU buffer size: ${PROF_KINETO_BUFFER_MB}MB" "$tlog")" \
         "ranks at ${PROF_KINETO_BUFFER_MB}MB, $(grep -c 'Exceeded max GPU buffer count' "$tlog") Exceeded," \
-        "$(grep -c 'stopped early' "$tlog") stopped early"
+        "$(grep -c 'activity collection was stopped early' "$tlog") stopped early"
       log "arm $name traces: $(ls "$RUN/$name/tb" 2>/dev/null | wc -l) files"
       ls -la "$RUN/$name/tb" 2>/dev/null | tail -n +2 | awk '{print "[kdatp-prof trace] " $5 " " $9}'
     fi

@@ -296,7 +296,13 @@ class TestConcurrencyGroups:
         """A heartbeat queued behind a train step reads as a dead cell."""
         (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
 
-        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
+        assert spec.concurrency_groups == {
+            "heartbeat_status": 1,
+            "default": 1,
+            "fault_injector": 1,
+            "kill_self": 1,
+            "rollout_prefetch": 1,
+        }
 
     def test_a_run_without_fault_tolerance_gets_a_plain_actor(self):
         """A threaded trainer actor runs NCCL setup off the main thread and deadlocked a non-FT run."""

@@ -113,8 +113,8 @@ def _load_extra_state(args):
         load_dir = getattr(args, "load", None)
         if not load_dir:
             return
-        from pathlib import Path
         import re
+        from pathlib import Path
 
         latest_file = Path(load_dir) / "latest_checkpointed_iteration.txt"
         if latest_file.is_file():
@@ -234,8 +234,15 @@ async def train(args, *, disposer: Disposer):
         await inference_controller.prepare_rollout(rollout_id)
         return await rollout_executor.get(rollout_id)
 
+    async def prefetch_when_generated(rollout_id, rollout_data_future):
+        try:
+            await actor_model.prefetch_rollout_data(rollout_id, await rollout_data_future)
+        except Exception as e:  # noqa: BLE001 - a failed prefetch only makes train() fetch the shard itself
+            logger.warning("Prefetch of rollout %d failed, train() fetches it itself: %r", rollout_id, e)
+
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
+    prefetch_tasks: set[asyncio.Task] = set()  # the event loop keeps only weak references to tasks
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
@@ -249,6 +256,11 @@ async def train(args, *, disposer: Disposer):
         defer_next_drain = args.fully_async and has_next_rollout and weight_update_due
         if has_next_rollout and not defer_next_drain:
             rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
+            if args.prefetch_rollout_data:
+                # When generate ends, the train nodes pull the next shards while this step trains.
+                task = asyncio.create_task(prefetch_when_generated(rollout_id + 1, rollout_data_next_future))
+                prefetch_tasks.add(task)
+                task.add_done_callback(prefetch_tasks.discard)
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)

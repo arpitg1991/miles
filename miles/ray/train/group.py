@@ -227,6 +227,19 @@ class TrainerController:
 
         return worker_results
 
+    async def prefetch_rollout_data(self, rollout_id: int, rollout_data_pack: RolloutDataPack) -> None:
+        """--prefetch-rollout-data: pull the shards of rollout ``rollout_id`` to the train nodes while a step trains.
+
+        A failed prefetch only makes train() fetch the shard itself, so it does not mark a cell as errored.
+        """
+        await self._execute_all_alive_and_catch(
+            "prefetch_rollout_data",
+            check_recoverable=False,
+            kill_on_failure=False,
+            rollout_id=rollout_id,
+            rollout_data_ref=rollout_data_pack.data_ref,
+        )
+
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
             return None

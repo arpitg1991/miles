@@ -212,6 +212,21 @@ class TrainRayActor(NodeProbeMixin):
     ) -> TrainStepOutput:
         raise NotImplementedError
 
+    @rpc(concurrency_group="rollout_prefetch")
+    def prefetch_rollout_data(
+        self, rollout_id: int, rollout_data_ref: StoreObjectRef | list[StoreObjectRef]
+    ) -> None:
+        """--prefetch-rollout-data: pull this rank's shard of rollout ``rollout_id`` while train() runs.
+
+        It runs in its own concurrency group (TRAINER_CONCURRENCY_GROUPS), so it does not wait for train().
+        """
+        from miles.backends.training_utils.parallel import get_parallel_state
+        from miles.utils.data import prefetch_rollout_data
+
+        prefetch_rollout_data(
+            self.args, rollout_data_ref, rollout_id=rollout_id, dp_rank=get_parallel_state().effective_dp.rank
+        )
+
     @abc.abstractmethod
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         raise NotImplementedError

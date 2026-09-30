@@ -36,6 +36,7 @@ from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory
+from miles.utils.r3_log import r3_timing, train_rank
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -628,7 +629,8 @@ def train_one_step(
         dumper_phase_util.finalize(model)
 
     if not disable_optimizer and valid_step:
-        update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        with r3_timing(logger, rank=train_rank(), rollout=rollout_id, phase="optimizer"):
+            update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
         assert update_successful
         opt_param_scheduler.step(increment=num_rollouts)
 

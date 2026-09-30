@@ -28,6 +28,7 @@ DRIVEN_METHODS = (
     "kill_self",
     "configure_master_addr_and_port",
     "propose_master_addr_and_port",
+    "prefetch_rollout_data",
 )
 
 

@@ -35,7 +35,14 @@ from miles.utils.workers.worker_spec import (
 TRAINER_CONTROLLER_ADDRS_FLAG = "--trainer-controller-addrs"
 POOL_CATEGORY_TRAINER_ENGINE = "trainer_engine"
 
-TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
+# rollout_prefetch serves TrainRayActor.prefetch_rollout_data (--prefetch-rollout-data) next to a running train().
+TRAINER_CONCURRENCY_GROUPS = {
+    "heartbeat_status": 1,
+    "default": 1,
+    "fault_injector": 1,
+    "kill_self": 1,
+    "rollout_prefetch": 1,
+}
 
 TRAINER_CONTROLLER_WORKER_CLASS = "miles.ray.train.group.TrainerController"
 

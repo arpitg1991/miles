@@ -34,7 +34,7 @@ from miles.utils.lora.utils import build_lora_config, is_multi_lora_enabled
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.processing_utils import load_tokenizer
-from miles.utils.r3_log import log_replay_digest, r3_timing, train_rank
+from miles.utils.r3_log import log_r3_mem, log_replay_digest, r3_timing, train_rank
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
@@ -621,6 +621,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train and self._asleep:
             self.wake_up()
         _reset_peak_memory()
+        log_r3_mem(logger, rollout=rollout_id, at="start")
 
         with ExitStack() as stack:
             with timer("data_preprocess"):
@@ -644,6 +645,8 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
+            # Before the shard is released; with --prefetch-rollout-data the next shard is held too.
+            log_r3_mem(logger, rollout=rollout_id, at="end")
             return result
 
     @with_logs

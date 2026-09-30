@@ -1,12 +1,14 @@
 import logging
 from typing import Any
 
+import numpy as np
 import torch
 
 from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.lora.utils import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
+from miles.utils.r3_log import dtype_name, r3_timing
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
@@ -23,7 +25,7 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
     "advantage_scale": "float32",
-    "rollout_routed_experts": "int32",
+    "rollout_routed_experts": "int16",
     "rollout_indexer_topk": "int32",
 }
 
@@ -136,7 +138,11 @@ def convert_samples_to_train_data(
         train_data["rollout_sampling_mask_offsets"] = sampling_mask_offsets
 
     if samples[0].rollout_routed_experts is not None:
-        train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
+        # Expert ids and the -1 pad fit int16 (arguments.py checks --num-experts), and routing is
+        # about 99% of the trainer shard bytes, so int16 halves the object that each train node pulls.
+        train_data["rollout_routed_experts"] = [
+            sample.rollout_routed_experts.astype(np.int16, copy=False) for sample in samples
+        ]
     elif getattr(args, "use_rollout_routing_replay", False):
         raise ValueError(
             "--use-rollout-routing-replay is set but the rollout samples carry no "
@@ -298,7 +304,9 @@ def _post_process_rewards(
     return raw_rewards, raw_rewards
 
 
-def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
+def split_train_data_by_dp(
+    args, data: dict[str, Any], train_parallel_config: dict | None, *, rollout_id: int | None = None
+):
     """Split the train data across DP ranks and put the shards into the object store.
 
     When the training backend can consume a rollout-side schedule, the shards
@@ -309,7 +317,21 @@ def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: di
     else:
         shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
     store = object_store.get_instance()
-    return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+    refs = []
+    for dp_rank, shard in enumerate(shards):
+        routing = shard.get("rollout_routed_experts", [])
+        with r3_timing(
+            logger,
+            rank="rm",
+            rollout=rollout_id,
+            phase="put",
+            dp=dp_rank,
+            routing_bytes=sum(r.nbytes for r in routing),
+            dtype=dtype_name(routing),
+        ) as line:
+            refs.append(store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC))
+            line["bytes"] = store.locate(refs[-1]).size
+    return refs
 
 
 def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:

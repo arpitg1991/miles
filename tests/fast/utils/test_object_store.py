@@ -7,6 +7,7 @@ from argparse import Namespace
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import pytest
 import torch
 from pydantic import TypeAdapter, ValidationError
@@ -191,6 +192,15 @@ class TestRayObjectStore:
             pass
         store.remove(ref)
         _assert_roundtrip_equal(store.get(ref).value, data)
+
+    def test_locate_reports_size_right_after_put(self):
+        """The put and fetch log lines read the object size and the local copy from locate."""
+        store = object_store.init_instance(Namespace(object_store_backend="ray", worker_comm_backend="ray"))
+        ref = store.put(value={"routing": np.zeros((1000, 45, 8), np.int16)})
+        info = store.locate(ref)
+        assert info.key == ref.payload.hex()
+        assert info.size >= 1000 * 45 * 8 * 2
+        assert info.local == 1
 
     def test_get_instance_requires_init(self):
         """get_instance asserts when init_instance was never called."""

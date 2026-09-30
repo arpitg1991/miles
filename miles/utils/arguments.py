@@ -3818,6 +3818,11 @@ def miles_validate_args(args):
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
+        # The trainer shards carry expert ids 0..num_experts-1 as int16 (train_data_conversion.py).
+        num_experts = getattr(args, "num_experts", None)
+        assert (
+            num_experts is None or num_experts <= 2**15
+        ), f"--use-rollout-routing-replay carries expert ids as int16, but --num-experts is {num_experts}"
 
     args.rollout_external = _compute_rollout_external(args)
     args.custom_inference_engine_provider_path = _compute_custom_inference_engine_provider_path(args)

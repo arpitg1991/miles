@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 import ray
 import torch
@@ -786,6 +787,28 @@ class TestSplitTrainDataByDp:
         parts = [ray.get(r.payload) for r in refs]
         all_indices = sorted(i for p in parts for i in p["partition"])
         assert all_indices == list(range(n))
+
+    def test_routed_experts_reach_shards_as_int16(self):
+        """Routing reaches each DP shard as int16 with the same expert ids and -1 pad rows."""
+        args = make_args(rewards_normalization=False, balance_data=False)
+        rng = np.random.default_rng(0)
+        samples = [make_sample(index=i) for i in range(2)]
+        for s in samples:
+            routing = rng.integers(0, 288, size=(len(s.tokens) - 1, 45, 8), dtype=np.int32)
+            routing[-1] = -1
+            s.rollout_routed_experts = routing
+        data = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        refs = split_train_data_by_dp(args, data, {"dp_size": 2})
+        for ref, sample in zip(refs, samples, strict=True):
+            (shard_routing,) = ray.get(ref.payload)["rollout_routed_experts"]
+            assert shard_routing.dtype == np.int16
+            np.testing.assert_array_equal(shard_routing, sample.rollout_routed_experts)
 
 
 class TestSplitTrainDataRaw:

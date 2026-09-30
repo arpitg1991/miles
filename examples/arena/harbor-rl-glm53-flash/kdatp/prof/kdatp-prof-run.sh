@@ -64,6 +64,36 @@ ARM_TIMEOUT=${ARM_TIMEOUT:-12600}
 PROF_SKIP_ACTOR_FORWARD_ONLY=${PROF_SKIP_ACTOR_FORWARD_ONLY:-1}
 RUN=$KD/prof/$STAMP
 
+# Node sampler (README.md "r3 data path"): every R3_SAMPLE_PERIOD_S seconds, one row of node memory,
+# CPU, raylet CPU and the Ray push, pull and spill counters to nodes/node-<replica>.tsv, for
+# parse_r3_timing.py --nodes. The raylet rewrites debug_state.txt every
+# RAY_debug_dump_period_milliseconds (job.env). A value that is not there yet is -1. The loop ends
+# with the container: NEVER stop it with pkill -f.
+R3_SAMPLE_PERIOD_S=${R3_SAMPLE_PERIOD_S:-1}
+r3_node_sampler() {
+  local out=$RUN/nodes/node-${REPLICA_IDX:-0}.tsv dump=/tmp/ray/session_latest/logs/debug_state.txt pid ticks
+  printf 'epoch\tmem_avail_kb\tshmem_kb\tcgroup_bytes\tcpu_busy_ticks\tcpu_total_ticks\traylet_ticks\tpushes_remaining\tchunks_in_flight\tpull_bytes_being_pulled\tpull_bytes_available\tobjects_actively_pulled\tspill_requests\trestore_requests\n' > "$out"
+  while :; do
+    pid=$(pgrep -o -x raylet)
+    ticks=-1
+    [ -n "$pid" ] && ticks=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null)
+    {
+      printf '%s\t' "$(date +%s.%N)"
+      awk '/^MemAvailable:/ {a = $2} /^Shmem:/ {s = $2} END {printf "%s\t%s\t", a, s}' /proc/meminfo
+      printf '%s\t%s\t' "$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo -1)" \
+        "$(awk '/^cpu / {b = $2 + $3 + $4 + $7 + $8 + $9; printf "%d\t%d", b, b + $5 + $6}' /proc/stat)"
+      printf '%s\t' "${ticks:--1}"
+      awk 'BEGIN {n = split("- num pushes remaining:|- num chunks in flight:|- num bytes being pulled (all):|- num bytes available for pulled objects:|- num objects actively pulled (all):|- cumulative spill requests:|- cumulative restore requests:", key, "|"); for (i = 1; i <= n; i++) v[i] = -1}
+        {for (i = 1; i <= n; i++) if (index($0, key[i]) == 1) v[i] = $NF}
+        END {for (i = 1; i <= n; i++) printf "%s%s", v[i], (i < n ? "\t" : "\n")}' "$dump" 2>/dev/null ||
+        printf -- '-1\t-1\t-1\t-1\t-1\t-1\t-1\n'
+    } >> "$out"
+    sleep "$R3_SAMPLE_PERIOD_S"
+  done
+}
+mkdir -p "$RUN/nodes"
+r3_node_sampler &
+
 export ARENA_CHECKPOINTS_DIR=$KD/checkpoints ARENA_DATA_DIR=$KD/run
 export MILES_LOG_PEAK_MEMORY=1
 # The ray driver folds log lines that differ only in numbers, so it hides the per-rank
@@ -213,6 +243,9 @@ for row in "${PLAN[@]}"; do
       timeout --signal=TERM "$limit" python3 "$LAUNCHER" train > "$RUN/$name/trainer-0.log" 2>&1
     echo $? > "$RUN/$name/rc"
     log "arm $name: rc=$(cat "$RUN/$name/rc")"
+    # The head Ray counters at the arm end, a second source for spill and restore (parse_r3_timing.py).
+    { cat /tmp/ray/session_latest/logs/debug_state.txt
+      grep -h -E "Spilled|Restored" /tmp/ray/session_latest/logs/raylet.out; } > "$RUN/$name/raylet-head.txt" 2>&1
     if [ "$profile" = 1 ]; then
       # Success: 64 ranks at the buffer size, 0 Exceeded, 0 stopped early.
       # Count only the torch warning "Device profiling activity collection was stopped

@@ -88,6 +88,9 @@ class BaseReplayManager:
         manager = self
 
         def _get_replay_result(top_indices, scores, topk, *args, **kwargs):
+            # Rollout routing arrives as int16 (train_data_conversion.py), but torch gather and scatter take
+            # only int32 or int64 indices. Widen int16 to int32 and keep int32 and int64 as they are.
+            top_indices = top_indices.to(torch.promote_types(top_indices.dtype, torch.int32))
             assert (
                 top_indices.shape[0] == scores.shape[0]
             ), f"rank {_get_rank()}: replay n_tokens {top_indices.shape[0]} does not match scores n_tokens {scores.shape[0]}"

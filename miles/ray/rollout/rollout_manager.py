@@ -40,6 +40,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
+from miles.utils.r3_log import dtype_name, r3_timing
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
@@ -150,22 +151,25 @@ class RolloutManager:
         dashboard_hooks.register_engines(self.servers)
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
-        with timer("rollout"):
+        with timer("rollout"), r3_timing(logger, rank="rm", rollout=rollout_id, phase="load"):
             data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
-        data = convert_samples_to_train_data(
-            self.args,
-            data,
-            metadata=metadata,
-            custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
-            custom_reward_post_process_func=self.custom_reward_post_process_func,
-        )
+        with r3_timing(logger, rank="rm", rollout=rollout_id, phase="convert") as line:
+            data = convert_samples_to_train_data(
+                self.args,
+                data,
+                metadata=metadata,
+                custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+                custom_reward_post_process_func=self.custom_reward_post_process_func,
+            )
+            routing = data.get("rollout_routed_experts", [])
+            line.update(bytes=sum(r.nbytes for r in routing), dtype=dtype_name(routing))
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
-            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
+            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config, rollout_id=rollout_id)
         return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(

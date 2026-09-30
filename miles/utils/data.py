@@ -9,6 +9,7 @@ import numpy as np
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 from miles.utils import object_store
+from miles.utils.r3_log import r3_timing, train_rank
 from .audit_utils.witness.allocator import WitnessInfo
 
 try:
@@ -294,13 +295,12 @@ def process_rollout_data(
     dp_rank,
     dp_size,
     witness_info: WitnessInfo | None,
+    rollout_id: int | None = None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 
-    store = object_store.get_instance()
-
     if args.delay_split_train_data_by_dp:
-        get_result = store.get(rollout_data_ref)
+        get_result = _fetch_rollout_data(rollout_data_ref, rollout_id=rollout_id, dp_rank=dp_rank)
         raw = get_result.value
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
@@ -309,10 +309,27 @@ def process_rollout_data(
     else:
         assert len(rollout_data_ref) == dp_size
         assert witness_info is None
-        get_result = store.get(rollout_data_ref[dp_rank])
+        get_result = _fetch_rollout_data(rollout_data_ref[dp_rank], rollout_id=rollout_id, dp_rank=dp_rank)
         rollout_data = dict(get_result.value)
 
     return process_rollout_data_shard(args, rollout_data), get_result
+
+
+def _fetch_rollout_data(ref, *, rollout_id: int | None, dp_rank: int) -> object_store.ObjectStoreGetResult:
+    store = object_store.get_instance()
+    # Before the get: the bytes that the get moves to this node, and whether a copy is here already.
+    info = store.locate(ref)
+    with r3_timing(logger, rank=train_rank(), rollout=rollout_id, phase="fetch", dp=dp_rank) as line:
+        get_result = store.get(ref)
+        routing = get_result.value.get("rollout_routed_experts", [])
+        line.update(
+            bytes=info.size,
+            routing_bytes=sum(r.nbytes for r in routing),
+            local_before=info.local,
+            prefetch="off",
+            ref=info.key,
+        )
+    return get_result
 
 
 def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:

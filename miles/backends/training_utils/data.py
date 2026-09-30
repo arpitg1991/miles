@@ -35,6 +35,7 @@ def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
     witness_info: WitnessInfo | None = None,
+    rollout_id: int | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -45,6 +46,7 @@ def get_rollout_data(
         parallel_state.effective_dp.rank,
         parallel_state.effective_dp.size,
         witness_info=witness_info,
+        rollout_id=rollout_id,
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [

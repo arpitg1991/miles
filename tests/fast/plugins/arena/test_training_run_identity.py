@@ -5,7 +5,9 @@ A shared workflow ``experiment-name`` gives two runs the same ``--load`` and
 run resumes from the first run's checkpoints and saves into them. A shared
 ``arena_sample_summary_dir`` makes ``_write_sample_summary`` replace the
 ``rollout_<id>.jsonl`` files of the other run. guparpit-agentic-debt-v2 is
-the r48 config (guparpit-agentic-debt-v1) with a new identity only.
+the r48 config (guparpit-agentic-debt-v1) with a new identity and the
+triton MoE runner. R3 needs that runner on the SGLang of the v2 trainer
+image; the r48 SGLang selected a capture runner by itself.
 
 Run: python -m pytest tests/fast/plugins/arena/test_training_run_identity.py -v
 """
@@ -52,5 +54,8 @@ def test_agentic_debt_v2_is_r48_with_a_new_identity() -> None:
         yaml.safe_load((FAMILY / run / "miles-config.yaml").read_text())
         for run in ("guparpit-agentic-debt-v1", "guparpit-agentic-debt-v2")
     )
-    assert {key for key in r48.keys() | v2.keys() if r48.get(key) != v2.get(key)} == _IDENTITY_KEYS
+    changed = {key for key in r48.keys() | v2.keys() if r48.get(key) != v2.get(key)}
+    assert changed == _IDENTITY_KEYS | {"sglang_moe_runner_backend"}
     assert all("guparpit-agentic-debt-v2" in v2[key] for key in _IDENTITY_KEYS)
+    assert "sglang_moe_runner_backend" not in r48
+    assert v2["sglang_moe_runner_backend"] == "triton"

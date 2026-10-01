@@ -7,8 +7,9 @@
 `--save` DCP layout) stays byte-compatible.
 **Pairs with:** upstream radixark/miles PR stack #3605-#3610, #3632, #3634
 (the shared head-sharded delta-rule layer, all OPEN on 2026-09-28).
-**Numbering note:** the `arpit-reconcile-upstream` branch holds a different,
-Proposed ADR-0016 (weight versions). Renumber one of the two at the merge.
+**Numbering note:** the `arpit-reconcile-upstream` branch held a different,
+Proposed ADR-0016 (weight versions). Branch `arpit-recon-20261001` moved that
+record to ADR-0018 on 2026-10-01; this ADR keeps 0016.
 
 ## Summary
 

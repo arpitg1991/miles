@@ -8,10 +8,10 @@ from `examples/arena/<family>/r<N>/` to `training-runs/<family>/r<N>/`;
 no earlier ADR fixed that path.
 **Pairs with:** AREnATasks `eval-runs/` (the eval counterpart, same shape:
 `README.md`, `TEMPLATE.md`, one record per run, one index).
-**Numbering note:** the `arpit-reconcile-upstream` branch holds its own
-ADR-0016 (reconcile the fork with upstream `main`), so its number collides
-with ADR-0016 on this branch (KDA sharding). Renumber the reconcile ADR at
-the merge; this ADR keeps 0017 as long as the KDA ADR keeps 0016.
+**Numbering note:** the `arpit-reconcile-upstream` branch held its own
+ADR-0016 (reconcile the fork with upstream `main`), so its number collided
+with ADR-0016 on this branch (KDA sharding). Branch `arpit-recon-20261001`
+moved the reconcile ADR to ADR-0018 on 2026-10-01; this ADR keeps 0017.
 
 ## Summary
 

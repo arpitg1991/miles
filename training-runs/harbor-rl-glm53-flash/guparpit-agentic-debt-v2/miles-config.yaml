@@ -400,6 +400,15 @@ sglang_dsa_decode_backend: tilelang
 # kv-cache dtype to fp8_e4m3, and sglang's tilelang+fp8 check then raises
 # ValueError. Do not "simplify" by removing this key.
 sglang_kv_cache_dtype: bfloat16
+# guparpit-agentic-debt-v2 2026-10-01: R3 needs a MoE runner that materializes
+# the top-k ids. On sm100 the new SGLang (sglang-miles 14a1fa7d) resolves auto
+# to flashinfer_trtllm, which captures nothing: the first r49 attempt
+# (guparpit-agentic-debt-v2-9fqgp) stopped at rollout 60 with "routed_experts
+# payload is all zeros". The r48 SGLang (9a26e749) switches away from
+# flashinfer_trtllm by itself when --enable-return-routed-experts is set. The
+# upstream GLM-5.3 launcher sets triton for the same reason
+# (scripts/run_glm5_3_flash.py).
+sglang_moe_runner_backend: triton
 sglang_mem_fraction_static: 0.7
 sglang_router_port: 30000
 # router health knobs from the GLM recipe: DSA engine startup is slow, give

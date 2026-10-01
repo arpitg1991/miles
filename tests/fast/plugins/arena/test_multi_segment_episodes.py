@@ -522,7 +522,7 @@ def test_partial_batch_guard_raises_in_all_mode(monkeypatch):
     # downstream trim/schedule raises instead.
     groups = [[_sample(group_index=i, index=i, rollout_id=None, reward=1.0, response_length=2)] for i in range(3)]
     monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker(groups, "final"))
-    data = generate_rollout(_rollout_args("final"), 0, data_source=pytypes.SimpleNamespace())
+    data = generate_rollout(_rollout_args("final"), 0, data_source=pytypes.SimpleNamespace()).samples
     assert len(data) == 3
 
 
@@ -539,7 +539,7 @@ def test_generate_rollout_removal_breakdown_is_per_episode(monkeypatch, caplog):
     ]
     monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker(groups, "all"))
     with caplog.at_level(logging.INFO, logger=_LOGGER):
-        data = generate_rollout(_rollout_args("all"), 0, data_source=pytypes.SimpleNamespace())
+        data = generate_rollout(_rollout_args("all"), 0, data_source=pytypes.SimpleNamespace()).samples
     assert len(data) == 4
     lines = [r.getMessage() for r in caplog.records]
     assert "Failed-sample distribution: failed=1/4 (0.250), removed_total=3/4 (0.750)" in lines
@@ -754,7 +754,7 @@ def test_generate_rollout_pads_all_mode_only(monkeypatch):
         monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds, m=mode: _FakeWorker(groups(m), m))
         data = generate_rollout(
             _rollout_args(mode, actor_num_gpus_per_node=2), 0, data_source=pytypes.SimpleNamespace()
-        )
+        ).samples
         rows = [s for g in data for s in g]
         assert len(rows) == expected_rows, mode
         assert sum(s.metadata["mode"] == "dp_pad" for s in rows) == (1 if mode == "all" else 0)

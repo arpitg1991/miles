@@ -88,8 +88,12 @@ ADR-0011 (where the per-turn weight versions live)
   Amendment 2026-10-01: until then, `rollout_metrics.compute_weight_version_metrics`
   computes `rollout/weight_version/{min,mean,median,max}` and
   `rollout/weight_version/mixed_version_ratio` from the metadata key, with the
-  upstream and fork meaning, over every training row. `nats_rollout` logs them
-  in its `rollout/` metrics dict. The staleness filters still see no spans.
+  upstream and fork meaning, over every training row. `generate_rollout`
+  returns them in `RolloutFnTrainOutput.metrics`, the upstream seam for
+  rollout-function metrics. Upstream `log_rollout_data` then writes them to
+  its `perf <rollout_id>` log line and to `tracking.log`, as on
+  `arpit-glm-53`, with or without W&B. The staleness filters still see no
+  spans.
 - Upstream changes alter a run on this branch. `examples/arena/RECONCILE.md`
   lists them. The main items:
   - The DSA indexer applies RMSNorm to the indexer query (final #2786). The

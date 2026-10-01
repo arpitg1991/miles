@@ -2385,6 +2385,9 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     The background worker publishes up to rollout_batch_size prompts
     in-flight to keep gym workers saturated. This decouples collection
     throughput from training step consumption.
+
+    Returns a ``RolloutFnTrainOutput``: the groups, and the
+    ``rollout/weight_version/*`` metrics that miles ``log_rollout_data`` logs.
     """
     if evaluation:
         raise NotImplementedError("Evaluation mode not yet supported for NATS rollout")
@@ -2722,7 +2725,6 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             from miles_plugins.arena.rollout_metrics import (
                 compute_group_metrics_from_samples,
                 compute_off_policy_metrics,
-                compute_weight_version_metrics,
             )
 
             # One representative per episode: group_metrics sits on the first
@@ -2744,12 +2746,6 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             if off_policy:
                 for k, v in off_policy.items():
                     metrics[f"rollout/{k}"] = v
-
-            # rollout/weight_version/*: the upstream metric over every training
-            # row, as upstream log_rollout_data would see it. A compact batch
-            # (--arena-train-segments all) is not trimmed, so ``data`` is that list.
-            for k, v in compute_weight_version_metrics([s for group in data for s in group]).items():
-                metrics[f"rollout/{k}"] = v
 
             # Binary reward (rollout/binary_reward): fraction of samples with a
             # reward >= 1.0. Only meaningful when the run binarizes rewards, so
@@ -2808,7 +2804,18 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     if getattr(args, "arena_sample_summary_dir", None) is not None:
         _write_sample_summary(args, rollout_id, [s for group in data for s in group])
 
-    return data
+    # rollout/weight_version/* go out through the upstream channel: miles
+    # log_rollout_data merges these metrics into its "perf <rollout_id>" log
+    # line and into tracking.log, with or without W&B, as arpit-glm-53 did from
+    # Sample.weight_versions. They cover every training row, pads included. A
+    # compact batch (--arena-train-segments all) is not trimmed, so ``data`` is
+    # the list that log_rollout_data gets.
+    from miles.rollout.base_types import RolloutFnTrainOutput
+    from miles_plugins.arena.rollout_metrics import compute_weight_version_metrics
+
+    rows = [s for group in data for s in group]
+    weight_version_metrics = {f"rollout/{k}": v for k, v in compute_weight_version_metrics(rows).items()}
+    return RolloutFnTrainOutput(samples=data, metrics=weight_version_metrics)
 
 
 def _add_arena_arguments(parser):

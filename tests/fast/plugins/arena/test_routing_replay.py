@@ -640,7 +640,7 @@ def test_generate_rollout_materializes_kept_and_reaps_dropped(monkeypatch: pytes
     # A filter that drops zero-reward groups stands in for check_reward_nonzero_std.
     args = _rollout_args(dynamic_sampling_filter_path="tests.fast.plugins.arena.test_routing_replay._keep_positive")
 
-    data = generate_rollout(args, 0, data_source=pytypes.SimpleNamespace())
+    data = generate_rollout(args, 0, data_source=pytypes.SimpleNamespace()).samples
     assert [g[0].metadata["task_id"] for g in data] == ["kept"]
     assert kept.rollout_routed_experts.shape == (7, L, K)
     assert dropped.rollout_routed_experts is None
@@ -784,7 +784,7 @@ def test_generate_rollout_drops_group_with_lost_ref_and_continues(monkeypatch: p
     assert not Path(lost_a.metadata[REF_KEY]["path"]).exists()
     monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: _FakeWorker([[lost_a, lost_b], [kept]]))
 
-    data = generate_rollout(_rollout_args(), 0, data_source=pytypes.SimpleNamespace())
+    data = generate_rollout(_rollout_args(), 0, data_source=pytypes.SimpleNamespace()).samples
     assert [g[0].metadata["task_id"] for g in data] == ["kept"]
     assert kept.rollout_routed_experts.shape == (7, L, K)
     assert lost_b.rollout_routed_experts is None

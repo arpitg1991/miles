@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 # Sample.metadata key for the per-turn weight versions that the gym reports
 # (strings). Sample.weight_versions holds miles span objects, which the NATS
-# path cannot build without per-turn token ranges (ADR-0016).
+# path cannot build without per-turn token ranges (ADR-0018).
 ARENA_WEIGHT_VERSIONS_KEY = "arena_weight_versions"
 
 
@@ -150,7 +150,7 @@ def compute_off_policy_metrics(args: Any, all_samples: list, rollout_id: int | N
     """Read the gym weight versions from each sample's metadata and call the core function.
 
     The versions are in ``Sample.metadata[ARENA_WEIGHT_VERSIONS_KEY]``, one string
-    per turn (ADR-0016). A sample without the key counts as untagged.
+    per turn (ADR-0018). A sample without the key counts as untagged.
     """
     if not all_samples:
         return {}

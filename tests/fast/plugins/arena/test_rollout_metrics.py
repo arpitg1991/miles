@@ -178,7 +178,7 @@ def _tagged(weight_versions: list[str]) -> MockSample:
 
 
 class TestOffPolicyMetrics:
-    """compute_off_policy_metrics reads Sample.metadata["arena_weight_versions"] (ADR-0016)."""
+    """compute_off_policy_metrics reads Sample.metadata["arena_weight_versions"] (ADR-0018)."""
 
     def test_empty_samples_returns_empty(self):
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics

@@ -1,7 +1,9 @@
-# ADR-0016: Reconcile the fork with upstream `main` (2026-09-27)
+# ADR-0018: Reconcile the fork with upstream `main` (2026-09-27)
 
 **Status:** Proposed
 **Date:** 2026-09-27
+**Number:** ADR-0016 until 2026-10-01. The fork branch `arpit-glm-53` gave
+ADR-0016 and ADR-0017 to other decisions, so this record moved to ADR-0018.
 
 **Amends:** ADR-0005 (the driver anchors), ADR-0006 (the launcher helper calls),
 ADR-0011 (where the per-turn weight versions live)

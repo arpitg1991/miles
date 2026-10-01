@@ -1,6 +1,6 @@
 """Tests that gym weight_version flows into Sample.metadata["arena_weight_versions"].
 
-Sample.weight_versions stays empty: it holds miles span objects (ADR-0016).
+Sample.weight_versions stays empty: it holds miles span objects (ADR-0018).
 
 Covers the GenerateClient fast path in ``_result_to_samples_full_trajectory``
 (``has_generate_tokens`` steps carry real token-level data, so no tokenizer is

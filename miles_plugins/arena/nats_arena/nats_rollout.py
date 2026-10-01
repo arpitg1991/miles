@@ -490,7 +490,7 @@ def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | Non
     s.metadata = {
         # Per-turn SGLang weight versions for the off_policy_round metric: the
         # trajectory list on every segment, no per-segment slicing (ADR-0011).
-        # They stay in metadata; Sample.weight_versions stays empty (ADR-0016).
+        # They stay in metadata; Sample.weight_versions stays empty (ADR-0018).
         ARENA_WEIGHT_VERSIONS_KEY: list(ctx.weight_versions),
         "task_id": ctx.task_id,
         "mode": "full_trajectory",
@@ -2736,7 +2736,7 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             # Off-policy staleness (rollout/off_policy_round/*): how far the
             # trainer's weights advanced past the weights that generated each
             # sample. Reads the gym-reported per-turn versions in
-            # s.metadata["arena_weight_versions"] (ADR-0016). reference_step ==
+            # s.metadata["arena_weight_versions"] (ADR-0018). reference_step ==
             # rollout_id (one generate_rollout == one trainer step in
             # nats_rollout).
             off_policy = compute_off_policy_metrics(args, all_samples, rollout_id)

@@ -10,7 +10,7 @@ existing checkpoint dir resumes silently).
 
 **Amended:** 2026-09-27 (see the amendment at the end): the per-save `--save-hf` export
 is opt-in. Decision items 3 and 5 describe the argv before that date.
-**Amended by:** ADR-0016 (2026-09-27: the launcher calls the upstream backend object; the backend appends `--deploy-component all`)
+**Amended by:** ADR-0018 (2026-09-27: the launcher calls the upstream backend object; the backend appends `--deploy-component all`)
 
 ## Context
 

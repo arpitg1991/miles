@@ -1,8 +1,8 @@
 # ADR-0008: GLM-5.3-Flash (glm5_next) support via the PR #2786 merge
 
-**Status:** Accepted; superseded in part by ADR-0016
+**Status:** Accepted; superseded in part by ADR-0018
 **Date:** 2026-09-02
-**Superseded in part by:** ADR-0016 (2026-09-27: upstream merged PR #2786 as `cc76e2391`; the fork drops its PR copy and takes the upstream plugin)
+**Superseded in part by:** ADR-0018 (2026-09-27: upstream merged PR #2786 as `cc76e2391`; the fork drops its PR copy and takes the upstream plugin)
 
 **Builds on:** ADR-0001 (port scope: core edits only where miles has no seam), ADR-0006 (launcher argv parity: `model_arch` resolves `scripts/models/<arch>.py` from the tree)
 

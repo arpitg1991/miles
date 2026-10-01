@@ -2,7 +2,8 @@
 
 This file records how branch `arpit-reconcile-upstream` was made. It lists each
 dropped commit, each partial keep, and each conflict resolution. The decisions
-are in plugin ADR-0016 (`miles_plugins/arena/adr/0016-reconcile-with-upstream-main.md`).
+are in plugin ADR-0018 (`miles_plugins/arena/adr/0018-reconcile-with-upstream-main.md`;
+ADR-0016 until 2026-10-01).
 
 ## Inputs
 
@@ -135,7 +136,7 @@ It restores three files from `38921ae45` without change, right after
 
 | commit | change |
 | --- | --- |
-| `a18a23903` | ADR-0016 and the amendment links in ADR-0005, ADR-0006, ADR-0008, ADR-0011 |
+| `a18a23903` | ADR-0018 (numbered 0016 then) and the amendment links in ADR-0005, ADR-0006, ADR-0008, ADR-0011 |
 | `bc0c843c6` | `train_async_arena.py` rebuilt on the upstream `train_async.py`. The old driver imported `create_rollout_manager`, `MainProcessIdentity`, and `ft_utils.control_server`, which upstream removed. The ADR-0005 check stays at 0 deleted lines. The final drain and the heartbeat removal are one disposer callback, `_finish_arena` |
 | `f32dd8838` | `scripts/run_arena_harbor.py` calls `args.create_backend()`; upstream #2432 removed `U.exec_command_cpu` and `U.execute_train`. The snapshot adds `--deploy-component all` |
 | `e8d4ae9a1` | the gym weight versions move to `Sample.metadata["arena_weight_versions"]`; `Sample.weight_versions` stays empty. Upstream #1891 made that field a list of span objects |
@@ -295,7 +296,7 @@ not isolated.
 
 ## Open items
 
-1. The owner accepts or changes ADR-0016 decision 4 (the weight versions in
+1. The owner accepts or changes ADR-0018 decision 4 (the weight versions in
    `Sample.metadata`, no spans).
 2. Test the engine path before a relaunch from r44, r45, or r46: SGLang
    `sglang-miles` `571212b6` with the r45 engine flags, one weight update, the

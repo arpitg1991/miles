@@ -1089,7 +1089,7 @@ upstream"). Upstream merged PR #2786 as `cc76e2391` on 2026-09-24.
   merge commits. One new commit restores the three files that only the merge
   `38921ae45` added. `examples/arena/RECONCILE.md` lists each drop, each partial
   keep, and each conflict resolution.
-- New commits after the rebase: ADR-0016, the driver rebuilt on the upstream
+- New commits after the rebase: ADR-0018, the driver rebuilt on the upstream
   `train_async.py`, the launcher on the upstream backend object, the gym weight
   versions in `Sample.metadata["arena_weight_versions"]`, a parallel state in
   the advantage-scale tests, and the regenerated `run_glm5_3_flash` snapshot.
@@ -1099,7 +1099,7 @@ upstream"). Upstream merged PR #2786 as `cc76e2391` on 2026-09-24.
   import smoke of `examples/arena/Dockerfile` passes in the
   `miles-glm53-r15-20260927a` image.
 - Not done: no trainer image, no GPU job, and no change to r44, r45, or r46.
-  ADR-0016 stays Proposed until the owner accepts the weight-version decision
+  ADR-0018 stays Proposed until the owner accepts the weight-version decision
   and a GPU test job passes.
 
 ## 2026-09-27 (PT) — Reconcile GPU tests (`recon-*` jobs on prod-bom)
@@ -1129,4 +1129,4 @@ Not a run. GPU tests of branch `arpit-reconcile-upstream`. The tables are in
   the peak allocated memory 8.0 GiB higher on each stage.
 - Not done: an engine-path test (SGLang `571212b6`, weight updates, the
   event-logger checksums, the mini fault-tolerance controller). No change to
-  r44, r45, r46, or `arpit-glm-53`. ADR-0016 stays Proposed.
+  r44, r45, r46, or `arpit-glm-53`. ADR-0018 stays Proposed.

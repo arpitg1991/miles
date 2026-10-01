@@ -667,6 +667,18 @@ Validation (CPU, the test venv and the stand-ins of "Validation (CPU,
 | upstream tests of the reused code: `utils/test_types.py`, `utils/test_weight_version.py`, `rollout/test_filters.py`, `rollout/test_fully_async_rollout.py`, `ray/rollout/test_metrics.py`, `rollout/inference_rollout/test_compatibility.py`, `ray/rollout/test_train_data_conversion.py`, `ray/rollout/test_rollout_executor.py`, `dashboard/test_dump_reader_views.py`, `dashboard/test_trajectory_sink.py`; `stubfull`, conftests, local Ray | 347 passed, 1 skipped | the same |
 | ADR-0005 check, `diff train_async.py miles_plugins/arena/train_async_arena.py \| grep -c '^<'` | 0 | 0 |
 
+After the two review fixes `7ef41c1af` (the span error names both gym
+runtimes) and `c830cff71` (the staleness reference), with the same venv and
+stand-ins:
+
+| check | result |
+| --- | --- |
+| arena fast tests, `stub` | 371 passed, 4 skipped. The driver-loop test needs `sglang.srt.constants` |
+| arena tests and `test_run_arena_harbor.py`, `stubfull`, conftests, local Ray | 386 passed, 1 failed (`test_register_nova_reasoning_parser`, as before) |
+| launcher tests, `stub` | 65 passed, 1 failed (`test_workplace_launch_uses_the_configured_backend`, as before) |
+| upstream tests of the reused code, `stubfull`, conftests, local Ray | 347 passed, 1 skipped |
+| ADR-0005 check | 0 |
+
 ### Other new commits
 
 | commit | change |
@@ -914,3 +926,14 @@ change.
       `rollout/weight_version/*` in the `perf <rollout_id>` line, the
       `Weight staleness:` line, and that `assert_samples_weight_version_sane`
       passes.
+   5. One model call can span a weight update. The trainer passes no
+      `--pause-generation-mode`, so SGLang uses `retract`, and a paused call
+      continues under the new weights. The `sglang-miles` engine then gives
+      that call a list of spans in `meta_info["weight_versions"]`, and the
+      scalar `weight_version` is the newest version. The span contract has one
+      entry per call, so the gym labels the whole output of that call with
+      the newest version. The staleness filter, `rollout/weight_version/*`
+      and `rollout/off_policy_round/*` then read those tokens as too new. The
+      fix changes the contract on both sides: the gym reads the list, as
+      upstream `WeightVersionsPerCall.from_meta_info` does, and the trainer
+      makes one `WeightVersionsPerCall` with one span per list entry.

@@ -15,7 +15,7 @@ spec:
     - name: experiment-name
       value: guparpit-agentic-debt-v2
     - name: trainer-image
-      value: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-recon-20261001a
+      value: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-recon-20261001b
     - name: replicas
       value: '40'
     - name: replica-trainer

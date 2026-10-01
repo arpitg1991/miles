@@ -10,7 +10,7 @@
 **Dataset:** `lakefs://arena-inspect/327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480/internal/agentic-debt-r3/agentic-debt-766/manifest.jsonl` (gym `agentic-debt`)
 **Manifest commit:** `327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480`
 **Gym image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adr72-20260927a`
-**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-recon-20261001a`
+**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-recon-20261001b`
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v1`
 <!-- gen-workflow:end -->
@@ -28,7 +28,7 @@ Starts from r47 checkpoint `iter_0000059`; miles resumes at rollout 60. Sibling 
 The trainer code and the image differ. The training keys do not.
 
 - **Code:** miles `arpit-recon-20261001` at `b167425ce1`. That is upstream radixark/miles `main` `d7f1a421` (2026-09-30), plus every fork commit of `arpit-glm-53` and `arpit-r3-datapath`. See `examples/arena/RECONCILE.md`, section "Refresh 2026-10-01".
-- **Image:** `arena-slime-dev:miles-glm53-recon-20261001a`, built on base `arena-slime-dev:miles-base-d7f1a42-20261001a`.
+- **Image:** `arena-slime-dev:miles-glm53-recon-20261001b`, built on base `arena-slime-dev:miles-base-d7f1a42-20261001a`.
 - **Base recipe:** upstream `docker/build.py --variant cu13-x86` at `d7f1a421`, with these pins:
 
   | Component | Pin |
@@ -72,7 +72,7 @@ Behavior changes that come with the upstream base, for this config:
 
 | Question | Signal | Gate |
 | --- | --- | --- |
-| KDA TP checkpoint and weight sync on the new base | T1 job: HF gather SHA-256 of `iter_0000059`, r17 image against this image; log-probs on real rows | every tensor equal; log-prob difference within 2 x the same-image floor + 1e-3 |
+| KDA TP checkpoint and weight sync on the new base | T1 job: HF gather SHA-256 of `iter_0000059`, r17 image against this image; log-probs on real rows | PASS 2026-10-01 12:26Z: 37,534 of 37,534 tensors bitwise equal; mean abs 0.0500 against a floor of 0.0490; p99 0.509 against 0.569; logits relative L2 0.226 against 0.224 |
 | Checkpoint load | `successfully loaded checkpoint ... at iteration 59` | present |
 | Engine path | `perf/update_weights_time` and the checksum time per update | update succeeds; the time is recorded against r48 (about 25 s) |
 | First step | `train/train_rollout_logprob_abs_diff`, `train/grad_norm` | near r48: 0.048 to 0.050, and 0.033 to 0.042 |
@@ -83,4 +83,10 @@ If a gate fails, report it. Ask the user before you stop the run.
 
 ## Launch
 
-<!-- filled at launch -->
+| Time (UTC) | Event |
+| --- | --- |
+| 11:50:56 | First submit, `guparpit-agentic-debt-v2-l8x9j`, image `miles-glm53-recon-20261001a` (`sha256:d21da971...`). |
+| 11:55:53 | `ray start --head` exits 1: the Ray dashboard fails to import `opentelemetry.sdk.metrics`. The upstream base holds `opentelemetry-api` 1.45.0 with `opentelemetry-sdk` 1.44.0 (requires `==1.44.0`). The trainer PyTorchJob fails and ttl 0 deletes it. |
+| 12:16 | User yes: Stop `l8x9j`. Cleanup ran; 0 resources left; the checkpoint dir is unchanged. |
+| 12:15 | Image `miles-glm53-recon-20261001b` (`da93977ba8`, `sha256:4023b5ff...`): the arena layer re-pins `opentelemetry-api` to the sdk version, and the build smoke starts a Ray head. |
+| 12:26 | T1 PASS (`recon-t1-{ref,new}-20261001a`, harness ConfigMap `recon-harness-20261001a`). The new job ran image a; image b differs only in `opentelemetry-api`. |

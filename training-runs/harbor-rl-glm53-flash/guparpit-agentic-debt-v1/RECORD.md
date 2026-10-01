@@ -1,6 +1,6 @@
 # guparpit-agentic-debt-v1 (r48)
 
-**Status:** submitted 2026-10-01.
+**Status:** running. Argo workflow `guparpit-agentic-debt-v1-gsgr7`, W&B run `631mke7d`.
 **Gym:** agentic-debt. **W&B:** project `arena/agentic-debt`, run `guparpit-agentic-debt-v1`.
 **Dataset:** `lakefs://arena-inspect/main/internal/agentic-debt-r3/agentic-debt-766/` (manifest commit 327e057c, as r47).
 **Start:** r47 checkpoint `iter_0000059` (saved 2026-10-01 02:51Z). miles resumes at rollout 60.
@@ -69,4 +69,11 @@ starts with an empty one.
 
 ## Launch
 
-<!-- filled at launch -->
+| Time (UTC) | Event |
+| --- | --- |
+| 07:53:40 | Workflow `guparpit-agentic-debt-v1-gsgr7` created. All 303 B200 nodes Ready, no new taints, `excluded-nodes` = the r47 list (98). |
+| 07:56:41 | Trainer PyTorchJob created. Kueue admitted it in `gpu.p6-b200-48xlarge`. |
+| 07:58:46 | `Checkpoint sidecar rollout_id=59.` No `Restored wandb_run_id` line. W&B `arena/agentic-debt/runs/631mke7d`. |
+| 08:15:58 | `successfully loaded checkpoint ... at iteration 59`. `Rollout 60: collecting 32 groups`. `inflight_multiplier=4, max_in_flight=128`. |
+| 08:17:22 | Gym Deployment created (288 replicas). |
+| 08:28:59 | 0 of 32 groups collected after 781 s. The r47 resume took about 4.5 h to its first rollout. |

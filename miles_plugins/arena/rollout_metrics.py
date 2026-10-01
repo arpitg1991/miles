@@ -11,12 +11,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Sample.metadata key for the per-turn weight versions that the gym reports
-# (strings). Sample.weight_versions holds miles span objects, which the NATS
-# path cannot build without per-turn token ranges (ADR-0018).
-ARENA_WEIGHT_VERSIONS_KEY = "arena_weight_versions"
-
-
 
 def compute_group_metrics_from_samples(samples: list[Any]) -> dict[str, float]:
     """Aggregate gym-side per-task group_metrics across a rollout batch.
@@ -146,36 +140,28 @@ def compute_off_policy_round_metrics(
     }
 
 
-def compute_weight_version_metrics(samples: list) -> dict[str, float]:
-    """``weight_version/*`` of upstream ``miles/ray/rollout/metrics.py``, read from the arena metadata.
+def compute_off_policy_metrics(
+    args: Any, episodes: list[list[Any]], rollout_id: int | None = None
+) -> dict[str, float]:
+    """Read the weight versions of each episode from the upstream spans and call the core function.
 
-    Upstream reads the ``Sample.weight_versions`` spans, which the NATS path
-    does not build (ADR-0018). The meaning is the same as upstream and as on
-    ``arpit-glm-53``: ``min``, ``mean``, ``median`` and ``max`` of the oldest
-    numeric version of each sample that has one, and ``mixed_version_ratio``,
-    the share of all samples whose turns carry more than one version.
+    One entry per episode: the ``Sample.weight_versions`` span versions of its
+    segments, in order (ADR-0018). A DP pad (``mode`` ``"dp_pad"``) repeats
+    the spans of another row, so it adds none. An episode without spans
+    counts as untagged.
     """
-    from miles.utils.metric_utils import compute_statistics
-
-    per_sample = [(s.metadata or {}).get(ARENA_WEIGHT_VERSIONS_KEY) or [] for s in samples]
-    oldest = [min(numeric) for vs in per_sample if (numeric := [int(v) for v in vs if str(v).isdigit()])]
-    if not oldest:
-        return {}
-    metrics = {f"weight_version/{key}": value for key, value in compute_statistics(oldest).items()}
-    metrics["weight_version/mixed_version_ratio"] = sum(1 for vs in per_sample if len(set(vs)) > 1) / len(samples)
-    return metrics
-
-
-def compute_off_policy_metrics(args: Any, all_samples: list, rollout_id: int | None = None) -> dict[str, float]:
-    """Read the gym weight versions from each sample's metadata and call the core function.
-
-    The versions are in ``Sample.metadata[ARENA_WEIGHT_VERSIONS_KEY]``, one string
-    per turn (ADR-0018). A sample without the key counts as untagged.
-    """
-    if not all_samples:
+    if not episodes:
         return {}
     return compute_off_policy_round_metrics(
-        per_sample_weight_versions=[(s.metadata or {}).get(ARENA_WEIGHT_VERSIONS_KEY) or [] for s in all_samples],
+        per_sample_weight_versions=[
+            [
+                span.version
+                for s in episode
+                if (s.metadata or {}).get("mode") != "dp_pad"
+                for span in s.all_weight_version_spans
+            ]
+            for episode in episodes
+        ],
         interval=getattr(args, "update_weights_interval", 1),
         reference_step=rollout_id,
     )

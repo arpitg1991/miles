@@ -35,7 +35,9 @@ from typing import Any
 
 import numpy as np
 
-from miles.utils.types import Sample
+from miles.rollout.base_types import BaseRolloutFn, RolloutFnInput, RolloutFnTrainOutput
+from miles.rollout.filter_hub.common_filters import group_staleness
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 from miles_plugins.arena.nats_arena.message_format import (
     SALVAGEABLE_RESULT_STATUSES,
@@ -59,7 +61,6 @@ from miles_plugins.arena.nats_arena.routing_replay import (
     stash_step_payload,
 )
 from miles_plugins.arena.nats_arena.stream_config import results_stream_config
-from miles_plugins.arena.rollout_metrics import ARENA_WEIGHT_VERSIONS_KEY
 
 # Lazy-imported in _maybe_build_autoscaler / _maybe_build_timing_tracker
 # so that import errors in these optional modules don't prevent
@@ -70,7 +71,7 @@ RolloutTimingTracker = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["generate_rollout"]
+__all__ = ["NatsRolloutFn", "generate_rollout"]
 
 
 # ---------------------------------------------------------------------------
@@ -82,12 +83,12 @@ _worker_lock = threading.Lock()
 
 
 def _raise_if_fatal(worker) -> None:
-    """Re-raise the worker's fatal error (ADR-0012).
+    """Re-raise the worker's fatal error (ADR-0012, ADR-0018).
 
-    A RoutingReplayError kills the worker thread, most often between two
-    ``generate_rollout`` calls (during the train step) or while the queue
-    still holds a full batch. Silently building a fresh worker there would
-    discard the error and keep training.
+    A RoutingReplayError or a WeightVersionSpansError kills the worker
+    thread, most often between two ``generate_rollout`` calls (during the
+    train step) or while the queue still holds a full batch. A fresh worker
+    there discards the error, and the run trains on.
     """
     fatal = getattr(worker, "fatal_error", None)
     if fatal is not None:
@@ -479,7 +480,10 @@ class _EpisodeContext:
     masked_output_tokens: int
     max_ctx: int | None
     args: Any
-    weight_versions: list[str]
+    # The gym saw an SGLang weight version on at least one call of the
+    # trajectory, so each step with token arrays MUST carry
+    # ``weight_version_spans`` (ADR-0018).
+    reports_weight_versions: bool
 
 
 def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | None) -> Sample:
@@ -488,10 +492,6 @@ def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | Non
     # one-sample episode, which is what the slow path emits; the fast path
     # overwrites both for a multi-segment episode.
     s.metadata = {
-        # Per-turn SGLang weight versions for the off_policy_round metric: the
-        # trajectory list on every segment, no per-segment slicing (ADR-0011).
-        # They stay in metadata; Sample.weight_versions stays empty (ADR-0018).
-        ARENA_WEIGHT_VERSIONS_KEY: list(ctx.weight_versions),
         "task_id": ctx.task_id,
         "mode": "full_trajectory",
         "gym_name": ctx.gym_name,
@@ -507,6 +507,79 @@ def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | Non
     if removal_reason:
         s.metadata["removal_reason"] = removal_reason
     return s
+
+
+# The gym change that adds ``weight_version_spans`` is AREnATasks ADR-0074. No
+# gym image with it exists yet. Put the tag of the first one here when it is built.
+_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS = "a gym image built from AREnATasks with ADR-0074"
+
+
+class WeightVersionSpansError(RuntimeError):
+    """A step cannot give upstream ``WeightVersionSpan`` objects (ADR-0018).
+
+    The step has no ``weight_version_spans`` although its trajectory reports
+    weight versions (a gym image older than the span contract), or an entry
+    breaks the contract. Every message of that gym image has the same defect,
+    so the NATS worker stops the run, as for a ``RoutingReplayError``. A pad
+    hides the defect.
+    """
+
+
+def _reports_weight_versions(traj: dict[str, Any]) -> bool:
+    """True when the gym recorded an SGLang weight version for a call of ``traj``.
+
+    Gym images send the trajectory list ``weight_versions``. Older images set
+    ``weight_version`` on each step.
+    """
+    return bool(traj.get("weight_versions")) or any(
+        st.get("weight_version") is not None for st in traj.get("steps") or []
+    )
+
+
+def _step_weight_versions(step: dict[str, Any], ctx: _EpisodeContext, n_tokens: int) -> list[WeightVersionsPerCall]:
+    """Build the upstream ``Sample.weight_versions`` of one step, one call per ``weight_version_spans`` entry.
+
+    The gym sends one ``{"version", "start", "end"}`` per model call of the
+    step that has a weight version. ``[start, end)`` indexes the step
+    ``token_ids``, and ``_step_to_sample`` keeps those ``token_ids`` as
+    ``Sample.tokens``, so the offset is 0. A hard context overflow cuts
+    ``Sample.tokens`` to ``n_tokens``. The spans are then cut as upstream
+    ``Sample.strip_last_output_tokens`` cuts them.
+
+    Raises:
+        WeightVersionSpansError: the step has no ``weight_version_spans`` and
+            the trajectory reports weight versions, or an entry does not hold
+            ``int`` values with ``previous end <= start < end <= len(token_ids)``.
+    """
+    entries = step.get("weight_version_spans")
+    if entries is None:
+        if ctx.reports_weight_versions:
+            raise WeightVersionSpansError(
+                f"Task {ctx.task_id}: the trajectory reports weight_versions, but a step has no "
+                f"weight_version_spans. The trainer needs {_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS} "
+                "or a later gym image (ADR-0018)."
+            )
+        # No call had an SGLang weight version (eval and no-SGLang paths).
+        return []
+    n_gym_tokens = len(step["token_ids"])
+    calls = []
+    previous_end = 0
+    for entry in entries:
+        fields = [entry.get(key) for key in ("version", "start", "end")] if isinstance(entry, dict) else []
+        if not (
+            len(fields) == 3
+            and all(type(field) is int for field in fields)
+            and previous_end <= fields[1] < fields[2] <= n_gym_tokens
+        ):
+            raise WeightVersionSpansError(
+                f"Task {ctx.task_id}: weight_version_spans entry {entry!r} breaks the contract: int version, "
+                f"start and end with {previous_end} <= start < end <= {n_gym_tokens} (ADR-0018)"
+            )
+        version, start, end = fields
+        previous_end = end
+        spans = [WeightVersionSpan(version=str(version), abs_start=start, abs_end=min(end, n_tokens))]
+        calls.append(WeightVersionsPerCall(spans=spans if start < n_tokens else []))
+    return calls
 
 
 def _step_to_sample(step: dict, ctx: _EpisodeContext) -> Sample:
@@ -574,6 +647,7 @@ def _step_to_sample(step: dict, ctx: _EpisodeContext) -> Sample:
     s.loss_mask = resp_loss_mask
     s.response_length = response_length
     s.reward = ctx.reward
+    s.weight_versions = _step_weight_versions(step, ctx, n_tokens=len(s.tokens))
 
     # rollout_log_probs MUST be aligned 1:1 with the response window when
     # use_rollout_logprobs is on — the actor slices it with CP and
@@ -677,6 +751,8 @@ def _messages_to_sample(messages: list[dict], ctx: _EpisodeContext, tokenizer) -
     s.loss_mask = resp_loss_mask
     s.response_length = response_length
     s.reward = ctx.reward
+    # Sample.weight_versions stays empty: the gym spans index the gym tokens,
+    # and this path makes its own tokens.
 
     # The slow path re-tokenizes messages, so there are no token-level
     # logprobs. Under use_rollout_logprobs, convert_samples_to_train_data
@@ -788,13 +864,6 @@ def _result_to_episodes_full_trajectory(
         # removes a sample. An older gym image omits the counters, which reads
         # as 0; ``truncated_spans`` from that image is ignored.
         agent_stop_reason = str(traj.get("agent_stop_reason") or "").lower()
-        # Per-turn SGLang weight versions for the off_policy_round metric.
-        # Prefer the explicit parallel list emitted by the gym; fall back to
-        # the per-step ``weight_version`` keys for older gym builds. Empty
-        # list (no version reported) → metric treats the sample as untagged.
-        wvs = traj.get("weight_versions")
-        if not wvs:
-            wvs = [st.get("weight_version") for st in steps]
         ctx = _EpisodeContext(
             task_id=task_id,
             gym_name=gym_name,
@@ -804,7 +873,7 @@ def _result_to_episodes_full_trajectory(
             masked_output_tokens=int(traj.get("masked_output_tokens") or 0),
             max_ctx=max_ctx,
             args=args,
-            weight_versions=[str(v) for v in wvs if v is not None],
+            reports_weight_versions=_reports_weight_versions(traj),
         )
 
         training = _training_steps(steps, args)
@@ -1302,9 +1371,9 @@ class NATSRolloutWorker:
             maxsize=max(1, (10 * args.global_batch_size) // max(1, args.n_samples_per_prompt))
         )
         self.worker_thread = None
-        # Set by the worker loop before it dies on a RoutingReplayError, so
-        # generate_rollout can re-raise the cause instead of returning a
-        # partial batch (ADR-0012).
+        # Set by the worker loop before it dies on a RoutingReplayError or a
+        # WeightVersionSpansError, so generate_rollout can re-raise the cause
+        # instead of returning a partial batch (ADR-0012, ADR-0018).
         self.fatal_error: BaseException | None = None
 
         # Session token — uniquely identifies *this* trainer process's NATS
@@ -1990,11 +2059,13 @@ class NATSRolloutWorker:
                 if not msgs and in_flight >= max_in_flight:
                     await asyncio.sleep(1)
 
-            except RoutingReplayError as exc:
+            except (RoutingReplayError, WeightVersionSpansError) as exc:
                 # Training on a MoE sample without its rollout routing is
-                # silent corruption, not a transient error. Kill the worker;
-                # generate_rollout re-raises fatal_error (ADR-0012).
-                logger.error("Routing replay failure, stopping NATS worker: %s", exc)
+                # silent corruption, not a transient error (ADR-0012). A gym
+                # image without weight_version_spans breaks every message
+                # (ADR-0018). Kill the worker; generate_rollout re-raises
+                # fatal_error.
+                logger.error("%s, stopping NATS worker: %s", type(exc).__name__, exc)
                 self.fatal_error = exc
                 raise
             except Exception as exc:
@@ -2060,10 +2131,12 @@ class NATSRolloutWorker:
                 episodes.extend(
                     _result_to_episodes_full_trajectory(result, self._tokenizer, self.args)
                 )
-            except RoutingReplayError:
+            except (RoutingReplayError, WeightVersionSpansError):
                 # Never fold a missing routing payload into n_failed: the pad
                 # below would copy a sibling and the batch would train the
-                # MoE on the wrong experts without a trace (ADR-0012).
+                # MoE on the wrong experts without a trace (ADR-0012). A gym
+                # image without weight_version_spans fails every message the
+                # same way (ADR-0018).
                 raise
             except Exception as exc:
                 logger.error("Task %s: conversion failed: %s", task_id, exc, exc_info=True)
@@ -2248,8 +2321,8 @@ def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
     multiple of ``dp_size``, so the pad covers that path too.
 
     Each pad is a zero-loss sibling segment of the shortest kept row: same
-    ``tokens``, ``reward``, ``group_index`` and ``rollout_id``, all-zero
-    ``loss_mask``. ``_normalize_rewards_by_rollout`` sees one more row with the
+    ``tokens``, ``weight_versions``, ``reward``, ``group_index`` and
+    ``rollout_id``, all-zero ``loss_mask``. ``_normalize_rewards_by_rollout`` sees one more row with the
     episode reward and ``_compute_rollout_mask_sums`` adds zero, so the
     episode's advantage and loss weight are unchanged. ``remove_sample`` stays
     False so the per-episode ``removed_frac`` does not flag the episode; the
@@ -2303,6 +2376,8 @@ def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
             pad.rollout_log_probs = [0.0] * src.response_length
         if replay_zeros is not None:
             pad.rollout_routed_experts = replay_zeros
+        # The pad repeats the source tokens, so the source spans index them too.
+        pad.weight_versions = [WeightVersionsPerCall(spans=list(call.spans)) for call in src.weight_versions]
         pad.reward = src.reward
         pad.group_index = src.group_index
         pad.rollout_id = src.rollout_id
@@ -2374,7 +2449,9 @@ def _write_sample_summary(args: Any, rollout_id: int, samples: list[Sample]) -> 
         logger.warning("arena sample summary for rollout %d failed: %s", rollout_id, exc)
 
 
-def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = False):
+def generate_rollout(
+    args, rollout_id: int, data_source, evaluation: bool = False, weight_version: int | None = None
+) -> RolloutFnTrainOutput:
     """NATS rollout function entry point.
 
     Uses a global background worker that continuously publishes tasks to
@@ -2386,13 +2463,27 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     in-flight to keep gym workers saturated. This decouples collection
     throughput from training step consumption.
 
+    ``weight_version`` is the engine weight version of the rollout executor
+    (``RolloutFnTrainInput.weight_version``). Only ``NatsRolloutFn`` passes
+    it. The upstream consume-time staleness filter then applies, as in
+    ``DefaultDataBuffer.get``: with ``--max-weight-staleness``, a group whose
+    oldest span version is more than that many versions behind is dropped.
+
     Returns a ``RolloutFnTrainOutput``: the groups, and the
-    ``rollout/weight_version/*`` metrics that miles ``log_rollout_data`` logs.
+    ``rollout/fully_async/*staleness*`` metrics that miles ``log_rollout_data``
+    logs. Miles computes ``rollout/weight_version/*`` from the spans.
     """
     if evaluation:
         raise NotImplementedError("Evaluation mode not yet supported for NATS rollout")
 
     assert args.rollout_global_dataset
+    max_staleness = getattr(args, "max_weight_staleness", None)
+    if max_staleness is not None and weight_version is None:
+        raise ValueError(
+            "--max-weight-staleness needs the engine weight version, and this call has none. Only "
+            "--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn passes it, "
+            "after the first weight update."
+        )
 
     worker = get_global_worker(args, data_source)
     # The thread can die with a full queue; the wait loop below never runs then.
@@ -2436,6 +2527,7 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     all_data: list[list[Sample]] = []
     examined = 0
     dropped = 0
+    stale_dropped = 0
     lost_ref_groups = 0
     rescued = 0
     start_time = time.time()
@@ -2483,6 +2575,18 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                         # A dropped group never decodes; delete its blobs.
                         reap_sample_refs(group)
                     continue
+
+            # Consume-time staleness, as upstream DefaultDataBuffer.get: the
+            # oldest span version of the group against the engine version.
+            # ponytail: a stale group is always dropped, so
+            # --async-unused-samples-handler retry has no effect here. Upgrade
+            # path: give the prompt back to the data source for a new publish.
+            staleness = group_staleness(group, weight_version)
+            if max_staleness is not None and staleness is not None and staleness > max_staleness:
+                stale_dropped += 1
+                if replay_on:
+                    reap_sample_refs(group)
+                continue
 
             if replay_on:
                 # Drain-time decode (ADR-0012): the group is about to join the
@@ -2559,6 +2663,23 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             len(data), target_groups, dropped, examined, max_examined, rescued,
             " [HIT CAP — accepted unfiltered tail]" if examined >= max_examined and len(data) < target_groups else "",
         )
+
+    # The keys and the meaning of upstream DefaultDataBuffer.get_metrics.
+    kept_staleness = [x for group in data if (x := group_staleness(group, weight_version)) is not None]
+    staleness_metrics = {"rollout/fully_async/stale_groups_filtered": stale_dropped}
+    if kept_staleness:
+        staleness_metrics["rollout/fully_async/avg_staleness"] = sum(kept_staleness) / len(kept_staleness)
+        staleness_metrics["rollout/fully_async/max_staleness"] = max(kept_staleness)
+    logger.info(
+        "Weight staleness: dropped=%d stale groups (max_weight_staleness=%s), kept=%d groups, "
+        "avg=%s max=%s at weight_version=%s",
+        stale_dropped,
+        max_staleness,
+        len(data),
+        staleness_metrics.get("rollout/fully_async/avg_staleness"),
+        staleness_metrics.get("rollout/fully_async/max_staleness"),
+        weight_version,
+    )
 
     # --arena-train-segments all: every sample carries a rollout_id, so miles
     # runs the batch in compact mode and postprocess_rollout_data does NOT trim
@@ -2738,11 +2859,10 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
 
             # Off-policy staleness (rollout/off_policy_round/*): how far the
             # trainer's weights advanced past the weights that generated each
-            # sample. Reads the gym-reported per-turn versions in
-            # s.metadata["arena_weight_versions"] (ADR-0018). reference_step ==
-            # rollout_id (one generate_rollout == one trainer step in
-            # nats_rollout).
-            off_policy = compute_off_policy_metrics(args, all_samples, rollout_id)
+            # episode. Reads the span versions of every segment of the episode
+            # (ADR-0018). reference_step == rollout_id (one generate_rollout ==
+            # one trainer step in nats_rollout).
+            off_policy = compute_off_policy_metrics(args, _episodes(all_data), rollout_id)
             if off_policy:
                 for k, v in off_policy.items():
                     metrics[f"rollout/{k}"] = v
@@ -2804,18 +2924,9 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     if getattr(args, "arena_sample_summary_dir", None) is not None:
         _write_sample_summary(args, rollout_id, [s for group in data for s in group])
 
-    # rollout/weight_version/* go out through the upstream channel: miles
-    # log_rollout_data merges these metrics into its "perf <rollout_id>" log
-    # line and into tracking.log, with or without W&B, as arpit-glm-53 did from
-    # Sample.weight_versions. They cover every training row, pads included. A
-    # compact batch (--arena-train-segments all) is not trimmed, so ``data`` is
-    # the list that log_rollout_data gets.
-    from miles.rollout.base_types import RolloutFnTrainOutput
-    from miles_plugins.arena.rollout_metrics import compute_weight_version_metrics
-
-    rows = [s for group in data for s in group]
-    weight_version_metrics = {f"rollout/{k}": v for k, v in compute_weight_version_metrics(rows).items()}
-    return RolloutFnTrainOutput(samples=data, metrics=weight_version_metrics)
+    # Miles log_rollout_data merges these metrics into its "perf <rollout_id>"
+    # log line and into tracking.log, with or without W&B.
+    return RolloutFnTrainOutput(samples=data, metrics=staleness_metrics)
 
 
 def _add_arena_arguments(parser):
@@ -2943,5 +3054,28 @@ def _add_arena_arguments(parser):
 
 
 generate_rollout.add_arguments = _add_arena_arguments
+
+
+class NatsRolloutFn(BaseRolloutFn):
+    """``generate_rollout`` behind the upstream class seam, which passes the engine weight version.
+
+    ``LegacyRolloutFnAdapter`` drops ``RolloutFnTrainInput.weight_version``.
+    The staleness filter and the ``rollout/fully_async/*staleness*`` metrics
+    need it, so they need
+    ``--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn``.
+    """
+
+    add_arguments = staticmethod(_add_arena_arguments)
+
+    def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
+        constructor = self.constructor_input
+        return generate_rollout(
+            constructor.args,
+            input.rollout_id,
+            constructor.data_source,
+            evaluation=input.evaluation,
+            weight_version=input.weight_version,
+        )
+
 
 atexit.register(stop_global_worker)

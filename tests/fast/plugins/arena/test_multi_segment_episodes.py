@@ -32,7 +32,7 @@ import miles.utils.mask_utils as mask_utils
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
 from miles.utils.dp_schedule import build_dp_schedule
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 from miles_plugins.arena.nats_arena import nats_rollout
 from miles_plugins.arena.nats_arena.nats_rollout import (
     _SEGMENT_INDEX_STRIDE,
@@ -65,6 +65,13 @@ _FINAL_MULTI_TURN = [0, 1, 1, 0, 1, 1, 1]  # window [1, 1, 0, 1, 1, 1]
 # ---------------------------------------------------------------------------
 
 
+def _spans(loss_mask: list[int], version: int = 3) -> list[dict]:
+    """One ``weight_version_spans`` entry per run of 1s: each run is the output of one model call."""
+    starts = [i for i, m in enumerate(loss_mask) if m == 1 and (i == 0 or loss_mask[i - 1] == 0)]
+    ends = [i + 1 for i, m in enumerate(loss_mask) if m == 1 and (i + 1 == len(loss_mask) or loss_mask[i + 1] == 0)]
+    return [{"version": version, "start": a, "end": b} for a, b in zip(starts, ends, strict=True)]
+
+
 def _arrays(loss_mask: list[int], tag: int) -> dict:
     # token_ids are tagged per step so a test can tell segments apart;
     # log_probs aligned 1:1 with token_ids keeps the rollout-logprob check green.
@@ -73,6 +80,7 @@ def _arrays(loss_mask: list[int], tag: int) -> dict:
         "loss_mask": list(loss_mask),
         "log_probs": [-0.1] * len(loss_mask),
         "has_generate_tokens": True,
+        "weight_version_spans": _spans(loss_mask),
     }
 
 
@@ -201,8 +209,14 @@ def test_all_mode_one_sample_per_segment_shared_reward():
     assert all(len(s.rollout_log_probs) == s.response_length for s in (a, b, f))
     assert all(s.status == Sample.Status.COMPLETED for s in (a, b, f))
     assert all(not s.remove_sample for s in (a, b, f))
-    # Trajectory-level fields land on every segment; group_metrics on the first only.
-    assert all(s.metadata["arena_weight_versions"] == ["3"] and s.weight_versions == [] for s in (a, b, f))
+    # Each segment carries the spans of its own calls, in its own token index space (ADR-0018).
+    assert [[(sp.abs_start, sp.abs_end) for sp in s.all_weight_version_spans] for s in (a, b, f)] == [
+        [(2, 3), (4, 6)],
+        [(1, 4)],
+        [(3, 5)],
+    ]
+    assert all(sp.version == "3" for s in (a, b, f) for sp in s.all_weight_version_spans)
+    # group_metrics lands on the first segment only.
     assert "group_metrics" in a.metadata
     assert "group_metrics" not in b.metadata and "group_metrics" not in f.metadata
 
@@ -450,8 +464,10 @@ def _sample(
     s.status = status
     s.remove_sample = remove
     s.tokens = [1] * (response_length + 1)
+    # One model call at weight version 3 gave the response tokens.
+    s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("3", 1, response_length + 1)])]
     # A None-valued key is absent, like a segment that carries no removal_reason.
-    s.metadata = {"mode": mode, "task_id": f"t{group_index}", "gym_name": "g", "arena_weight_versions": ["3"]}
+    s.metadata = {"mode": mode, "task_id": f"t{group_index}", "gym_name": "g"}
     s.metadata.update({k: v for k, v in meta.items() if v is not None})
     return s
 
@@ -666,7 +682,8 @@ def test_pad_rows_to_dp_alignment_pads_odd_rows_with_shortest_kept_sibling(caplo
     # A zero-loss row never trains: COMPLETED keeps miles' per-sample truncated count at the source alone.
     assert pad.status is Sample.Status.COMPLETED
     assert sum(s.status is Sample.Status.TRUNCATED for s in rows) == 1
-    assert pad.metadata["arena_weight_versions"] == src.metadata["arena_weight_versions"]
+    assert pad.weight_versions == src.weight_versions
+    assert all(a is not b for a, b in zip(pad.weight_versions, src.weight_versions, strict=True))
     assert pad.index == 3 + _SEGMENT_INDEX_STRIDE
     assert len({s.index for s in rows}) == len(rows)
     # segment counts from len(episode); n_segments is a copy (nothing validates segment < n_segments).

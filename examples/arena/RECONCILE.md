@@ -603,6 +603,61 @@ on `arpit-glm-53`. The test runs `final` mode with W&B, and `all` mode without
 W&B and with two DP pads (mean 4.375 over 8 rows), then feeds the output to
 upstream `log_rollout_data`. Both cases fail on `3f9010e73`.
 
+### Weight-version spans (replaces the metadata key)
+
+The owner accepted ADR-0018 with a change to decision 4: the gym sends the
+token range of each model call, and the NATS path fills the upstream
+`Sample.weight_versions`. The commit after `0b09a6ab9` does this and deletes
+the shim of `3f9010e73` and `dda652e05`. The gym side is AREnATasks ADR-0074
+(branch `arpit-weight-version-spans`).
+
+- Wire: each step keeps its data and adds `weight_version_spans`, one
+  `{"version", "start", "end"}` per model call with an SGLang version.
+  `[start, end)` indexes the cumulative `token_ids` of the step.
+- Conversion: `_step_to_sample` keeps the step `token_ids` as
+  `Sample.tokens`, so the offset is 0.
+  `test_span_offset_is_zero_against_tokens_and_loss_mask` checks that each
+  range holds the call output in `Sample.tokens` and loss mask 1. Each entry
+  becomes one `WeightVersionsPerCall` with one `WeightVersionSpan`. A hard
+  context overflow cuts the spans as `Sample.strip_last_output_tokens` does.
+- Old gym images: a step with token arrays and without `weight_version_spans`
+  stops the run when the trajectory reports a weight version. The error
+  (`WeightVersionSpansError`, fatal like `RoutingReplayError`) names the field
+  and the minimum gym image. A trajectory without versions gives empty
+  `Sample.weight_versions`.
+- Upstream code on arena samples: `assert_samples_weight_version_sane`,
+  `Sample.validate`, `rollout/weight_version/*` of `log_rollout_data`,
+  `train_data["weight_versions"]`, and the dashboard. On rows with the same
+  versions, the upstream keys give the numbers of the deleted shim: 5.0, 5.5,
+  6, 3 and 0.25 in `final` mode, 4.375, 4.0, 6, 3 and 0.5 in `all` mode with
+  two DP pads (`test_rollout_logs_the_upstream_weight_version_metrics`), and
+  14/3, 5.0, 6, 3 and 0.5 on four rows
+  (`TestUpstreamWeightVersionMetrics`).
+- Meaning change: a segment row reads the spans of its own calls, not the
+  trajectory list. `rollout/off_policy_round/*` stays per episode and reads
+  every segment, without the DP pads.
+- Consume-time staleness: `generate_rollout` applies the upstream
+  `DefaultDataBuffer.get` rule with the upstream `group_staleness` helper and
+  `--max-weight-staleness` (default off). It returns
+  `rollout/fully_async/{stale_groups_filtered,avg_staleness,max_staleness}`
+  and logs one `Weight staleness:` line per rollout. The engine version comes
+  only through the class seam, so `NatsRolloutFn` wraps `generate_rollout`.
+  The run configs still name the function, which gets no version: then only
+  the drop count (0) is logged, and `--max-weight-staleness` stops the run
+  with an error.
+
+Validation (CPU, the test venv and the stand-ins of "Validation (CPU,
+2026-10-01)"):
+
+| check | `0b09a6ab9` | this commit |
+| --- | --- | --- |
+| arena fast tests, `stub` | 344 passed | 362 passed |
+| arena tests and `test_run_arena_harbor.py`, `stubfull`, conftests, local Ray | 355 passed, 1 failed (`test_register_nova_reasoning_parser`) | 373 passed, the same failure |
+| launcher tests, `stub` | 65 passed, 1 failed (`test_workplace_launch_uses_the_configured_backend`, also on upstream) | the same |
+| launcher snapshots, `-k "run_arena_harbor or run_glm5_3_flash"` | 6 passed | 6 passed |
+| upstream tests of the reused code: `utils/test_types.py`, `utils/test_weight_version.py`, `rollout/test_filters.py`, `rollout/test_fully_async_rollout.py`, `ray/rollout/test_metrics.py`, `rollout/inference_rollout/test_compatibility.py`, `ray/rollout/test_train_data_conversion.py`, `ray/rollout/test_rollout_executor.py`, `dashboard/test_dump_reader_views.py`, `dashboard/test_trajectory_sink.py`; `stubfull`, conftests, local Ray | 347 passed, 1 skipped | the same |
+| ADR-0005 check, `diff train_async.py miles_plugins/arena/train_async_arena.py \| grep -c '^<'` | 0 | 0 |
+
 ### Other new commits
 
 | commit | change |
@@ -616,7 +671,10 @@ upstream `log_rollout_data`. Both cases fail on `3f9010e73`.
 | `2cb91b309` | the mini FT controller advice (see "Fault tolerance against r48"), and `test_yaml_false_emits_no_flag` |
 | `a43aa80f2` | `guparpit-agentic-debt-v2/miles-config.yaml` and `test_training_run_identity.py` (see "Launch from the r48 files") |
 | `000f49d2c` | open item 6, the KDA tensor-parallel checkpoint load check |
-| this commit | "Review findings (2026-10-01)" and the validation numbers |
+| `b167425ce` | "Review findings (2026-10-01)" and the validation numbers |
+| `ab0958b17`, `4a78e4b6d`, `0b09a6ab9` | the r48 summary-dir record, the `guparpit-agentic-debt-v2` workflow, and its image `recon-20261001b` |
+| `da93977ba` | `examples/arena/Dockerfile` pins `opentelemetry-api` to the installed sdk, so `ray start --head` works in the image |
+| this commit | the weight-version spans (see "Weight-version spans") |
 
 ### Validation (CPU, 2026-10-01)
 
@@ -694,7 +752,7 @@ defaults and `miles_validate_args` are a static reading, not a parse.
 | events and checksums | | the event logger is on, `update_weights` runs `check_weights(action="checksum")` on each engine at each update, and each save copies the events dir |
 | driver | `rollout_manager.generate` | the upstream loop: `inference_controller.prepare_rollout` before each generate, the weight version published to the rollout executor after each update, the disposer teardown, the API server and the mini FT controller |
 | fault tolerance | a failed engine stops at the first failed check and restarts at the next weight update | the mini FT controller restarts it at any time. Keep `mini_ft_controller_enable` unset; see "Fault tolerance against r48" |
-| metrics | | `train_rollout_logprob_abs_diff` and `train_rollout_kl` from trainer-scored log-probs (#3655). `rollout/weight_version/*` have the r48 keys and meaning (`3f9010e73`), on the perf line and in `tracking.log` as on r48 (`dda652e05`) |
+| metrics | | `train_rollout_logprob_abs_diff` and `train_rollout_kl` from trainer-scored log-probs (#3655). `rollout/weight_version/*` have the r48 keys and meaning (`3f9010e73`), on the perf line and in `tracking.log` as on r48 (`dda652e05`). After `0b09a6ab9` upstream computes them from the spans, and a segment row reads only its own calls (see "Weight-version spans") |
 | R3 data path | int32 routing | routing as int16 in the shards and the pinned replay buffers, widened to int32 at the router (the same replayed indices); the thd replay fill copies only the local rows (byte-equal to the old fill in the tests) |
 | logs | | always-on `[r3-timing]`, `[r3-mem]` and `[r3-digest]` lines. `[r3-digest]` hashes the replay buffers of each rank once per step and reports its own `seconds` |
 | Ray actors | static `@ray.method` FT groups | the upstream groups through `_route_method_to_concurrency_group` with `1b5d2978c`, plus `kill_self` and `rollout_prefetch` (idle with the flag off). Each trainer sets its NUMA affinity from the PCI bus id of its GPU (#3869) |
@@ -825,3 +883,21 @@ change.
       2 x floor + 1e-3.
 
    Open item 1 (`parse_args()` in the image) does not cover this.
+7. The weight-version spans (see "Weight-version spans") have CPU tests
+   only.
+   1. Build a gym image from the AREnATasks ADR-0074 change. Put its tag in
+      `_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS` (`nats_rollout.py`). A
+      trainer image from this commit stops on the first message of an older
+      gym image, for example `gym-glm53-adr72-20260927a` of
+      `guparpit-agentic-debt-v2`. The v2 trainer image `recon-20261001b` is
+      older than this commit.
+   2. The Inspect `sglang_perstep` training path (`amzn_arena_streaming`)
+      sends `weight_versions` and no `weight_version_spans`. This trainer
+      stops on it until that path sends the spans.
+   3. For the staleness filter or the staleness keys, set
+      `rollout_function_path` to
+      `miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn`.
+   4. Run one smoke job on the new gym and trainer images. Check
+      `rollout/weight_version/*` in the `perf <rollout_id>` line, the
+      `Weight staleness:` line, and that `assert_samples_weight_version_sane`
+      passes.

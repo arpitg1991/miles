@@ -10,7 +10,7 @@ ADR-0009 (`--arena-mask-clipped-final-turn`), ADR-0010 (`--arena-keep-timeout-tr
 **Pairs with:** AREnATasks ADR-0063 (Vulcan context compaction and rollout
 segments; the gym side of this contract)
 **Amended by:** ADR-0013 (the "Truncation stays an episode property" and "Harbor chain step" bullets describe flags and `truncated_spans` removed on 2026-09-23; the segment stamping and the DP pad stand)
-**Amended by:** ADR-0018 (2026-09-27: the per-turn weight versions live in `Sample.metadata["arena_weight_versions"]`; `Sample.weight_versions` stays empty)
+**Amended by:** ADR-0018 (2026-10-01: each segment carries the upstream `Sample.weight_versions` spans of its own calls, from the gym `weight_version_spans`, not the trajectory list; a DP pad copies the spans of its source; the off-policy round reads every segment of the episode. From 2026-09-27 to 2026-10-01 the versions lived in `Sample.metadata["arena_weight_versions"]`)
 **Amended:** 2026-09-24 (`feat(arena): default --arena-train-segments to all`): the flag default is `all`; `final` stays as the opt-out. The Decision section below records the original `final` default.
 
 ## Context

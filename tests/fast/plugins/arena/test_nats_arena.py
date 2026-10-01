@@ -1946,32 +1946,43 @@ class TestFailedReasonTelemetry:
     @pytest.mark.parametrize(
         "mode, use_wandb, expected",
         [
-            # One row per episode. Oldest versions 3, 5, 6, 6; only ["3", "4"]
+            # One row per episode. Oldest versions 3, 5, 6, 6; only (3, 4)
             # mixes two versions.
             ("final", True, {"mean": 5.0, "median": 5.5, "max": 6, "min": 3, "mixed_version_ratio": 0.25}),
             # Each first episode has two segments, so 6 rows. DP 4 adds 2 pads,
-            # which copy the versions of their source row ["3", "4"]. Oldest
+            # which copy the spans of their source row (3, 4). Oldest
             # versions 3, 3, 5, 3, 3, 6, 6, 6; 4 of 8 rows mix two versions.
             ("all", False, {"mean": 4.375, "median": 4.0, "max": 6, "min": 3, "mixed_version_ratio": 0.5}),
         ],
     )
     def test_rollout_logs_the_upstream_weight_version_metrics(self, monkeypatch, caplog, mode, use_wandb, expected):
-        """rollout/weight_version/* reach the miles perf log line and tracking.log, with or without W&B.
+        """Upstream log_rollout_data logs rollout/weight_version/* from the arena spans (ADR-0018).
 
-        The values are the arpit-glm-53 values: upstream ``log_rollout_data``
-        computed them from ``Sample.weight_versions`` over the same rows.
+        The keys reach the miles perf log line and tracking.log, with or
+        without W&B. Every segment carries the spans of its own calls. The
+        expected numbers are the values of the deleted plugin copy
+        ``compute_weight_version_metrics`` on rows with the same versions.
         """
         import logging
 
         from miles.ray.rollout import metrics as miles_metrics
         from miles_plugins.arena.nats_arena import nats_rollout
 
+        def with_spans(traj: dict, versions: tuple[int, ...]) -> dict:
+            # The output tokens of a step are [2, 4): one call, or one call per token.
+            bounds = {1: [(2, 4)], 2: [(2, 3), (3, 4)]}[len(versions)]
+            for step in traj["steps"]:
+                step["weight_version_spans"] = [
+                    {"version": v, "start": a, "end": b} for v, (a, b) in zip(versions, bounds, strict=True)
+                ]
+            return {**traj, "weight_versions": list(versions) * len(traj["steps"])}
+
         worker = self._worker(n=2, mode=mode)
-        versions = {"t.g0.": (["3", "4"], ["5"]), "t.g1.": (["6"], ["6", "6"])}
+        versions = {"t.g0.": ((3, 4), (5,)), "t.g1.": ((6,), (6, 6))}
         for task_id, (first, second) in versions.items():
             trajs = [
-                {**self._traj(nseg=2 if mode == "all" else 1), "weight_versions": first},
-                {**self._traj(0.0), "weight_versions": second},
+                with_spans(self._traj(nseg=2 if mode == "all" else 1), first),
+                with_spans(self._traj(0.0), second),
             ]
             worker._process_group(task_id, [{**self._result(trajs), "task_id": task_id}])
         worker._train_segments = mode
@@ -2004,25 +2015,32 @@ class TestFailedReasonTelemetry:
             custom_rollout_log_function_path=None,
             load_debug_rollout_data=None,
             log_passrate=False,
+            # What upstream _compute_metrics_from_samples reads.
+            reward_key=None,
+            advantage_estimator="grpo",
+            sglang_speculative_algorithm=None,
+            log_reward_category=None,
         )
         output = nats_rollout.generate_rollout(args, 0, data_source=SimpleNamespace())
 
         rows = [s for group in output.samples for s in group]
         assert len(rows) == (8 if mode == "all" else 4)
         assert ("dp_pad" in [(s.metadata or {}).get("mode") for s in rows]) == (mode == "all")
-        want = {f"rollout/weight_version/{k}": v for k, v in expected.items()}
-        assert output.metrics == want
-        # The plugin W&B dict does not log the keys a second time.
+        # The legacy function path gets no engine weight version, so no staleness is known.
+        assert output.metrics == {"rollout/fully_async/stale_groups_filtered": 0}
+        # The plugin W&B dict does not log the keys.
         assert not [k for m in logged for k in m if k.startswith("rollout/weight_version/")]
 
-        # The miles rollout executor hands output.metrics to upstream
-        # log_rollout_data. Its own sample metrics are not under test here.
+        # The miles rollout executor hands the rows and output.metrics to
+        # upstream log_rollout_data. Its perf metrics are not under test here.
         logged.clear()
-        monkeypatch.setattr(miles_metrics, "_compute_metrics_from_samples", lambda args, samples: {})
         monkeypatch.setattr(miles_metrics, "_compute_perf_metrics_from_samples", lambda args, samples, t: {})
         with caplog.at_level(logging.INFO, logger=miles_metrics.__name__):
             miles_metrics.log_rollout_data(0, args, rows, output.metrics, 1.0)
-        assert logged == [{**want, "rollout/step": 0}]
+        want = {f"rollout/weight_version/{k}": v for k, v in expected.items()}
+        [tracked] = logged
+        assert {k: v for k, v in tracked.items() if k.startswith("rollout/weight_version/")} == want
+        assert tracked["rollout/fully_async/stale_groups_filtered"] == 0
         [perf_line] = [r.getMessage() for r in caplog.records if r.getMessage().startswith("perf 0: ")]
         assert all(f"'{key}'" in perf_line for key in want)
 

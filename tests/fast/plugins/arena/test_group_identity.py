@@ -105,6 +105,7 @@ def _fast_traj(reward: float, tok_n: int = 12, prompt_n: int = 4, synthetic: boo
                 "log_probs": [-0.1] * tok_n,
                 "stop_reason": "stop",
                 "weight_version": 3,
+                "weight_version_spans": [{"version": 3, "start": prompt_n, "end": tok_n}],
             }
         ],
         "agent_stop_reason": "completed",
@@ -278,6 +279,10 @@ class TestGrpoGroupNormalization:
         assert train_data["rewards"] != pytest.approx(global_norm)
 
         assert train_data["raw_reward"] == rewards_a + [0.0] + rewards_b
+        # The upstream conversion carries the gym spans to the trainer ranks
+        # (ADR-0018). The failed pad copies tokens, not versions.
+        assert train_data["weight_versions"][0] == [[{"version": "3", "abs_start": 4, "abs_end": 12}]]
+        assert train_data["weight_versions"][3] == []
         assert train_data["sample_indices"] == list(range(8))
         # rollout_id is None on every sample, so rollout_ids fall back to index...
         assert train_data["rollout_ids"] == list(range(8))

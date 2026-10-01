@@ -24,10 +24,10 @@ passrate/*, perf/* and eval/*, and wandb glob matching is prefix-based
 
 Off-policy staleness (rollout/off_policy_round/*) and rollout/binary_reward are
 logged inside the rollout function (nats_arena/nats_rollout.py) where the Sample
-objects live. The gym-reported per-turn weight versions ride in
-Sample.metadata["arena_weight_versions"] (ADR-0018). miles' update_weights
-publishes each new weight version to the rollout executor, so no
-wrapper-side propagation is needed here.
+objects live. The gym-reported per-turn weight versions ride in the upstream
+Sample.weight_versions spans (ADR-0018). miles' update_weights publishes each
+new weight version to the rollout executor, which passes it to
+nats_rollout.NatsRolloutFn, so no wrapper-side propagation is needed here.
 
 Usage (in entrypoint.sh):
     python3 -m miles_plugins.arena.train_async_arena

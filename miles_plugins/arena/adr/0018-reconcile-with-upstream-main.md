@@ -1,6 +1,6 @@
 # ADR-0018: Reconcile the fork with upstream `main` (2026-09-27)
 
-**Status:** Proposed
+**Status:** Accepted (2026-10-01, with the span design of decision 4)
 **Date:** 2026-09-27
 **Number:** ADR-0016 until 2026-10-01. The fork branch `arpit-glm-53` gave
 ADR-0016 and ADR-0017 to other decisions, so this record moved to ADR-0018.
@@ -52,11 +52,58 @@ ADR-0011 (where the per-turn weight versions live)
    `args.create_backend()`, then `backend.exec_command_cpu` and
    `backend.execute_train`. The backend appends `--deploy-component all` to the
    train argv. The launcher argv does not change in any other way.
-4. **The gym weight versions move to `Sample.metadata["arena_weight_versions"]`.**
-   The value is the same list as before: one string per turn, the trajectory
-   list on each segment, with no per-segment slice. `Sample.weight_versions`
-   stays empty on the NATS path. `rollout/off_policy_round/*` reads the
-   metadata key and gives the same values as before.
+4. **The gym sends one weight-version span per model call, and the NATS path
+   fills the upstream `Sample.weight_versions`** (2026-10-01). Until
+   2026-10-01 the versions stayed in `Sample.metadata["arena_weight_versions"]`
+   and `Sample.weight_versions` stayed empty. The contract:
+   - Each step (segment) that the training gym ships keeps its
+     `weight_versions` data and adds `weight_version_spans`. That list has one
+     `{"version", "start", "end"}` entry per model call of the segment, in
+     call order. `version` is the SGLang `weight_version` of the call (an
+     int). `[start, end)` is the output of the call in the cumulative
+     `token_ids` of the same segment, the index space of the retired
+     `truncated_spans`. The ranges do not overlap, they increase, and
+     `end <= len(token_ids)`. A call without an SGLang version gives no entry.
+     The gym side is AREnATasks ADR-0074.
+   - `_step_to_sample` keeps the step `token_ids` as `Sample.tokens`, so the
+     offset is 0. Each entry becomes one
+     `WeightVersionsPerCall(spans=[WeightVersionSpan(str(version), start, end)])`.
+     A hard context overflow cuts `Sample.tokens`. The spans are then cut the
+     same way as upstream `Sample.strip_last_output_tokens` cuts them.
+   - The trainer checks each entry: `int` values,
+     `previous end <= start < end <= len(token_ids)`. A step with token arrays
+     and without `weight_version_spans` stops the run when the trajectory
+     reports a weight version (`weight_versions`, or `weight_version` on a
+     step). The error names the field and the minimum gym image. A bad entry
+     stops the run too. Both raise `WeightVersionSpansError`, which the NATS
+     worker treats as fatal, as a `RoutingReplayError`. A trajectory without
+     any weight version (eval and no-SGLang paths) gives empty
+     `Sample.weight_versions`, as upstream allows. The messages-only path
+     makes its own tokens, so it gives empty `Sample.weight_versions` too.
+   - A DP pad copies the spans of its source row, because it copies the
+     tokens. A failed-slot pad gets no spans.
+   - Upstream code then reads arena samples with no plugin copy:
+     `assert_samples_weight_version_sane`, `Sample.validate`,
+     `Sample.oldest_weight_version`, `rollout/weight_version/*` of
+     `log_rollout_data`, `train_data["weight_versions"]`, and the dashboard.
+     `rollout_metrics.compute_weight_version_metrics` and the metadata key are
+     gone.
+   - `rollout/off_policy_round/*` stays per episode. It reads the span versions
+     of every segment of the episode. A DP pad adds none.
+   - The consume-time staleness filter of upstream `DefaultDataBuffer.get`
+     applies where `generate_rollout` takes groups from the queue: the same
+     `group_staleness` helper, the same `--max-weight-staleness` flag, and the
+     same default (off). A stale group is dropped, and its routing files are
+     deleted. `generate_rollout` returns the upstream keys
+     `rollout/fully_async/stale_groups_filtered`,
+     `rollout/fully_async/avg_staleness` and
+     `rollout/fully_async/max_staleness` in `RolloutFnTrainOutput.metrics` and
+     logs one `Weight staleness:` line per rollout. The filter needs the engine
+     weight version. Only the class-based seam passes it
+     (`RolloutFnTrainInput.weight_version`), so `NatsRolloutFn` wraps
+     `generate_rollout`. The function path gets no version: the staleness keys
+     other than the drop count stay absent, and `--max-weight-staleness` stops
+     the run with an error that names `NatsRolloutFn`.
 5. **The advantage-scale tests set a one-rank parallel state.** The
    `advantage_scale` code path does not change.
 
@@ -64,7 +111,11 @@ ADR-0011 (where the per-turn weight versions live)
 
 | Alternative | Why not |
 | --- | --- |
-| Build real `WeightVersionSpan` objects on the NATS path | A span needs the absolute token range of each turn output. The gym sends only the cumulative token arrays and one version per turn. The loss mask cannot give the ranges, because the gym sets 0 on a clipped or empty turn. A span from the loss mask puts a wrong range into the upstream checks and metrics. |
+| Keep the versions in `Sample.metadata["arena_weight_versions"]` (decision 4 until 2026-10-01) | The upstream checks, the staleness filter and the dashboard see no versions, and the plugin keeps a copy of the upstream `weight_version/*` code. The gym can send the ranges, so the limit is not necessary. |
+| Build the spans from the loss mask | The gym sets 0 on a clipped or empty turn, so the mask cannot give the ranges. A wrong range goes into the upstream checks and metrics. |
+| Train on with empty `Sample.weight_versions` when an old gym sends no spans | Two code paths, and the run loses its staleness numbers without a trace. One error at the first message is the cheaper failure. |
+| Take the engine version from `rollout_id` | The trainer weight version starts at 1 again after each restart. Only the rollout executor knows the published version. |
+| Pass the version to legacy rollout functions in `LegacyRolloutFnAdapter` | This is a core edit where an upstream seam exists (the class-based rollout function). |
 | Keep strings in `Sample.weight_versions` and patch the upstream conversion | This is a core edit where an upstream contract exists. ADR-0001 allows a core edit only where miles has no seam. |
 | Merge upstream `main` into `arpit-glm-53` | The merge keeps the PR copy and the upstream squash as two histories of the same files. It also hides the drop list inside a merge commit. |
 | Cherry-pick the arena commits onto upstream `main` | A rebase keeps the commit order and the patch-id mapping to the fork, so `git cherry` can prove which commits changed. |
@@ -80,20 +131,21 @@ ADR-0011 (where the per-turn weight versions live)
 
 ### Harder / open
 
-- The upstream `weight_version/*` metrics (`miles/ray/rollout/metrics.py`) and
-  the upstream staleness filters see no spans for arena samples. The fork logged
-  `weight_version/*` from the strings before. Upgrade path: the gym sends the
-  output token range of each turn, and the NATS path builds one
-  `WeightVersionsPerCall` per turn.
-  Amendment 2026-10-01: until then, `rollout_metrics.compute_weight_version_metrics`
-  computes `rollout/weight_version/{min,mean,median,max}` and
-  `rollout/weight_version/mixed_version_ratio` from the metadata key, with the
-  upstream and fork meaning, over every training row. `generate_rollout`
-  returns them in `RolloutFnTrainOutput.metrics`, the upstream seam for
-  rollout-function metrics. Upstream `log_rollout_data` then writes them to
-  its `perf <rollout_id>` log line and to `tracking.log`, as on
-  `arpit-glm-53`, with or without W&B. The staleness filters still see no
-  spans.
+- Lockstep order for decision 4: gym first, trainer second. A trainer from
+  this decision stops on the first message of an older gym image. A trainer
+  image built before the decision ignores `weight_version_spans`.
+- Each segment now carries the versions of its own calls, not the trajectory
+  list. On rows with the same versions, `rollout/weight_version/*` gives the
+  values of the deleted plugin copy (the tests pin the numbers). Under
+  `--arena-train-segments all` a segment row and its DP pads now read only
+  that segment, and under `final` the off-policy round reads the final
+  segment only. Values of a compaction episode before and after the change
+  are thus not directly comparable.
+- The staleness filter and the staleness keys need
+  `--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn`.
+  The run configs still name `generate_rollout`. A stale group is always
+  dropped. The NATS path has no prompt recycle, so
+  `--async-unused-samples-handler retry` has no effect.
 - Upstream changes alter a run on this branch. `examples/arena/RECONCILE.md`
   lists them. The main items:
   - The DSA indexer applies RMSNorm to the indexer query (final #2786). The
@@ -107,6 +159,9 @@ ADR-0011 (where the per-turn weight versions live)
   - `train_rollout_logprob_abs_diff` and `train_rollout_kl` come from
     trainer-scored log-probs (#3655). Values before and after the rebase are
     not directly comparable.
-- The status stays Proposed until two conditions are true. The owner accepts
-  decision 4. A GPU test job on a trainer image from this branch loads an
-  r45-lineage checkpoint and runs one step with R3 and TIS.
+- Acceptance (2026-10-01). The two conditions of the proposal are true. The
+  owner accepted decision 4 with the span design. The GPU job
+  `recon-t2-20260927c` loaded the r45 `iter_0000039` checkpoint and ran three
+  steps with R3 and TIS (`examples/arena/RECONCILE.md`, "GPU validation").
+  The span design has CPU tests only. No gym image with
+  `weight_version_spans` exists yet, and no job has run the span path.

@@ -2,6 +2,9 @@
 
 Covers:
   - compute_group_metrics_from_samples from rollout_metrics.py
+  - compute_off_policy_metrics on the upstream Sample.weight_versions spans
+  - upstream weight_version/* on arena spans, with the numbers of the deleted
+    plugin copy (ADR-0018)
 
 Run: python -m pytest tests/fast/plugins/arena/test_rollout_metrics.py -v
 """
@@ -173,12 +176,23 @@ class TestComputeGroupMetrics:
 # ===========================================================================
 
 
-def _tagged(weight_versions: list[str]) -> MockSample:
-    return MockSample(metadata={"arena_weight_versions": weight_versions})
+def _tagged(weight_versions: list[str], mode: str = "full_trajectory"):
+    """A miles Sample with one upstream span per call, one token per call (ADR-0018)."""
+    from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+    return Sample(
+        tokens=[0] * (len(weight_versions) + 1),
+        weight_versions=[
+            WeightVersionsPerCall(spans=[WeightVersionSpan(version=v, abs_start=i + 1, abs_end=i + 2)])
+            for i, v in enumerate(weight_versions)
+        ],
+        reward=0.0,
+        metadata={"mode": mode},
+    )
 
 
 class TestOffPolicyMetrics:
-    """compute_off_policy_metrics reads Sample.metadata["arena_weight_versions"] (ADR-0018)."""
+    """compute_off_policy_metrics reads the upstream Sample.weight_versions spans of each episode (ADR-0018)."""
 
     def test_empty_samples_returns_empty(self):
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
@@ -190,8 +204,8 @@ class TestOffPolicyMetrics:
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
 
         # reference_step=0, interval=1 → rollout_weight_step = (1-1)*1 = 0.
-        samples = [_tagged(["1"]), _tagged(["1"])]
-        result = compute_off_policy_metrics(MockArgs(), samples, rollout_id=0)
+        episodes = [[_tagged(["1"])], [_tagged(["1"])]]
+        result = compute_off_policy_metrics(MockArgs(), episodes, rollout_id=0)
         assert result["off_policy_round/mean"] == pytest.approx(0.0)
         assert result["off_policy_round/on_policy_frac"] == pytest.approx(1.0)
         assert result["off_policy_round/untagged_frac"] == pytest.approx(0.0)
@@ -201,18 +215,26 @@ class TestOffPolicyMetrics:
         """A sample from weight v1 consumed at step 3 is 3 rounds stale."""
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
 
-        samples = [_tagged(["1"])]
-        result = compute_off_policy_metrics(MockArgs(), samples, rollout_id=3)
+        result = compute_off_policy_metrics(MockArgs(), [[_tagged(["1"])]], rollout_id=3)
         assert result["off_policy_round/mean"] == pytest.approx(3.0)
         assert result["off_policy_round/on_policy_frac"] == pytest.approx(0.0)
 
     def test_untagged_samples_tracked(self):
-        """Samples with no arena weight versions count toward untagged_frac."""
+        """Episodes with no weight-version spans count toward untagged_frac."""
         from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
 
-        samples = [_tagged(["2"]), _tagged([])]
-        result = compute_off_policy_metrics(MockArgs(), samples, rollout_id=3)
+        result = compute_off_policy_metrics(MockArgs(), [[_tagged(["2"])], [_tagged([])]], rollout_id=3)
         assert result["off_policy_round/untagged_frac"] == pytest.approx(0.5)
+
+    def test_episode_reads_every_segment_and_skips_dp_pads(self):
+        """One entry per episode: the spans of all its segments. A DP pad repeats a row, so it adds none."""
+        from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
+
+        episode = [_tagged(["1"]), _tagged(["2", "3"]), _tagged(["1"], mode="dp_pad")]
+        # Mean version 2 -> rollout_weight_step (2 - 1) * 1 = 1 -> 4 - 1 = 3 rounds.
+        result = compute_off_policy_metrics(MockArgs(), [episode], rollout_id=4)
+        assert result["off_policy_round/mean"] == pytest.approx(3.0)
+        assert result["off_policy_round/untagged_frac"] == pytest.approx(0.0)
 
 
 # ===========================================================================
@@ -271,33 +293,36 @@ class TestBinaryReward:
 
 
 # ===========================================================================
-# Run standalone
-# ===========================================================================
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
-
-
-# ===========================================================================
-# 4. weight_version/* (compute_weight_version_metrics)
+# 5. weight_version/*: upstream miles/ray/rollout/metrics.py on arena spans
 # ===========================================================================
 
 
-class TestWeightVersionMetrics:
-    """The upstream weight_version/* keys, read from Sample.metadata["arena_weight_versions"] (ADR-0018)."""
+class TestUpstreamWeightVersionMetrics:
+    """Upstream ``weight_version/*`` replaces the deleted plugin copy (ADR-0018).
 
-    def test_no_numeric_version_returns_empty(self):
-        from miles_plugins.arena.rollout_metrics import compute_weight_version_metrics
+    The expected numbers are the ones that the deleted
+    ``compute_weight_version_metrics`` gave for the same per-sample versions.
+    """
 
-        assert compute_weight_version_metrics([]) == {}
-        assert compute_weight_version_metrics([_tagged([]), _tagged(["default"]), MockSample(metadata={})]) == {}
+    @staticmethod
+    def _upstream(samples) -> dict:
+        from types import SimpleNamespace
 
-    def test_keys_and_values_match_the_fork_formula(self):
+        from miles.ray.rollout.metrics import _compute_metrics_from_samples
+
+        args = SimpleNamespace(
+            reward_key=None, advantage_estimator="grpo", sglang_speculative_algorithm=None, log_reward_category=None
+        )
+        metrics = _compute_metrics_from_samples(args, samples)
+        return {k: v for k, v in metrics.items() if k.startswith("weight_version/")}
+
+    def test_no_numeric_version_gives_no_keys(self):
+        assert self._upstream([_tagged([]), _tagged(["default"])]) == {}
+
+    def test_values_equal_the_deleted_plugin_metric(self):
         """Oldest numeric version per sample; mixed share over all samples, untagged ones included."""
-        from miles_plugins.arena.rollout_metrics import compute_weight_version_metrics
-
         samples = [_tagged(["3", "4", "4"]), _tagged(["5"]), _tagged(["7", "6"]), _tagged([])]
-        assert compute_weight_version_metrics(samples) == {
+        assert self._upstream(samples) == {
             "weight_version/mean": pytest.approx(14 / 3),
             "weight_version/median": 5.0,
             "weight_version/max": 6.0,
@@ -305,26 +330,10 @@ class TestWeightVersionMetrics:
             "weight_version/mixed_version_ratio": 0.5,
         }
 
-    def test_values_equal_the_upstream_span_metric(self):
-        """The same versions as upstream spans give the same oldest versions and mixed count."""
-        from miles.utils.metric_utils import compute_statistics
-        from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
-        from miles_plugins.arena.rollout_metrics import compute_weight_version_metrics
 
-        per_sample = [["3", "4", "4"], ["5"], ["7", "6"], ["2", "x"], []]
-        spanned = [
-            Sample(
-                weight_versions=[
-                    WeightVersionsPerCall(spans=[WeightVersionSpan(version=v, abs_start=i, abs_end=i + 1)])
-                    for i, v in enumerate(versions)
-                ]
-            )
-            for versions in per_sample
-        ]
-        # The two expressions of upstream miles/ray/rollout/metrics.py.
-        oldest = [s.oldest_weight_version for s in spanned if s.oldest_weight_version is not None]
-        mixed = sum(1 for s in spanned if len({span.version for span in s.all_weight_version_spans}) > 1)
-        expected = {f"weight_version/{k}": v for k, v in compute_statistics(oldest).items()}
-        expected["weight_version/mixed_version_ratio"] = mixed / len(spanned)
+# ===========================================================================
+# Run standalone
+# ===========================================================================
 
-        assert compute_weight_version_metrics([_tagged(v) for v in per_sample]) == expected
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))

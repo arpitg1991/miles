@@ -645,6 +645,15 @@ the shim of `3f9010e73` and `dda652e05`. The gym side is AREnATasks ADR-0074
   The run configs still name the function, which gets no version: then only
   the drop count (0) is logged, and `--max-weight-staleness` stops the run
   with an error.
+- Staleness reference: the executor reads its version when the drain
+  starts, and `train_async_arena` can update the weights after that drain
+  and before the batch trains. `NatsRolloutFn` then adds 1, so the filter
+  measures against the version that trains the batch, as upstream under
+  `--fully-async`. `test_train_async_arena_order_gives_the_version_that_trains_each_batch`
+  runs the real driver loop with start rollout 0 and 3 and interval 1
+  and 2. Before the fix, each batch after an update got one version too
+  few. With start 0 and interval 1, `group_staleness` and
+  `rollout/off_policy_round/mean` give the same number.
 
 Validation (CPU, the test venv and the stand-ins of "Validation (CPU,
 2026-10-01)"):

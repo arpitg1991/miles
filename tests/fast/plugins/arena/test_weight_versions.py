@@ -13,6 +13,7 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import types as pytypes
@@ -23,6 +24,7 @@ from tests.fast.plugins.arena.test_multi_segment_episodes import _FakeWorker, _r
 
 import miles.utils.mask_utils as mask_utils
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnTrainInput
+from miles.rollout.filter_hub.common_filters import group_staleness
 from miles.rollout.inference_rollout.compatibility import load_rollout_function
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 from miles.utils.weight_version import assert_samples_weight_version_sane
@@ -35,6 +37,7 @@ from miles_plugins.arena.nats_arena.nats_rollout import (
     _result_to_samples_full_trajectory,
     generate_rollout,
 )
+from miles_plugins.arena.rollout_metrics import compute_off_policy_metrics
 
 _LOGGER = "miles_plugins.arena.nats_arena.nats_rollout"
 
@@ -311,18 +314,129 @@ def test_filter_without_a_weight_version_names_the_class(monkeypatch):
         _run(monkeypatch, max_weight_staleness=2, weight_version=None, gbs=1)
 
 
-def test_nats_rollout_fn_passes_the_engine_weight_version(monkeypatch):
+@pytest.mark.parametrize(
+    ("rollout_id", "interval", "engine_version", "train_version"),
+    [
+        (3, 1, 5, 5),  # the first rollout drains after the initial update
+        (7, 1, 5, 6),  # an update runs between the drain and the train step
+        (7, 2, 5, 5),  # no update between them: 7 is not a multiple of 2
+        (8, 2, 5, 6),
+        (7, 1, None, None),  # no published version yet
+    ],
+)
+def test_nats_rollout_fn_passes_the_version_that_trains_the_batch(
+    monkeypatch, rollout_id, interval, engine_version, train_version
+):
     calls: list[dict] = []
     monkeypatch.setattr(nats_rollout, "generate_rollout", lambda *a, **kw: calls.append({"args": a, **kw}))
-    args, data_source = pytypes.SimpleNamespace(), pytypes.SimpleNamespace()
+    args = pytypes.SimpleNamespace(start_rollout_id=3, update_weights_interval=interval)
+    data_source = pytypes.SimpleNamespace()
     fn = load_rollout_function(
         RolloutFnConstructorInput(args=args, data_source=data_source),
         "miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn",
     )
     assert isinstance(fn, NatsRolloutFn)
     assert NatsRolloutFn.add_arguments is _add_arena_arguments
-    fn(RolloutFnTrainInput(rollout_id=7, weight_version=5))
-    assert calls == [{"args": (args, 7, data_source), "evaluation": False, "weight_version": 5}]
+    fn(RolloutFnTrainInput(rollout_id=rollout_id, weight_version=engine_version))
+    assert calls == [{"args": (args, rollout_id, data_source), "evaluation": False, "weight_version": train_version}]
+
+
+@pytest.mark.parametrize(("start_rollout_id", "interval"), [(0, 1), (0, 2), (3, 1), (3, 2)])
+def test_train_async_arena_order_gives_the_version_that_trains_each_batch(monkeypatch, start_rollout_id, interval):
+    """Run the real train_async_arena loop with fakes; record the version each batch gets and trains under.
+
+    The driver starts the drain of rollout r before it trains rollout r - 1, and it updates the weights
+    after that drain. The executor reads its version when the drain starts, as
+    RolloutExecutor._get_rollout_data does.
+    """
+    # The driver imports the inference controller, which needs sglang.
+    pytest.importorskip("sglang.srt.constants")
+    import miles_plugins.arena.train_async_arena as driver
+
+    passed: dict[int, int | None] = {}
+    trained: dict[int, int] = {}
+
+    def fake_generate_rollout(args, rollout_id, data_source, evaluation=False, weight_version=None):
+        passed[rollout_id] = weight_version
+        return rollout_id
+
+    monkeypatch.setattr(nats_rollout, "generate_rollout", fake_generate_rollout)
+    args = pytypes.SimpleNamespace(
+        colocate=False,
+        fully_async=False,
+        start_rollout_id=start_rollout_id,
+        num_rollout=start_rollout_id + 6,
+        update_weights_interval=interval,
+        check_weight_update_equal=False,
+        eval_interval=None,
+        skip_eval_before_train=True,
+        prefetch_rollout_data=False,
+        use_critic=False,
+        save_interval=None,
+        save_trigger_sentinel=None,
+        debug_exit_after_rollout=None,
+        use_wandb=False,
+        load=None,
+    )
+
+    class Actor:
+        version = 0  # the trainer weight version; the first update makes it 1
+
+        async def train(self, rollout_id, rollout_data_ref):
+            assert rollout_data_ref == rollout_id
+            trained[rollout_id] = self.version
+
+    class Executor:
+        version = None  # the version that update_weights publishes
+        fn = NatsRolloutFn(RolloutFnConstructorInput(args=args, data_source=None))
+
+        async def get(self, rollout_id):
+            batch_input = RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.version)
+            await asyncio.sleep(0)  # the drain takes time; the driver runs on
+            return self.fn(batch_input)
+
+    class Controller:
+        async def prepare_rollout(self, rollout_id):
+            return None
+
+    actor, executor = Actor(), Executor()
+
+    async def update_weights(args, actor_model, rollout_executor, inference_controller, *, rollout_id=None):
+        actor_model.version += 1
+        rollout_executor.version = actor_model.version
+
+    async def create_rollout_components(args):
+        return Controller(), executor, None
+
+    async def create_training_models(args, rollout_executor):
+        return actor, None
+
+    noop = lambda *a, **kw: None  # noqa: E731
+    for name, value in {
+        "validate_async_off_policy_correction": noop,
+        "init_orchestration_script": noop,
+        "maybe_start_api_server": noop,
+        "maybe_start_mini_ft_controller": noop,
+        "remove_rollout_data_refs": noop,
+        "create_rollout_components": create_rollout_components,
+        "create_training_models": create_training_models,
+        "update_weights": update_weights,
+        "EvalDispatcher": lambda *a: pytypes.SimpleNamespace(drain=noop),
+    }.items():
+        monkeypatch.setattr(driver, name, value)
+
+    asyncio.run(driver.train(args, disposer=pytypes.SimpleNamespace(add=noop)))
+
+    assert sorted(trained) == list(range(start_rollout_id, start_rollout_id + 6))
+    assert passed == trained
+    if start_rollout_id == 0 and interval == 1:
+        # Then the upstream staleness and the arena off-policy round give the same number.
+        for rollout_id, version in passed.items():
+            group = _group(version=1, group_index=0)
+            off_policy = compute_off_policy_metrics(
+                pytypes.SimpleNamespace(update_weights_interval=1), [group], rollout_id
+            )
+            assert group_staleness(group, version) == off_policy["off_policy_round/mean"] == rollout_id
 
 
 if __name__ == "__main__":

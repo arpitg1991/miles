@@ -2473,11 +2473,14 @@ def generate_rollout(
     in-flight to keep gym workers saturated. This decouples collection
     throughput from training step consumption.
 
-    ``weight_version`` is the engine weight version of the rollout executor
-    (``RolloutFnTrainInput.weight_version``). Only ``NatsRolloutFn`` passes
-    it. The upstream consume-time staleness filter then applies, as in
+    ``weight_version`` is the weight version that trains the batch. Only
+    ``NatsRolloutFn`` passes it (``_train_weight_version``). The upstream
+    consume-time staleness filter then applies, as in
     ``DefaultDataBuffer.get``: with ``--max-weight-staleness``, a group whose
     oldest span version is more than that many versions behind is dropped.
+    ``rollout/off_policy_round/*`` covers every group taken from the queue,
+    as the other pre-filter metrics do, and the ``rollout/fully_async/*``
+    staleness keys cover the kept groups, as upstream.
 
     Returns a ``RolloutFnTrainOutput``: the groups, and the
     ``rollout/fully_async/*staleness*`` metrics that miles ``log_rollout_data``
@@ -2490,7 +2493,7 @@ def generate_rollout(
     max_staleness = getattr(args, "max_weight_staleness", None)
     if max_staleness is not None and weight_version is None:
         raise ValueError(
-            "--max-weight-staleness needs the engine weight version, and this call has none. Only "
+            "--max-weight-staleness needs the weight version that trains the batch, and this call has none. Only "
             "--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn passes it, "
             "after the first weight update."
         )
@@ -2587,7 +2590,8 @@ def generate_rollout(
                     continue
 
             # Consume-time staleness, as upstream DefaultDataBuffer.get: the
-            # oldest span version of the group against the engine version.
+            # oldest span version of the group against the version that
+            # trains the batch.
             # ponytail: a stale group is always dropped, so
             # --async-unused-samples-handler retry has no effect here. Upgrade
             # path: give the prompt back to the data source for a new publish.
@@ -3066,6 +3070,26 @@ def _add_arena_arguments(parser):
 generate_rollout.add_arguments = _add_arena_arguments
 
 
+def _train_weight_version(args, rollout_id: int, engine_version: int | None) -> int | None:
+    """Return the weight version that trains rollout ``rollout_id``.
+
+    ``RolloutFnTrainInput.weight_version`` is the engine version when the
+    drain starts. ``train_async_arena`` starts the drain of rollout ``r``
+    before it trains rollout ``r - 1``. When ``r`` is a multiple of
+    ``--update-weights-interval``, the driver then updates the weights before
+    it trains rollout ``r``. The batch thus trains one version after the
+    engine version. Upstream ``train_async.py`` runs the drain after that
+    update under ``--fully-async``, so its ``DefaultDataBuffer.get`` gets the
+    version that trains the batch. ``--fully-async`` cannot select a rollout
+    function path (``miles.utils.arguments``), so this class never runs under
+    it. The first rollout drains after the initial update.
+    """
+    if engine_version is None:
+        return None
+    update_before_train = rollout_id > args.start_rollout_id and rollout_id % args.update_weights_interval == 0
+    return engine_version + 1 if update_before_train else engine_version
+
+
 class NatsRolloutFn(BaseRolloutFn):
     """``generate_rollout`` behind the upstream class seam, which passes the engine weight version.
 
@@ -3073,18 +3097,24 @@ class NatsRolloutFn(BaseRolloutFn):
     The staleness filter and the ``rollout/fully_async/*staleness*`` metrics
     need it, so they need
     ``--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn``.
+    The class gives ``generate_rollout`` the version that trains the batch
+    (``_train_weight_version``).
     """
 
     add_arguments = staticmethod(_add_arena_arguments)
 
     def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
         constructor = self.constructor_input
+        args = constructor.args
         return generate_rollout(
-            constructor.args,
+            args,
             input.rollout_id,
             constructor.data_source,
             evaluation=input.evaluation,
-            weight_version=input.weight_version,
+            # generate_rollout raises on evaluation before it reads the version.
+            weight_version=(
+                None if input.evaluation else _train_weight_version(args, input.rollout_id, input.weight_version)
+            ),
         )
 
 

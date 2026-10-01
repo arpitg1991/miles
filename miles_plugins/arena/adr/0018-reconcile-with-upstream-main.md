@@ -104,6 +104,17 @@ ADR-0011 (where the per-turn weight versions live)
      `generate_rollout`. The function path gets no version: the staleness keys
      other than the drop count stay absent, and `--max-weight-staleness` stops
      the run with an error that names `NatsRolloutFn`.
+   - The filter and the keys measure against the version that trains the
+     batch, as upstream does under `--fully-async`. The rollout executor reads
+     its version when the drain starts. `train_async_arena` starts the drain
+     of rollout `r` before it trains rollout `r - 1`. When `r` is a multiple
+     of `--update-weights-interval`, a weight update runs before rollout `r`
+     trains, so `NatsRolloutFn` adds 1 to the version. A test runs the real
+     driver loop and checks that each batch gets the version that it trains
+     under.
+   - `rollout/off_policy_round/*` covers every group taken from the queue, as
+     the other pre-filter metrics do. The `rollout/fully_async/*` staleness
+     keys cover the kept groups, as upstream.
 5. **The advantage-scale tests set a one-rank parallel state.** The
    `advantage_scale` code path does not change.
 
@@ -115,6 +126,7 @@ ADR-0011 (where the per-turn weight versions live)
 | Build the spans from the loss mask | The gym sets 0 on a clipped or empty turn, so the mask cannot give the ranges. A wrong range goes into the upstream checks and metrics. |
 | Train on with empty `Sample.weight_versions` when an old gym sends no spans | Two code paths, and the run loses its staleness numbers without a trace. One error at the first message is the cheaper failure. |
 | Take the engine version from `rollout_id` | The trainer weight version starts at 1 again after each restart. Only the rollout executor knows the published version. |
+| Measure the staleness against the engine version when the drain starts | When a weight update runs between the drain and the train step, the value is one version too low. `--max-weight-staleness K` then keeps groups that are one version staler than upstream keeps. |
 | Pass the version to legacy rollout functions in `LegacyRolloutFnAdapter` | This is a core edit where an upstream seam exists (the class-based rollout function). |
 | Keep strings in `Sample.weight_versions` and patch the upstream conversion | This is a core edit where an upstream contract exists. ADR-0001 allows a core edit only where miles has no seam. |
 | Merge upstream `main` into `arpit-glm-53` | The merge keeps the PR copy and the upstream squash as two histories of the same files. It also hides the drop list inside a merge commit. |

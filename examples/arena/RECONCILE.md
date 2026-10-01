@@ -158,7 +158,7 @@ It restores three files from `38921ae45` without change, right after
 | GLM-5.3 DSA indexer | the final #2786 applies RMSNorm to the indexer query. The fork copy fed the raw query; SGLang `9a26e749` feeds the normalized query | the live runs on `arpit-glm-53` have this train/rollout mismatch in all 11 DSA layers. The fix changes the top-k selection and the log-probs |
 | GLM-5.3 MLP | `scripts/models/glm5.3-flash.py` adds `--activation-func-clamp-value 10`. The checkpoint sets `swiglu_limit` 10, and SGLang clamps | a second train/rollout mismatch goes away |
 | GLM-5.3 mHC | the mean output contraction comes from a Megatron spec, not a monkeypatch | no checkpoint format change is expected. A GPU load of an r45 checkpoint must prove it |
-| fault tolerance | with `use_fault_tolerance`, upstream turns on the mini fault-tolerance controller on `api_server_port` 18080. `--control-server-port` is gone | new auto-heal of failed engines. No r44, r45, or r46 config sets `mini_ft_controller_enable`, so a relaunch from these files turns the controller on. Set `mini_ft_controller_enable: false` for a like-for-like run. In the train-only GPU jobs the controller started and polled an empty cell list |
+| fault tolerance | with `use_fault_tolerance`, upstream turns on the mini fault-tolerance controller on `api_server_port` 18080. `--control-server-port` is gone | new auto-heal of failed engines. No r44, r45, or r46 config sets `mini_ft_controller_enable`, so a relaunch from these files turns the controller on. Keep the key unset. On this branch the controller is the only code that restarts a failed engine: it does the work of the fork `recover_updatable_engines`. A YAML `false` does nothing, because the launcher drops a false value (corrected 2026-10-01; see "Fault tolerance against r48" in the refresh). In the train-only GPU jobs the controller started and polled an empty cell list |
 | event logger | `save_debug_event_data` defaults to `<save>/events` (#2505), and no flag turns it off. The event logger is then on in every process. `update_weights` runs `check_weights(action="checksum")` on every engine at each weight update (`miles/ray/placement_group.py`), and each save copies the whole events dir into the checkpoint | with `update_weights_interval: 1`, one checksum pass on each engine per rollout, and a copy that grows at each save. The GPU jobs of this file have no engines, so they do not measure the checksum time. The Megatron DCP format, the data-source state path, and the single-policy dir layout do not change |
 | metrics | `train_rollout_logprob_abs_diff` and `train_rollout_kl` come from trainer-scored log-probs (#3655) | values before and after the rebase are not directly comparable |
 | weight-version metrics | the upstream `weight_version/*` metrics read span objects | arena samples carry no spans, so these metrics are absent. `rollout/off_policy_round/*` does not change |
@@ -677,6 +677,7 @@ defaults and `miles_validate_args` are a static reading, not a parse.
 | GLM-5.3 model | fork copy of PR #2786 | upstream #2786: RMSNorm on the DSA indexer query, the clamp 10, the mHC spec. KDA TP (`glm5_next_kda_tp: true`) is the same code on the upstream module |
 | events and checksums | | the event logger is on, `update_weights` runs `check_weights(action="checksum")` on each engine at each update, and each save copies the events dir |
 | driver | `rollout_manager.generate` | the upstream loop: `inference_controller.prepare_rollout` before each generate, the weight version published to the rollout executor after each update, the disposer teardown, the API server and the mini FT controller |
+| fault tolerance | a failed engine stops at the first failed check and restarts at the next weight update | the mini FT controller restarts it at any time. Keep `mini_ft_controller_enable` unset; see "Fault tolerance against r48" |
 | metrics | | `train_rollout_logprob_abs_diff` and `train_rollout_kl` from trainer-scored log-probs (#3655). `rollout/weight_version/*` have the r48 keys and meaning (`3f9010e73`) |
 | R3 data path | int32 routing | routing as int16 in the shards and the pinned replay buffers, widened to int32 at the router (the same replayed indices); the thd replay fill copies only the local rows (byte-equal to the old fill in the tests) |
 | logs | | always-on `[r3-timing]`, `[r3-mem]` and `[r3-digest]` lines. `[r3-digest]` hashes the replay buffers of each rank once per step and reports its own `seconds` |
@@ -685,6 +686,41 @@ defaults and `miles_validate_args` are a static reading, not a parse.
 | thd batches | `PackedSeqParams` | `PackedSeqParamsWithHostCuSeqlens`, a subclass with the host copy of `cu_seqlens` (#3689) |
 | command workers | `<launch cmd>` under a shell | `exec <launch cmd>`, so the death of the actor frees the ports (#3718) |
 | base image | `glm53next-upstream-20260902` (SGLang `9a26e749`, Megatron-LM `e8f57451`, fla 0.4.2, TileLang 0.1.9) | needs a base from the upstream `docker/build.py` at `d7f1a4210`: SGLang `sglang-miles` with `--gated-launch-port`, Megatron-LM `miles-main`, fla 0.5.2 with the upstream KDA patch and `fla_conv_int64_offsets.py`, TileLang 0.1.14 with the #3647 Blackwell patch, Mooncake from `lmsysorg/sglang` |
+
+### Fault tolerance against r48
+
+On `arpit-glm-53`, `RolloutHealthMonitor._check_engine_health`
+(`miles/utils/health_monitor.py`) stops an engine at the first failed check.
+`RayTrainGroup.update_weights` (`miles/ray/actor_group.py`) calls
+`rollout_manager.recover_updatable_engines` before each weight update, so the
+engine restarts then.
+
+On this branch the mini fault-tolerance controller does that work. The r48
+config sets `use_fault_tolerance`, so `ft_components` resolves to `rollout`,
+`api_server_port` to 18080, and `mini_ft_controller_enable` to True. The
+controller polls the cells on the API server. It suspends and resumes each
+unhealthy cell, through `stop_cell_between_weight_updates` and
+`RayWorkerManager.start_cells`. A cell that updates weights joins the router
+only in `mark_weights_ready`, after the next weight update, so it never
+serves old weights. The difference is the time: the controller heals at
+any time, not only at the next weight update. No other code restarts an
+engine. `SimpleHealthChecker` only sets the cell status, and
+`start_update_weights` only waits for the cells to be ready.
+
+Keep `mini_ft_controller_enable` unset. The two settings that turn the
+controller off leave a failed engine stopped for the rest of the run:
+
+| config line | argv | resolved |
+| --- | --- | --- |
+| none (r48) | none | True, port 18080 |
+| `mini_ft_controller_enable: false` | none: the launcher drops a false value | True, port 18080 |
+| `no_mini_ft_controller_enable: true` | `--no-mini-ft-controller-enable` | False |
+| `api_server_port: 0` | `--api-server-port 0` | False, port 0 |
+
+The probe builds the argv with the launcher and resolves it with the miles
+parser and the three upstream resolvers (`stubfull`).
+`test_run_arena_harbor.py::test_yaml_false_emits_no_flag` checks the argv
+column.
 
 ### Open items of the refresh
 

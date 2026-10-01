@@ -62,6 +62,25 @@ def test_opt_in_appends_save_hf(tmp_path, yaml_extra, arena_eval_tasks):
     assert "--arena-save-hf" not in argv
 
 
+@pytest.mark.parametrize(
+    ("yaml_extra", "expected"),
+    [
+        ("", []),
+        ("mini_ft_controller_enable: false\n", []),
+        ("no_mini_ft_controller_enable: true\n", ["--no-mini-ft-controller-enable"]),
+    ],
+)
+def test_yaml_false_emits_no_flag(tmp_path, yaml_extra, expected):
+    """A YAML ``false`` is dropped, so it cannot turn off a flag that resolves to True.
+
+    ``--mini-ft-controller-enable`` defaults to None, and ``--use-fault-tolerance``
+    resolves it to True (``miles.utils.arguments``). Only the ``no_`` key reaches
+    the parser as a negation.
+    """
+    argv = _argv(tmp_path, "use_fault_tolerance: true\n" + yaml_extra)
+    assert [token for token in argv if "mini-ft-controller" in token] == expected
+
+
 def test_non_boolean_value_fails_fast(tmp_path):
     with pytest.raises(typer.BadParameter, match="arena_save_hf"):
         _argv(tmp_path, 'arena_save_hf: "yes"\n')

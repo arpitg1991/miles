@@ -511,11 +511,9 @@ def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | Non
 
 # The gym change that adds ``weight_version_spans`` is AREnATasks ADR-0074. It
 # MUST cover both training gym runtimes, because both ship token arrays to this
-# trainer (ADR-0002). No gym image with it exists yet. Put the tag of the first
-# one here when it is built.
-_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS = (
-    "a gym image built from AREnATasks ADR-0074 that sends the spans from both training gym runtimes"
-)
+# trainer (ADR-0002). The first such image is built from AREnATasks branch
+# arpit-weight-version-spans at 63cd53f5 (sha256:e29ba91a...).
+_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS = "arena-slime-dev:gym-glm53-wvspans-20261001a"
 # The gym classes that build the token arrays of a training step, one per runtime.
 _WEIGHT_VERSION_SPANS_GYM_RUNTIMES = (
     "Harbor (amzn_arena_harbor.sglang_rollout.RolloutState) and "

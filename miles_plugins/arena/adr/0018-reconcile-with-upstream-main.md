@@ -84,7 +84,9 @@ ADR-0011 (where the per-turn weight versions live)
      order. Upstream `WeightVersionsPerCall.from_meta_info` builds the same
      object from the same `meta_info`. Thus `len(Sample.weight_versions)` is
      the number of calls that have an entry. A call without an entry gives no
-     `WeightVersionsPerCall`. A hard context overflow cuts `Sample.tokens`.
+     `WeightVersionsPerCall`. Upstream gives an empty one for a call with an
+     empty output, so the dashboard turn count of such a sample is lower by
+     one for each empty call. A hard context overflow cuts `Sample.tokens`.
      The spans are then cut the same way as upstream
      `Sample.strip_last_output_tokens` cuts them: a call keeps its
      `WeightVersionsPerCall`, and loses each span that starts after the cut.

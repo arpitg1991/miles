@@ -720,7 +720,69 @@ The context-overflow cut of a split call equals the upstream strip. A call
 without an entry adds no empty call. An entry without `call`, a call that
 goes back, a negative call, a `bool` call and a `str` call stop the run.
 The fixtures of `test_multi_segment_episodes.py`, `test_nats_arena.py` and
-`test_group_identity.py` carry the call index.
+`test_group_identity.py` carry the call index. Commit: `68f18c354`.
+
+One difference from upstream stays. Upstream `from_meta_info` gives an
+empty `WeightVersionsPerCall` for a call with an empty output. The gym drops
+the entry of that call, so the trainer adds no `WeightVersionsPerCall` for
+it. The dashboard turn count (`len(Sample.weight_versions)`) of such a
+sample is then lower by one for each empty call. The versions, the
+staleness and the metrics do not change.
+
+`rollout/off_policy_round/*` (plugin code) takes the mean of the span
+versions of an episode. A split call thus adds one version per span, not
+one per call. With the first contract it added the newest version once.
+
+### R3 MoE runner
+
+The first r49 attempt (`guparpit-agentic-debt-v2-9fqgp`, image
+`recon-20261001b`) stopped at rollout 60 with "routed_experts payload is
+all zeros". On sm100 the SGLang of the new base (`sglang-miles`) resolves
+the `auto` MoE runner to `flashinfer_trtllm`, which never materializes the
+top-k ids that R3 replays. SGLang `9a26e749` of the r48 base left
+`flashinfer_trtllm` by itself when routed-expert capture is on, so no run
+config set the runner.
+
+- `09c6755e7` is `fb7fd4b38` of `arpit-r49-moe-triton` (a clean pick): the
+  v2 config sets `sglang_moe_runner_backend: triton`, as upstream
+  `scripts/run_glm5_3_flash.py` does for routing replay, and the workflow
+  delta text says so.
+- `b8e71636c`: `test_training_run_identity.py` allows that key as the one
+  more difference between the r48 and the v2 config.
+- `386405661`: `scripts/run_arena_harbor.py` stops before the job submit
+  when the final argv has `--use-rollout-routing-replay` and the last
+  `--sglang-moe-runner-backend` is `auto`, `flashinfer_trtllm` or absent.
+  The error names `triton` and upstream `scripts/run_glm5_3_flash.py`. A
+  train-only run (`--load-debug-rollout-data`, the kdatp and T1 jobs)
+  starts no SGLang engine, so the check skips it. The launcher runs before
+  the miles argument validation, which runs inside the Ray job.
+
+The check on the committed configs: 70 configs under `training-runs/` have
+R3 on, 35 config files and 35 configs in workflow parameters. The check
+rejects 68 of them: each R3 run folder from `r16` to `r47`,
+`guparpit-agentic-debt-v1` (r48) and `guparpit-cadgym-v1`. It accepts the
+two of `guparpit-agentic-debt-v2`. r44, r47, r48, `guparpit-cadgym-v1` and
+the older runs ran on SGLang `9a26e749`, which picks a capture runner by
+itself. The comment above the check and the error say so. Their files do
+not change. Before a rerun of one of them on a newer trainer image, add
+the key.
+
+Validation of "Split calls" and "R3 MoE runner" (CPU, the venv and the
+stand-ins of "Validation (CPU, 2026-10-01)"), against `5e26104c5`:
+
+| check | `5e26104c5` | `386405661` |
+| --- | --- | --- |
+| arena fast tests, `stub` | 371 passed, 4 skipped | 380 passed, 4 skipped |
+| arena tests and `test_run_arena_harbor.py`, `stubfull`, conftests, local Ray | 386 passed, 1 failed (`test_register_nova_reasoning_parser`) | 404 passed, the same failure |
+| launcher tests, `stub` | 65 passed, 1 failed (`test_workplace_launch_uses_the_configured_backend`, also on upstream) | 74 passed, the same failure |
+| launcher snapshots, `-k "run_arena_harbor or run_glm5_3_flash"`, each stub | 6 passed | 6 passed |
+| upstream tests of the reused code (the list of "Weight-version spans"), `stubfull`, conftests, local Ray | 347 passed, 1 skipped | 347 passed, 1 skipped |
+| ADR-0005 check | 0 | 0 |
+
+The 9 new arena tests are the split-call tests and the new contract cases.
+The 9 new launcher tests are the R3 runner cases. Without the check, 5 of
+them fail. `test_training_run_identity.py` fails on `09c6755e7` and passes
+on `b8e71636c`.
 
 ### Other new commits
 
@@ -738,7 +800,12 @@ The fixtures of `test_multi_segment_episodes.py`, `test_nats_arena.py` and
 | `b167425ce` | "Review findings (2026-10-01)" and the validation numbers |
 | `ab0958b17`, `4a78e4b6d`, `0b09a6ab9` | the r48 summary-dir record, the `guparpit-agentic-debt-v2` workflow, and its image `recon-20261001b` |
 | `da93977ba` | `examples/arena/Dockerfile` pins `opentelemetry-api` to the installed sdk, so `ray start --head` works in the image |
-| this commit | the weight-version spans (see "Weight-version spans") |
+| `9775f9587` | the weight-version spans (see "Weight-version spans") |
+| `7ef41c1af`, `c830cff71` | the two review fixes of the spans: the error names both gym runtimes, and the staleness reference |
+| `5e26104c5` | the review-fix test numbers and open item 7.5 |
+| `68f18c354` | one span per weight version of a split call (see "Split calls"), item 7.5 closed |
+| `09c6755e7`, `b8e71636c`, `386405661` | the triton MoE runner of v2, its identity test, and the launch check (see "R3 MoE runner") |
+| this commit | the test numbers of "Split calls" and "R3 MoE runner" |
 
 ### Validation (CPU, 2026-10-01)
 
@@ -865,6 +932,7 @@ column.
 `training-runs/harbor-rl-glm53-flash/guparpit-agentic-debt-v2/miles-config.yaml`
 is the r48 config with a new run identity. Only `experiment_name`,
 `project_name` (both launcher keys) and `arena_sample_summary_dir` differ.
+`09c6755e7` adds `sglang_moe_runner_backend: triton` (see "R3 MoE runner").
 The launcher builds the same 190-token argv from both files, except for the
 sample-summary dir. r48 writes into the r47 sample-summary dir, and
 `_write_sample_summary` replaces `rollout_<id>.jsonl`, so a third run there
@@ -969,9 +1037,9 @@ change.
       `rollout/weight_version/*` in the `perf <rollout_id>` line, the
       `Weight staleness:` line, and that `assert_samples_weight_version_sane`
       passes.
-   5. Closed (see "Split calls"). One model call can span a weight update,
-      and SGLang then gives that call one span per weight version. The
-      amended contract sends one entry per span with the call index, and
-      the trainer makes one `WeightVersionsPerCall` per call with one span
-      per entry. The gym image of item 7.1 MUST send the amended entries:
-      this trainer stops on an entry without `call`.
+   5. Closed by `68f18c354` (see "Split calls"). One model call can span a
+      weight update, and SGLang then gives that call one span per weight
+      version. The amended contract sends one entry per span with the call
+      index, and the trainer makes one `WeightVersionsPerCall` per call
+      with one span per entry. The gym image of item 7.1 MUST send the
+      amended entries: this trainer stops on an entry without `call`.

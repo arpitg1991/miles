@@ -27,7 +27,10 @@ slime 0.3.0 they must never reach the train argv): ``user``, ``cluster``,
 (plugin ADR-0006 amendment 2026-09-27). Run identity (checkpoint dir, wandb group) comes
 from the ``EXPERIMENT_NAME`` pod env per ADR-0004, never from the YAML names; an
 existing checkpoint dir resumes silently, so a finished run trains nothing and
-exits 0 — bump ``EXPERIMENT_NAME`` for a fresh run.
+exits 0 — bump ``EXPERIMENT_NAME`` for a fresh run. An R3 config
+(``use_rollout_routing_replay: true``) that starts SGLang MUST set a MoE runner
+that materializes the top-k ids, for example ``sglang_moe_runner_backend:
+triton``; the launcher stops on ``auto``, ``flashinfer_trtllm`` or no value.
 
 =====================
 
@@ -222,6 +225,41 @@ def _save_hf_requested(args: ScriptArgs, consumed: dict) -> bool:
     return bool(save_hf) or bool(args.arena_eval_tasks)
 
 
+# R3 replays the top-k expert ids that SGLang captures at rollout time. A fused
+# MoE runner never materializes them, and the run stops later with
+# "routed_experts payload is all zeros" (the first r49 attempt stopped at
+# rollout 60). On sm100 the SGLang of the recon trainer images (sglang-miles)
+# resolves auto to flashinfer_trtllm. Upstream scripts/run_glm5_3_flash.py sets
+# triton, because routing replay needs the top-k ids.
+# r44, r47, r48 (guparpit-agentic-debt-v1), guparpit-cadgym-v1 and the older R3
+# runs ran on SGLang 9a26e749, which leaves flashinfer_trtllm by itself when
+# routed-expert capture is on. This check rejects their committed files. Before
+# a rerun of one of them on a newer trainer image, add the key.
+_R3_MOE_RUNNERS_WITHOUT_TOPK_IDS = (None, "auto", "flashinfer_trtllm")
+
+
+def _check_r3_moe_runner(argv: list[str]) -> None:
+    """Stop an R3 launch whose SGLang MoE runner gives no top-k ids.
+
+    A train-only run (``--load-debug-rollout-data``) starts no SGLang engine,
+    so the check skips it. The last ``--sglang-moe-runner-backend`` wins, as in
+    argparse.
+    """
+    if "--use-rollout-routing-replay" not in argv or "--load-debug-rollout-data" in argv:
+        return
+    runners = [argv[i + 1] for i, token in enumerate(argv[:-1]) if token == "--sglang-moe-runner-backend"]
+    runner = runners[-1] if runners else None
+    if runner in _R3_MOE_RUNNERS_WITHOUT_TOPK_IDS:
+        raise typer.BadParameter(
+            "R3 (use_rollout_routing_replay) needs a MoE runner that materializes the top-k ids, but "
+            f"sglang_moe_runner_backend is {runner or 'unset (auto)'}. Set sglang_moe_runner_backend: triton, "
+            "as upstream scripts/run_glm5_3_flash.py does. On sm100 the SGLang of the recon trainer "
+            "images resolves auto to flashinfer_trtllm, which captures no routed experts. The R3 runs up to "
+            "r48 and guparpit-cadgym-v1 ran on SGLang 9a26e749, which left flashinfer_trtllm by itself, so "
+            "their configs have no such key."
+        )
+
+
 def _build_train_args(args: ScriptArgs) -> tuple[str, str]:
     """Returns (megatron_model_type, train argv string) for execute_train."""
     container = _load_experiment_config(args.config_path)
@@ -280,6 +318,7 @@ def _build_train_args(args: ScriptArgs) -> tuple[str, str]:
     train_args = " ".join(shlex.quote(token) for token in tokens)
     if args.extra_args:
         train_args = f"{train_args} {args.extra_args}"
+    _check_r3_moe_runner(shlex.split(train_args))
     return model_arch, train_args
 
 

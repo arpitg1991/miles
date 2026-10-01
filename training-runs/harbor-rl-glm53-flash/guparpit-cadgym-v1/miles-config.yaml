@@ -266,7 +266,7 @@ agislime_dir: /root/miles
 # resume 1 (2026-09-27): 16 = 8 actor nodes + 8 engine nodes. The launcher
 # reads REPLICA and REPLICA_TRAINER from the pod env (workflow params
 # replicas and replica-trainer). This key is the config-side record only.
-replicas: 16
+replicas: 40  # 8 trainer + 32 engines (r47 shape), user decision 2026-10-01
 num_trainers: 8
 # -> scripts/models/glm5.3-flash.py (ships in the merged image tree)
 model_arch: glm5.3-flash

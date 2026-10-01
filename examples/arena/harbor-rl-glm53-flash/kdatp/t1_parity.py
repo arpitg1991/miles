@@ -47,7 +47,7 @@ from megatron.core.transformer import TransformerConfig
 from megatron.core.transformer.module import convert_module_to_dtype_except_fp32_marked
 
 from miles.backends.megatron_utils.megatron_to_hf.glm5_next import convert_glm5_next_to_hf
-from miles.backends.megatron_utils.update_weight.common import all_gather_params_async
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import all_gather_params_async
 from miles.backends.training_utils.parallel import ParallelState, set_parallel_state
 from miles.utils.ft_utils.process_group_utils import GroupInfo
 from miles.utils.types import ParamInfo

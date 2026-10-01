@@ -1,10 +1,27 @@
-# guparpit-agentic-debt-v1 (r48)
+# Run record: guparpit-agentic-debt-v1 (r48) — r47 forked at iter_0000059 with the in-flight multiplier at 4
 
-**Status:** running. Argo workflow `guparpit-agentic-debt-v1-gsgr7`, W&B run `631mke7d`.
-**Gym:** agentic-debt. **W&B:** project `arena/agentic-debt`, run `guparpit-agentic-debt-v1`.
-**Dataset:** `lakefs://arena-inspect/main/internal/agentic-debt-r3/agentic-debt-766/` (manifest commit 327e057c, as r47).
-**Start:** r47 checkpoint `iter_0000059` (saved 2026-10-01 02:51Z). miles resumes at rollout 60.
-**Parent:** r47 `rl-glm53f47-hqdb5`. r47 keeps running unchanged.
+**Status:** Running
+<!-- gen-workflow:begin -->
+**Date:** 2026-10-01
+**Family:** `harbor-rl-glm53-flash`
+**Argo generateName:** `guparpit-agentic-debt-v1-`
+**Experiment name:** `guparpit-agentic-debt-v1`
+**W&B project:** `agentic-debt` (group `guparpit-agentic-debt-v1`)
+**Dataset:** `lakefs://arena-inspect/327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480/internal/agentic-debt-r3/agentic-debt-766/manifest.jsonl` (gym `agentic-debt`)
+**Manifest commit:** `327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480`
+**Gym image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adr72-20260927a`
+**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-r17-20260928a`
+**Template:** `guparpit-miles-deployer-v10`
+**Base:** `r47`
+<!-- gen-workflow:end -->
+**Argo workflow:** `guparpit-agentic-debt-v1-gsgr7`
+**W&B run:** `631mke7d`
+**Task pin:** `3cadc6b0`
+**Trainer config deltas vs base:** `arena_inflight_multiplier` 10 -> 4; `wandb_project` rl-glm53f-adebt-766 -> agentic-debt; `disable_wandb_random_suffix` true
+**Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v1`, seeded from r47 `iter_0000059` (2026-10-01 02:51Z)
+**Outcome:** Running. Known issue: `arena_sample_summary_dir` is the r47 folder, so r48 replaces r47 `rollout_<id>.jsonl` files from rollout 60 on. Bucket versioning keeps both writers.
+
+Starts from r47 checkpoint `iter_0000059`; miles resumes at rollout 60. r47 `rl-glm53f47-hqdb5` keeps running unchanged.
 
 ## Change vs r47
 
@@ -66,6 +83,16 @@ All signals exist in the r47 image and were read from r47 on 2026-10-01:
 r47 and this run start from the same weights at rollout 60. The comparison
 is not a clean A/B test, because r47 starts with a full queue and this run
 starts with an empty one.
+
+## Known issues
+
+- Sample summaries: the config keeps the r47 `arena_sample_summary_dir`
+  (`/mnt/scratch-s3files-rw/guparpit/debug/rl-glm53f-adebt-766-r47/sample_summary`).
+  `_write_sample_summary` replaces `rollout_<id>.jsonl`, so r48 replaced the
+  r47 files for rollouts 60, 61, and 62 by 2026-10-01 11:28Z. The bucket has
+  versioning on: the older object version of each file is the r47 one.
+  Training, checkpoints, and W&B are not affected. guparpit-agentic-debt-v2
+  has its own folder.
 
 ## Launch
 

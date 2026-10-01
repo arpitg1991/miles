@@ -755,6 +755,8 @@ The launch needs three more steps that no committed file holds:
 3. Keep `mini_ft_controller_enable` unset (see "Fault tolerance against
    r48").
 
+Before the long run, do the KDA tensor-parallel load check (open item 6).
+
 ### Open items of the refresh
 
 1. Build a test image on the new base and run the r48 argv through
@@ -769,3 +771,28 @@ The launch needs three more steps that no committed file holds:
 5. `--prefetch-rollout-data` ran on GPU only on `arpit-r3-datapath`. The port
    to the upstream worker structure passes the CPU tests with a local Ray
    cluster, but it has no GPU run.
+6. No job has loaded a checkpoint saved with `glm5_next_kda_tp: true` on the
+   new base. r47 saved `iter_0000059` with KDA TP on (image r17,
+   `4716a367a`), and an r48-like run starts there. The GPU jobs of the
+   first reconcile loaded the r45 DCP with KDA TP off. The refresh checked
+   the stride-3 gather on CPU only. The KDA module differs from `4716a367a`
+   by one import line. Upstream `kimi_k3/layers.py` calls
+   `ensure_metadata_has_dp_cp_group` and `make_sharded_tensors_for_checkpoint`
+   the same way, and upstream `inkling/layers.py` builds a custom
+   `ShardedTensorFactory` with the same arguments. These three APIs and
+   the `tp_group` and `dp_cp_group` keywords of
+   `make_tp_sharded_tensor_for_checkpoint` are the same in the Megatron tree
+   of the 20260929c profile pods and in NVIDIA Megatron-LM `b4d72b79`. No
+   tree of `miles-main` `f148a32b` was on disk, so that check is only a
+   static hint. Before the long run, run one
+   T1-style job on the new image with `glm5_next_kda_tp: true`:
+   1. Load r47 `iter_0000059` with TP 8, as in the run.
+   2. Compare the SHA-256 of the HF gather (the raw-mode weight sync path,
+      with the stride-3 branch of `hf_weight_iterator_direct.py`) with the
+      r17 image at the same iteration.
+   3. Compare the log-probs with the r17 image on a few r48 rows, with the
+      kdatp gate of "GPU validation (2026-09-27)": relative L2 error at
+      most 2 x floor + 2**-8, and mean log-prob difference at most
+      2 x floor + 1e-3.
+
+   Open item 1 (`parse_args()` in the image) does not cover this.

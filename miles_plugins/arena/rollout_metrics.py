@@ -146,6 +146,26 @@ def compute_off_policy_round_metrics(
     }
 
 
+def compute_weight_version_metrics(samples: list) -> dict[str, float]:
+    """``weight_version/*`` of upstream ``miles/ray/rollout/metrics.py``, read from the arena metadata.
+
+    Upstream reads the ``Sample.weight_versions`` spans, which the NATS path
+    does not build (ADR-0018). The meaning is the same as upstream and as on
+    ``arpit-glm-53``: ``min``, ``mean``, ``median`` and ``max`` of the oldest
+    numeric version of each sample that has one, and ``mixed_version_ratio``,
+    the share of all samples whose turns carry more than one version.
+    """
+    from miles.utils.metric_utils import compute_statistics
+
+    per_sample = [(s.metadata or {}).get(ARENA_WEIGHT_VERSIONS_KEY) or [] for s in samples]
+    oldest = [min(numeric) for vs in per_sample if (numeric := [int(v) for v in vs if str(v).isdigit()])]
+    if not oldest:
+        return {}
+    metrics = {f"weight_version/{key}": value for key, value in compute_statistics(oldest).items()}
+    metrics["weight_version/mixed_version_ratio"] = sum(1 for vs in per_sample if len(set(vs)) > 1) / len(samples)
+    return metrics
+
+
 def compute_off_policy_metrics(args: Any, all_samples: list, rollout_id: int | None = None) -> dict[str, float]:
     """Read the gym weight versions from each sample's metadata and call the core function.
 

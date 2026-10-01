@@ -1943,6 +1943,47 @@ class TestFailedReasonTelemetry:
         assert metrics["rollout/dropped_groups/too_large"] == 1
         assert sum(metrics.values()) == 1
 
+    def test_rollout_logs_the_upstream_weight_version_metrics(self, monkeypatch):
+        """rollout/weight_version/* reach W&B from the arena metadata, with the arpit-glm-53 values."""
+        from miles_plugins.arena.nats_arena import nats_rollout
+
+        worker = self._worker(n=2)
+        versions = {"t.g0.": (["3", "4"], ["5"]), "t.g1.": (["6"], ["6", "6"])}
+        for task_id, (first, second) in versions.items():
+            trajs = [{**self._traj(), "weight_versions": first}, {**self._traj(0.0), "weight_versions": second}]
+            worker._process_group(task_id, [{**self._result(trajs), "task_id": task_id}])
+        worker._train_segments = "final"
+        worker.worker_thread = SimpleNamespace(is_alive=lambda: False)
+        worker.fatal_error = None
+        for group in self._drain(worker):
+            worker.output_queue.put(group)
+
+        logged: list[dict] = []
+        monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: worker)
+        monkeypatch.setattr(
+            "miles.utils.tracking_utils.tracking.log", lambda args, metrics, step_key: logged.append(metrics)
+        )
+        args = SimpleNamespace(
+            rollout_global_dataset=True,
+            global_batch_size=4,
+            n_samples_per_prompt=2,
+            dynamic_sampling_filter_path=None,
+            arena_train_segments="final",
+            use_wandb=True,
+            wandb_always_use_train_step=False,
+        )
+        nats_rollout.generate_rollout(args, 0, data_source=SimpleNamespace())
+
+        metrics = logged[0]
+        # Oldest versions 3, 5, 6, 6; only ["3", "4"] mixes two versions.
+        assert {k: v for k, v in metrics.items() if k.startswith("rollout/weight_version/")} == {
+            "rollout/weight_version/mean": 5.0,
+            "rollout/weight_version/median": 5.5,
+            "rollout/weight_version/max": 6.0,
+            "rollout/weight_version/min": 3.0,
+            "rollout/weight_version/mixed_version_ratio": 0.25,
+        }
+
     def test_dropped_group_counter_emits_and_resets(self, monkeypatch):
         from miles_plugins.arena import rollout_metrics
         from miles_plugins.arena.nats_arena import nats_rollout

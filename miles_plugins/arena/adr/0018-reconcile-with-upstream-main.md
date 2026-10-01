@@ -85,6 +85,11 @@ ADR-0011 (where the per-turn weight versions live)
   `weight_version/*` from the strings before. Upgrade path: the gym sends the
   output token range of each turn, and the NATS path builds one
   `WeightVersionsPerCall` per turn.
+  Amendment 2026-10-01: until then, `rollout_metrics.compute_weight_version_metrics`
+  computes `rollout/weight_version/{min,mean,median,max}` and
+  `rollout/weight_version/mixed_version_ratio` from the metadata key, with the
+  upstream and fork meaning, over every training row. `nats_rollout` logs them
+  in its `rollout/` metrics dict. The staleness filters still see no spans.
 - Upstream changes alter a run on this branch. `examples/arena/RECONCILE.md`
   lists them. The main items:
   - The DSA indexer applies RMSNorm to the indexer query (final #2786). The

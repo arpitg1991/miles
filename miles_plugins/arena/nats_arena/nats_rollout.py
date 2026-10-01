@@ -2722,6 +2722,7 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             from miles_plugins.arena.rollout_metrics import (
                 compute_group_metrics_from_samples,
                 compute_off_policy_metrics,
+                compute_weight_version_metrics,
             )
 
             # One representative per episode: group_metrics sits on the first
@@ -2743,6 +2744,12 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             if off_policy:
                 for k, v in off_policy.items():
                     metrics[f"rollout/{k}"] = v
+
+            # rollout/weight_version/*: the upstream metric over every training
+            # row, as upstream log_rollout_data would see it. A compact batch
+            # (--arena-train-segments all) is not trimmed, so ``data`` is that list.
+            for k, v in compute_weight_version_metrics([s for group in data for s in group]).items():
+                metrics[f"rollout/{k}"] = v
 
             # Binary reward (rollout/binary_reward): fraction of samples with a
             # reward >= 1.0. Only meaningful when the run binarizes rewards, so

@@ -276,3 +276,55 @@ class TestBinaryReward:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ===========================================================================
+# 4. weight_version/* (compute_weight_version_metrics)
+# ===========================================================================
+
+
+class TestWeightVersionMetrics:
+    """The upstream weight_version/* keys, read from Sample.metadata["arena_weight_versions"] (ADR-0018)."""
+
+    def test_no_numeric_version_returns_empty(self):
+        from miles_plugins.arena.rollout_metrics import compute_weight_version_metrics
+
+        assert compute_weight_version_metrics([]) == {}
+        assert compute_weight_version_metrics([_tagged([]), _tagged(["default"]), MockSample(metadata={})]) == {}
+
+    def test_keys_and_values_match_the_fork_formula(self):
+        """Oldest numeric version per sample; mixed share over all samples, untagged ones included."""
+        from miles_plugins.arena.rollout_metrics import compute_weight_version_metrics
+
+        samples = [_tagged(["3", "4", "4"]), _tagged(["5"]), _tagged(["7", "6"]), _tagged([])]
+        assert compute_weight_version_metrics(samples) == {
+            "weight_version/mean": pytest.approx(14 / 3),
+            "weight_version/median": 5.0,
+            "weight_version/max": 6.0,
+            "weight_version/min": 3.0,
+            "weight_version/mixed_version_ratio": 0.5,
+        }
+
+    def test_values_equal_the_upstream_span_metric(self):
+        """The same versions as upstream spans give the same oldest versions and mixed count."""
+        from miles.utils.metric_utils import compute_statistics
+        from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+        from miles_plugins.arena.rollout_metrics import compute_weight_version_metrics
+
+        per_sample = [["3", "4", "4"], ["5"], ["7", "6"], ["2", "x"], []]
+        spanned = [
+            Sample(
+                weight_versions=[
+                    WeightVersionsPerCall(spans=[WeightVersionSpan(version=v, abs_start=i, abs_end=i + 1)])
+                    for i, v in enumerate(versions)
+                ]
+            )
+            for versions in per_sample
+        ]
+        # The two expressions of upstream miles/ray/rollout/metrics.py.
+        oldest = [s.oldest_weight_version for s in spanned if s.oldest_weight_version is not None]
+        mixed = sum(1 for s in spanned if len({span.version for span in s.all_weight_version_spans}) > 1)
+        expected = {f"weight_version/{k}": v for k, v in compute_statistics(oldest).items()}
+        expected["weight_version/mixed_version_ratio"] = mixed / len(spanned)
+
+        assert compute_weight_version_metrics([_tagged(v) for v in per_sample]) == expected

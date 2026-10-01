@@ -1,6 +1,7 @@
 # ADR-0018: Reconcile the fork with upstream `main` (2026-09-27)
 
-**Status:** Accepted (2026-10-01, with the span design of decision 4)
+**Status:** Accepted (2026-10-01, with the span design of decision 4).
+Decision 4 amended on 2026-10-01: one span entry per weight version of a call.
 **Date:** 2026-09-27
 **Number:** ADR-0016 until 2026-10-01. The fork branch `arpit-glm-53` gave
 ADR-0016 and ADR-0017 to other decisions, so this record moved to ADR-0018.
@@ -52,34 +53,64 @@ ADR-0011 (where the per-turn weight versions live)
    `args.create_backend()`, then `backend.exec_command_cpu` and
    `backend.execute_train`. The backend appends `--deploy-component all` to the
    train argv. The launcher argv does not change in any other way.
-4. **The gym sends one weight-version span per model call, and the NATS path
-   fills the upstream `Sample.weight_versions`** (2026-10-01). Until
+4. **The gym sends the weight-version spans of each model call, and the NATS
+   path fills the upstream `Sample.weight_versions`** (2026-10-01). Until
    2026-10-01 the versions stayed in `Sample.metadata["arena_weight_versions"]`
    and `Sample.weight_versions` stayed empty. The contract:
    - Each step (segment) that the training gym ships keeps its
-     `weight_versions` data and adds `weight_version_spans`. That list has one
-     `{"version", "start", "end"}` entry per model call of the segment, in
-     call order. `version` is the SGLang `weight_version` of the call (an
-     int). `[start, end)` is the output of the call in the cumulative
-     `token_ids` of the same segment, the index space of the retired
-     `truncated_spans`. The ranges do not overlap, they increase, and
-     `end <= len(token_ids)`. A call without an SGLang version gives no entry.
-     The gym side is AREnATasks ADR-0074.
+     `weight_versions` data and adds `weight_version_spans`. Each entry is
+     `{"call", "version", "start", "end"}`, in call order. `call` is the
+     0-based index of the model call in the segment. `version` is an SGLang
+     weight version (an int). `[start, end)` is a part of the output of that
+     call in the cumulative `token_ids` of the same segment, the index space
+     of the retired `truncated_spans`.
+   - One call can give more than one entry (amendment of 2026-10-01, see
+     below). When a call continues across a weight update, the `sglang-miles`
+     engine returns `meta_info["weight_versions"]`: a list of spans relative
+     to the call output, one span for each weight version of the call
+     (`add_weight_versions_to_meta_info` in
+     `python/sglang/srt/utils/weight_versions.py`). The gym sends one entry per
+     listed span. It adds the output start of the call in the segment
+     `token_ids` to each bound. The gym uses the scalar
+     `meta_info["weight_version"]` for one entry over the whole output only
+     when the list is missing. The gym drops an entry with `start >= end`.
+     The entries do not overlap, they increase, and `end <= len(token_ids)`.
+     A call without an SGLang version gives no entry. The gym side is
+     AREnATasks ADR-0074.
    - `_step_to_sample` keeps the step `token_ids` as `Sample.tokens`, so the
-     offset is 0. Each entry becomes one
-     `WeightVersionsPerCall(spans=[WeightVersionSpan(str(version), start, end)])`.
-     A hard context overflow cuts `Sample.tokens`. The spans are then cut the
-     same way as upstream `Sample.strip_last_output_tokens` cuts them.
-   - The trainer checks each entry: `int` values,
+     offset is 0. The trainer groups the entries by `call`. Each call becomes
+     one `WeightVersionsPerCall` that holds one
+     `WeightVersionSpan(str(version), start, end)` per entry of the call, in
+     order. Upstream `WeightVersionsPerCall.from_meta_info` builds the same
+     object from the same `meta_info`. Thus `len(Sample.weight_versions)` is
+     the number of calls that have an entry. A call without an entry gives no
+     `WeightVersionsPerCall`. A hard context overflow cuts `Sample.tokens`.
+     The spans are then cut the same way as upstream
+     `Sample.strip_last_output_tokens` cuts them: a call keeps its
+     `WeightVersionsPerCall`, and loses each span that starts after the cut.
+   - The trainer checks each entry: `int` values, `call >= 0`,
+     `previous call <= call`, and
      `previous end <= start < end <= len(token_ids)`. A step with token arrays
      and without `weight_version_spans` stops the run when the trajectory
      reports a weight version (`weight_versions`, or `weight_version` on a
      step). The error names the field, the gym, the gym class of each training
-     runtime, and the minimum gym image. A bad entry stops the run too. Both raise `WeightVersionSpansError`, which the NATS
+     runtime, and the minimum gym image. An entry without `call` stops the
+     run with an error that names the missing index. A bad entry stops the
+     run too. All three raise `WeightVersionSpansError`, which the NATS
      worker treats as fatal, as a `RoutingReplayError`. A trajectory without
      any weight version (eval and no-SGLang paths) gives empty
      `Sample.weight_versions`, as upstream allows. The messages-only path
      makes its own tokens, so it gives empty `Sample.weight_versions` too.
+   - Amendment (2026-10-01, the same day). The first contract had one
+     `{"version", "start", "end"}` entry per call, with the scalar
+     `weight_version`. The trainer passes no `--pause-generation-mode`, so
+     SGLang uses `retract`, and a paused call continues under the new
+     weights. The scalar is then the newest version, and the first contract
+     gave all the tokens of that call the newest version. The staleness
+     filter, `rollout/weight_version/*` and `rollout/off_policy_round/*` read
+     those tokens as too new. The amendment adds `call` and one entry per
+     version. No image with the first contract was built or deployed, so the
+     trainer has no compatibility path for it.
    - A DP pad copies the spans of its source row, because it copies the
      tokens. A failed-slot pad gets no spans.
    - Upstream code then reads arena samples with no plugin copy:
@@ -123,6 +154,7 @@ ADR-0011 (where the per-turn weight versions live)
 | Alternative | Why not |
 | --- | --- |
 | Keep the versions in `Sample.metadata["arena_weight_versions"]` (decision 4 until 2026-10-01) | The upstream checks, the staleness filter and the dashboard see no versions, and the plugin keeps a copy of the upstream `weight_version/*` code. The gym can send the ranges, so the limit is not necessary. |
+| One entry per call with the scalar `weight_version` (the first contract of 2026-10-01) | A call that continues across a weight update gets the newest version on all its tokens. The staleness filter and the metrics then read those tokens as too new. Upstream `from_meta_info` keeps one span per version. |
 | Build the spans from the loss mask | The gym sets 0 on a clipped or empty turn, so the mask cannot give the ranges. A wrong range goes into the upstream checks and metrics. |
 | Train on with empty `Sample.weight_versions` when an old gym sends no spans | Two code paths, and the run loses its staleness numbers without a trace. One error at the first message is the cheaper failure. |
 | Take the engine version from `rollout_id` | The trainer weight version starts at 1 again after each restart. Only the rollout executor knows the published version. |

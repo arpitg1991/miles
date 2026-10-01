@@ -611,15 +611,18 @@ token range of each model call, and the NATS path fills the upstream
 the shim of `3f9010e73` and `dda652e05`. The gym side is AREnATasks ADR-0074
 (branch `arpit-weight-version-spans`).
 
-- Wire: each step keeps its data and adds `weight_version_spans`, one
-  `{"version", "start", "end"}` per model call with an SGLang version.
-  `[start, end)` indexes the cumulative `token_ids` of the step.
+- Wire: each step keeps its data and adds `weight_version_spans`. Each
+  entry is `{"call", "version", "start", "end"}`. `call` is the 0-based
+  index of the model call in the step. `[start, end)` indexes the
+  cumulative `token_ids` of the step. A call that continues across a weight
+  update gives one entry per weight version (see "Split calls").
 - Conversion: `_step_to_sample` keeps the step `token_ids` as
   `Sample.tokens`, so the offset is 0.
   `test_span_offset_is_zero_against_tokens_and_loss_mask` checks that each
-  range holds the call output in `Sample.tokens` and loss mask 1. Each entry
-  becomes one `WeightVersionsPerCall` with one `WeightVersionSpan`. A hard
-  context overflow cuts the spans as `Sample.strip_last_output_tokens` does.
+  range holds the call output in `Sample.tokens` and loss mask 1. The
+  entries of one call become one `WeightVersionsPerCall`, one
+  `WeightVersionSpan` per entry. A hard context overflow cuts the spans as
+  `Sample.strip_last_output_tokens` does.
 - Old gym images: a step with token arrays and without `weight_version_spans`
   stops the run when the trajectory reports a weight version. The error
   (`WeightVersionSpansError`, fatal like `RoutingReplayError`) names the field
@@ -678,6 +681,46 @@ stand-ins:
 | launcher tests, `stub` | 65 passed, 1 failed (`test_workplace_launch_uses_the_configured_backend`, as before) |
 | upstream tests of the reused code, `stubfull`, conftests, local Ray | 347 passed, 1 skipped |
 | ADR-0005 check | 0 |
+
+### Split calls (amends "Weight-version spans")
+
+Open item 7.5 of the refresh: one model call can continue across a weight
+update. The trainer passes no `--pause-generation-mode`, so SGLang uses
+`retract`, and a paused call continues under the new weights. The
+`sglang-miles` engine then returns a list of spans relative to the call
+output in `meta_info["weight_versions"]`, one per weight version
+(`add_weight_versions_to_meta_info`), and the scalar `weight_version` is the
+newest version. The first span contract had one entry per call with the
+scalar, so the staleness filter, `rollout/weight_version/*` and
+`rollout/off_policy_round/*` read the tokens of a split call as too new.
+
+The amended contract (ADR-0018 decision 4, AREnATasks ADR-0074):
+
+- The gym sends one entry per listed span, with the call index and the
+  bounds shifted by the output start of the call. It uses the scalar for
+  one entry over the whole output only when the list is missing. It drops
+  an entry with `start >= end`.
+- `_step_weight_versions` groups the entries by `call`. Each call becomes
+  one `WeightVersionsPerCall` with its spans in order, the object that
+  upstream `WeightVersionsPerCall.from_meta_info` builds from the same
+  `meta_info`. `len(Sample.weight_versions)` is the number of calls that
+  have an entry, which the dashboard reads as the turn count.
+- A call index that goes back, a negative or non-`int` call, and the other
+  contract breaks stop the run with `WeightVersionSpansError`. An entry
+  without `call` stops the run with an error that names the missing
+  index. No image with the first contract was built, so there is no
+  compatibility path.
+
+Tests (`test_weight_versions.py`): a call split from version 4 to 5 gives
+one `WeightVersionsPerCall` with two spans, equal to the upstream
+`from_meta_info` result. `group_staleness` (2 at version 6) and the
+upstream `weight_version/*` keys (min 4, mixed 1.0) read its oldest version,
+as on the upstream sample. The first contract gave staleness 1 and min 5.
+The context-overflow cut of a split call equals the upstream strip. A call
+without an entry adds no empty call. An entry without `call`, a call that
+goes back, a negative call, a `bool` call and a `str` call stop the run.
+The fixtures of `test_multi_segment_episodes.py`, `test_nats_arena.py` and
+`test_group_identity.py` carry the call index.
 
 ### Other new commits
 
@@ -926,14 +969,9 @@ change.
       `rollout/weight_version/*` in the `perf <rollout_id>` line, the
       `Weight staleness:` line, and that `assert_samples_weight_version_sane`
       passes.
-   5. One model call can span a weight update. The trainer passes no
-      `--pause-generation-mode`, so SGLang uses `retract`, and a paused call
-      continues under the new weights. The `sglang-miles` engine then gives
-      that call a list of spans in `meta_info["weight_versions"]`, and the
-      scalar `weight_version` is the newest version. The span contract has one
-      entry per call, so the gym labels the whole output of that call with
-      the newest version. The staleness filter, `rollout/weight_version/*`
-      and `rollout/off_policy_round/*` then read those tokens as too new. The
-      fix changes the contract on both sides: the gym reads the list, as
-      upstream `WeightVersionsPerCall.from_meta_info` does, and the trainer
-      makes one `WeightVersionsPerCall` with one span per list entry.
+   5. Closed (see "Split calls"). One model call can span a weight update,
+      and SGLang then gives that call one span per weight version. The
+      amended contract sends one entry per span with the call index, and
+      the trainer makes one `WeightVersionsPerCall` per call with one span
+      per entry. The gym image of item 7.1 MUST send the amended entries:
+      this trainer stops on an entry without `call`.

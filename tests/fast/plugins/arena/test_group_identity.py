@@ -105,7 +105,7 @@ def _fast_traj(reward: float, tok_n: int = 12, prompt_n: int = 4, synthetic: boo
                 "log_probs": [-0.1] * tok_n,
                 "stop_reason": "stop",
                 "weight_version": 3,
-                "weight_version_spans": [{"version": 3, "start": prompt_n, "end": tok_n}],
+                "weight_version_spans": [{"call": 0, "version": 3, "start": prompt_n, "end": tok_n}],
             }
         ],
         "agent_stop_reason": "completed",

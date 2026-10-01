@@ -546,19 +546,28 @@ def _reports_weight_versions(traj: dict[str, Any]) -> bool:
 
 
 def _step_weight_versions(step: dict[str, Any], ctx: _EpisodeContext, n_tokens: int) -> list[WeightVersionsPerCall]:
-    """Build the upstream ``Sample.weight_versions`` of one step, one call per ``weight_version_spans`` entry.
+    """Build the upstream ``Sample.weight_versions`` of one step, one ``WeightVersionsPerCall`` per model call.
 
-    The gym sends one ``{"version", "start", "end"}`` per model call of the
-    step that has a weight version. ``[start, end)`` indexes the step
-    ``token_ids``, and ``_step_to_sample`` keeps those ``token_ids`` as
-    ``Sample.tokens``, so the offset is 0. A hard context overflow cuts
-    ``Sample.tokens`` to ``n_tokens``. The spans are then cut as upstream
+    Each ``weight_version_spans`` entry is ``{"call", "version", "start",
+    "end"}``. ``call`` is the 0-based index of the model call in the step.
+    A call that continues across a weight update gives one entry per weight
+    version, from the SGLang ``meta_info["weight_versions"]`` list. The
+    entries of one call become the spans of one ``WeightVersionsPerCall``,
+    in order, as upstream ``WeightVersionsPerCall.from_meta_info`` builds
+    them. A call without an entry gives no ``WeightVersionsPerCall``: the gym
+    drops an entry with ``start >= end``, and a call without an SGLang
+    version has no entry. ``[start, end)`` indexes the step ``token_ids``, and
+    ``_step_to_sample`` keeps those ``token_ids`` as ``Sample.tokens``, so
+    the offset is 0. A hard context overflow cuts ``Sample.tokens`` to
+    ``n_tokens``. The spans are then cut as upstream
     ``Sample.strip_last_output_tokens`` cuts them.
 
     Raises:
         WeightVersionSpansError: the step has no ``weight_version_spans`` and
-            the trajectory reports weight versions, or an entry does not hold
-            ``int`` values with ``previous end <= start < end <= len(token_ids)``.
+            the trajectory reports weight versions, an entry has no ``call``,
+            or an entry does not hold ``int`` values with
+            ``max(previous call, 0) <= call`` and
+            ``previous end <= start < end <= len(token_ids)``.
     """
     entries = step.get("weight_version_spans")
     if entries is None:
@@ -572,23 +581,35 @@ def _step_weight_versions(step: dict[str, Any], ctx: _EpisodeContext, n_tokens: 
         # No call had an SGLang weight version (eval and no-SGLang paths).
         return []
     n_gym_tokens = len(step["token_ids"])
-    calls = []
+    calls: list[WeightVersionsPerCall] = []
+    previous_call = 0
     previous_end = 0
     for entry in entries:
-        fields = [entry.get(key) for key in ("version", "start", "end")] if isinstance(entry, dict) else []
+        if isinstance(entry, dict) and "call" not in entry:
+            raise WeightVersionSpansError(
+                f"Task {ctx.task_id} (gym {ctx.gym_name}): weight_version_spans entry {entry!r} has no "
+                '"call" index. Each entry MUST name the 0-based model call of the step, because a call that '
+                "continues across a weight update gives one entry per weight version (ADR-0018)."
+            )
+        fields = [entry.get(key) for key in ("call", "version", "start", "end")] if isinstance(entry, dict) else []
         if not (
-            len(fields) == 3
+            len(fields) == 4
             and all(type(field) is int for field in fields)
-            and previous_end <= fields[1] < fields[2] <= n_gym_tokens
+            and previous_call <= fields[0]
+            and previous_end <= fields[2] < fields[3] <= n_gym_tokens
         ):
             raise WeightVersionSpansError(
-                f"Task {ctx.task_id}: weight_version_spans entry {entry!r} breaks the contract: int version, "
-                f"start and end with {previous_end} <= start < end <= {n_gym_tokens} (ADR-0018)"
+                f"Task {ctx.task_id}: weight_version_spans entry {entry!r} breaks the contract: int call, "
+                f"version, start and end with call >= {previous_call} and "
+                f"{previous_end} <= start < end <= {n_gym_tokens} (ADR-0018)"
             )
-        version, start, end = fields
-        previous_end = end
-        spans = [WeightVersionSpan(version=str(version), abs_start=start, abs_end=min(end, n_tokens))]
-        calls.append(WeightVersionsPerCall(spans=spans if start < n_tokens else []))
+        call, version, start, end = fields
+        if not calls or call != previous_call:
+            calls.append(WeightVersionsPerCall())
+        previous_call, previous_end = call, end
+        if start < n_tokens:
+            span = WeightVersionSpan(version=str(version), abs_start=start, abs_end=min(end, n_tokens))
+            calls[-1].spans.append(span)
     return calls
 
 

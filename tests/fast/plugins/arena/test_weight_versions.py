@@ -1,11 +1,14 @@
 """Gym ``weight_version_spans`` become upstream ``Sample.weight_versions`` (ADR-0018).
 
-Each step that the training gym ships carries one ``{"version", "start",
-"end"}`` entry per model call that has an SGLang weight version.
-``[start, end)`` is the output of that call in the step ``token_ids``. The
-trainer builds one ``WeightVersionsPerCall`` per entry, so the upstream
-checks and metrics read arena samples. The file also covers the
-consume-time staleness filter of ``generate_rollout`` and ``NatsRolloutFn``.
+Each step that the training gym ships carries ``{"call", "version", "start",
+"end"}`` entries. ``call`` is the 0-based index of the model call in the step.
+A call that continues across a weight update gives one entry per weight
+version, from the SGLang ``meta_info["weight_versions"]`` list.
+``[start, end)`` is that part of the call output in the step ``token_ids``.
+The trainer builds one ``WeightVersionsPerCall`` per call, as upstream
+``WeightVersionsPerCall.from_meta_info`` does, so the upstream checks and
+metrics read arena samples. The file also covers the consume-time staleness
+filter of ``generate_rollout`` and ``NatsRolloutFn``.
 
 Run:
     python -m pytest tests/fast/plugins/arena/test_weight_versions.py -v
@@ -45,7 +48,7 @@ _LOGGER = "miles_plugins.arena.nats_arena.nats_rollout"
 # prompt 101-103 | call 1 output 201-202 | tool output 301-302 | call 2 output 401-403.
 _TOKEN_IDS = [101, 102, 103, 201, 202, 301, 302, 401, 402, 403]
 _LOSS_MASK = [0, 0, 0, 1, 1, 0, 0, 1, 1, 1]
-_SPANS = [{"version": 4, "start": 3, "end": 5}, {"version": 5, "start": 7, "end": 10}]
+_SPANS = [{"call": 0, "version": 4, "start": 3, "end": 5}, {"call": 1, "version": 5, "start": 7, "end": 10}]
 
 
 def _step(spans: list | None = _SPANS, **extra) -> dict:
@@ -137,6 +140,88 @@ def test_hard_overflow_cuts_spans_as_upstream_strip_does():
     assert s.weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("4", 3, 5)]), WeightVersionsPerCall()]
 
 
+# Call 0 continues across the weight update from 4 to 5, so SGLang gives its output two spans.
+# Call 1 runs under 5. Only the first span of call 0 has the oldest version.
+_SPLIT_SPANS = [
+    {"call": 0, "version": 4, "start": 3, "end": 4},
+    {"call": 0, "version": 5, "start": 4, "end": 5},
+    {"call": 1, "version": 5, "start": 7, "end": 10},
+]
+
+
+def _upstream_split_sample() -> Sample:
+    """The same two calls through upstream ``from_meta_info``, with the sglang-miles ``meta_info`` of each call."""
+    meta_infos = [
+        {
+            "output_token_logprobs": [(-0.1, 201, None), (-0.1, 202, None)],
+            "weight_versions": [{"version": "4", "start": 0, "end": 1}, {"version": "5", "start": 1, "end": 2}],
+            "weight_version": "5",
+        },
+        {
+            "output_token_logprobs": [(-0.1, 401, None), (-0.1, 402, None), (-0.1, 403, None)],
+            "weight_versions": [{"version": "5", "start": 0, "end": 3}],
+            "weight_version": "5",
+        },
+    ]
+    return Sample(
+        tokens=list(_TOKEN_IDS),
+        response_length=7,
+        reward=1.0,
+        weight_versions=[
+            WeightVersionsPerCall.from_meta_info(meta_infos[0], output_end=5),
+            WeightVersionsPerCall.from_meta_info(meta_infos[1], output_end=10),
+        ],
+    )
+
+
+def test_split_call_becomes_one_upstream_call_with_two_spans():
+    (s,) = _convert(_result([_step(spans=_SPLIT_SPANS)]))
+    assert s.weight_versions == _upstream_split_sample().weight_versions
+    assert s.weight_versions[0].spans == [WeightVersionSpan("4", 3, 4), WeightVersionSpan("5", 4, 5)]
+    # One entry per model call, as the dashboard turn count reads it.
+    assert len(s.weight_versions) == 2
+    s.validate()
+    args = pytypes.SimpleNamespace(debug_rollout_only=False, debug_skip_weight_update=False)
+    assert_samples_weight_version_sane(args, [s])
+
+
+def test_split_call_staleness_and_metrics_read_its_oldest_version():
+    """The newest-version label of the first span contract gave staleness 1 and min 5 here."""
+    from miles.ray.rollout.metrics import _compute_metrics_from_samples
+
+    (arena,) = _convert(_result([_step(spans=_SPLIT_SPANS)]))
+    upstream = _upstream_split_sample()
+    assert arena.oldest_weight_version == upstream.oldest_weight_version == 4
+    assert group_staleness([arena], 6) == group_staleness([upstream], 6) == 2
+
+    args = pytypes.SimpleNamespace(
+        reward_key=None, advantage_estimator="grpo", sglang_speculative_algorithm=None, log_reward_category=None
+    )
+
+    def weight_version_keys(sample: Sample) -> dict:
+        metrics = _compute_metrics_from_samples(args, [sample])
+        return {k: v for k, v in metrics.items() if k.startswith("weight_version/")}
+
+    assert weight_version_keys(arena) == weight_version_keys(upstream)
+    assert weight_version_keys(arena)["weight_version/min"] == 4
+    assert weight_version_keys(arena)["weight_version/mixed_version_ratio"] == 1.0
+
+
+def test_hard_overflow_cuts_a_split_call_as_upstream_strip_does():
+    (cut,) = _convert(_result([_step(spans=_SPLIT_SPANS)]), args=pytypes.SimpleNamespace(rollout_max_context_len=4))
+    (full,) = _convert(_result([_step(spans=_SPLIT_SPANS)]))
+    full.strip_last_output_tokens(6, tokenizer=pytypes.SimpleNamespace(decode=lambda ids: ""))
+    expected = [WeightVersionsPerCall(spans=[WeightVersionSpan("4", 3, 4)]), WeightVersionsPerCall()]
+    assert cut.weight_versions == full.weight_versions == expected
+
+
+def test_a_call_without_an_entry_gives_no_upstream_call():
+    """Call 1 has an empty output, so the gym sends no entry for it. The trainer adds no empty call."""
+    spans = [{"call": 0, "version": 4, "start": 3, "end": 5}, {"call": 2, "version": 5, "start": 7, "end": 10}]
+    (s,) = _convert(_result([_step(spans=spans)]))
+    assert s.weight_versions == _calls(("4", 3, 5), ("5", 7, 10))
+
+
 def _inspect_step(prompt: list[int], output: list[int], spans: list | None) -> dict:
     """One step in the shape of the Inspect streaming ``TrajectoryState`` (no Harbor keys)."""
     step = {
@@ -161,7 +246,7 @@ def test_inspect_streaming_spans_have_offset_zero(provider, mode):
             _inspect_step(
                 [101, 102],
                 [201, 202, 301, 401, 402],
-                [{"version": 4, "start": 2, "end": 4}, {"version": 5, "start": 5, "end": 7}],
+                [{"call": 0, "version": 4, "start": 2, "end": 4}, {"call": 1, "version": 5, "start": 5, "end": 7}],
             )
         ]
         steps[0]["loss_mask"][4] = 0
@@ -169,8 +254,8 @@ def test_inspect_streaming_spans_have_offset_zero(provider, mode):
     else:
         # One self-contained step per call. The trainer trains the last step.
         steps = [
-            _inspect_step([101, 102], [201, 202], [{"version": 4, "start": 2, "end": 4}]),
-            _inspect_step([101, 102, 201, 202, 301], [401, 402], [{"version": 5, "start": 5, "end": 7}]),
+            _inspect_step([101, 102], [201, 202], [{"call": 0, "version": 4, "start": 2, "end": 4}]),
+            _inspect_step([101, 102, 201, 202, 301], [401, 402], [{"call": 0, "version": 5, "start": 5, "end": 7}]),
         ]
         outputs = [[401, 402]]
     (s,) = _convert(_result(steps), args=_make_args(arena_train_segments=mode))
@@ -222,19 +307,44 @@ def test_inspect_streaming_without_spans_names_both_gym_runtimes():
     assert _MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS in message
 
 
+def test_entry_without_a_call_index_stops_with_a_clear_error():
+    """An entry of the first span contract has no ``call``: the trainer cannot group the spans of a call."""
+    with pytest.raises(WeightVersionSpansError, match='has no "call" index') as info:
+        _convert(_result([_step(spans=[{"version": 4, "start": 3, "end": 5}])]))
+    assert "gym g" in str(info.value)
+    assert "one entry per weight version" in str(info.value)
+
+
 @pytest.mark.parametrize(
     "spans",
     [
-        [{"version": 4, "start": 3, "end": 5}, {"version": 5, "start": 4, "end": 10}],
-        [{"version": 4, "start": 3, "end": 11}],
-        [{"version": 4, "start": 3, "end": 3}],
-        [{"version": 4, "start": 5, "end": 3}],
-        [{"version": True, "start": 3, "end": 5}],
-        [{"version": "4", "start": 3, "end": 5}],
-        [{"version": 4, "start": 3}],
-        [[4, 3, 5]],
+        [{"call": 0, "version": 4, "start": 3, "end": 5}, {"call": 1, "version": 5, "start": 4, "end": 10}],
+        [{"call": 0, "version": 4, "start": 3, "end": 11}],
+        [{"call": 0, "version": 4, "start": 3, "end": 3}],
+        [{"call": 0, "version": 4, "start": 5, "end": 3}],
+        [{"call": 0, "version": True, "start": 3, "end": 5}],
+        [{"call": 0, "version": "4", "start": 3, "end": 5}],
+        [{"call": 0, "version": 4, "start": 3}],
+        [[0, 4, 3, 5]],
+        [{"call": 1, "version": 4, "start": 3, "end": 5}, {"call": 0, "version": 5, "start": 7, "end": 10}],
+        [{"call": -1, "version": 4, "start": 3, "end": 5}],
+        [{"call": True, "version": 4, "start": 3, "end": 5}],
+        [{"call": "0", "version": 4, "start": 3, "end": 5}],
     ],
-    ids=["overlap", "past_tokens", "empty", "reversed", "bool_version", "str_version", "missing_end", "not_a_dict"],
+    ids=[
+        "overlap",
+        "past_tokens",
+        "empty",
+        "reversed",
+        "bool_version",
+        "str_version",
+        "missing_end",
+        "not_a_dict",
+        "call_goes_back",
+        "negative_call",
+        "bool_call",
+        "str_call",
+    ],
 )
 def test_contract_violation_stops(spans):
     with pytest.raises(WeightVersionSpansError, match="breaks the contract"):

@@ -69,7 +69,10 @@ def _spans(loss_mask: list[int], version: int = 3) -> list[dict]:
     """One ``weight_version_spans`` entry per run of 1s: each run is the output of one model call."""
     starts = [i for i, m in enumerate(loss_mask) if m == 1 and (i == 0 or loss_mask[i - 1] == 0)]
     ends = [i + 1 for i, m in enumerate(loss_mask) if m == 1 and (i + 1 == len(loss_mask) or loss_mask[i + 1] == 0)]
-    return [{"version": version, "start": a, "end": b} for a, b in zip(starts, ends, strict=True)]
+    return [
+        {"call": call, "version": version, "start": a, "end": b}
+        for call, (a, b) in enumerate(zip(starts, ends, strict=True))
+    ]
 
 
 def _arrays(loss_mask: list[int], tag: int) -> dict:

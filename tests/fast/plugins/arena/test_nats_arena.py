@@ -1973,7 +1973,8 @@ class TestFailedReasonTelemetry:
             bounds = {1: [(2, 4)], 2: [(2, 3), (3, 4)]}[len(versions)]
             for step in traj["steps"]:
                 step["weight_version_spans"] = [
-                    {"version": v, "start": a, "end": b} for v, (a, b) in zip(versions, bounds, strict=True)
+                    {"call": call, "version": v, "start": a, "end": b}
+                    for call, (v, (a, b)) in enumerate(zip(versions, bounds, strict=True))
                 ]
             return {**traj, "weight_versions": list(versions) * len(traj["steps"])}
 

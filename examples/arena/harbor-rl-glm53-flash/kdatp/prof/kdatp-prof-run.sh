@@ -43,7 +43,7 @@ set +a
 
 KD=${KDATP_DIR:-/mnt/scratch-s3files-rw/guparpit/kdatp}
 STAMP=${KDATP_STAMP:?the manifest sets one KDATP_STAMP for all pods}
-REPO=${AGISLIME_DIR:-/root/miles}
+REPO=${AGISLIME_DIR:?the job manifest sets AGISLIME_DIR to the image checkout}
 KDATP=$REPO/examples/arena/harbor-rl-glm53-flash/kdatp
 LAUNCHER=$REPO/scripts/run_arena_harbor.py
 R43=/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/rl-glm53f-adebt-v3-r43

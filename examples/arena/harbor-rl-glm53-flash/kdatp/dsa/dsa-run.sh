@@ -8,7 +8,7 @@
 #    that the GPUs stay busy (the idle-GPU reaper deletes a workload whose 60-minute mean GPU
 #    power is below 10%).
 # 3. When every process has ended round 1 (or DSA_ROUND1_TIMEOUT), runs the PR unit tests on the
-#    pytest GPU: cd /root/miles && python3 -m pytest -q tests/fast-gpu/kernels/attention/dsa
+#    pytest GPU: cd "$AGISLIME_DIR" && python3 -m pytest -q tests/fast-gpu/kernels/attention/dsa
 # 4. Stops the busy rounds, merges the case files into results.json and results.md, writes done.
 #
 # Writes only under $KDATP_DIR/dsa/$KDATP_STAMP (default
@@ -19,7 +19,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KD=${KDATP_DIR:-/mnt/scratch-s3files-rw/guparpit/kdatp}
 STAMP=${KDATP_STAMP:?the manifest sets KDATP_STAMP}
-REPO=${AGISLIME_DIR:-/root/miles}
+REPO=${AGISLIME_DIR:?the job manifest sets AGISLIME_DIR to the image checkout}
 RUN=$KD/dsa/$STAMP
 LOCAL=${DSA_LOCAL:-/tmp/kdatp-dsa}  # the pod disk (overlay), not the scratch mount
 NGPU=8

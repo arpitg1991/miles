@@ -122,8 +122,10 @@ _FAMILY = REPO_ROOT / "training-runs" / "harbor-rl-glm53-flash"
         (_R3 + "sglang_moe_runner_backend: auto\n", ""),
         (_R3 + "sglang_moe_runner_backend: flashinfer_trtllm\n", ""),
         (_R3 + "sglang_moe_runner_backend: triton\n", "--sglang-moe-runner-backend auto"),
+        (_R3 + "sglang_moe_runner_backend: flashinfer_cutlass\n", ""),
+        (_R3 + "sglang_moe_runner_backend: triton\n", "--sglang-moe-runner-backend=auto"),
     ],
-    ids=["unset", "auto", "flashinfer_trtllm", "extra_args_override"],
+    ids=["unset", "auto", "flashinfer_trtllm", "extra_args_override", "unverified_runner", "equals_form_override"],
 )
 def test_r3_without_a_topk_moe_runner_fails_fast(tmp_path, yaml_extra, extra_args):
     """flashinfer_trtllm captures no routed experts, and sm100 resolves auto to it."""
@@ -138,11 +140,13 @@ def test_r3_without_a_topk_moe_runner_fails_fast(tmp_path, yaml_extra, extra_arg
     [
         (_R3 + "sglang_moe_runner_backend: triton\n", ""),
         (_R3, "--sglang-moe-runner-backend triton"),
+        (_R3, "--sglang-moe-runner-backend=triton"),
         ("sglang_moe_runner_backend: auto\n", ""),
+        ("use_rollout_routing_replay: false\nsglang_moe_runner_backend: auto\n", ""),
         # A train-only run starts no SGLang engine.
         (_R3 + _TRAIN_ONLY, ""),
     ],
-    ids=["triton", "extra_args_triton", "no_r3", "train_only"],
+    ids=["triton", "extra_args_triton", "equals_form_triton", "no_r3", "r3_false", "train_only"],
 )
 def test_r3_moe_runner_check_passes(tmp_path, yaml_extra, extra_args):
     _argv(tmp_path, yaml_extra, extra_args=extra_args)

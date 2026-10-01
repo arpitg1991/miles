@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v2 (r49) — the r48 config on the refreshed upstream reconcile branch
 
-**Status:** Prepared
+**Status:** Running
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-01
 **Family:** `harbor-rl-glm53-flash`
@@ -14,10 +14,10 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v1`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
-**W&B run:** not created
+**Argo workflow:** `guparpit-agentic-debt-v2-xk4qp` (attempts 1 `l8x9j` and 2 `9fqgp` stopped at launch, see Launch)
+**W&B run:** `ee23gfx9`
 **Task pin:** `3cadc6b0`
-**Trainer config deltas vs base:** none for training; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
+**Trainer config deltas vs base:** `sglang_moe_runner_backend` unset -> `triton` (R3 on the new SGLang, see Launch); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v2`, seeded from r47 `iter_0000059` (2026-10-01 02:51Z)
 **Outcome:** Prepared
 
@@ -38,7 +38,7 @@ The trainer code and the image differ. The training keys do not.
   | fla | 0.5.2, with the KDA patch and `fla_conv_int64_offsets.py` |
   | TileLang | 0.1.14, with the #3647 Blackwell patch |
 
-- **Config:** `miles-config.yaml` is the r48 file. Only the run identity changes: `experiment_name`, `project_name`, and `arena_sample_summary_dir`. r48 writes its sample summaries into the r47 folder. This run has its own folder.
+- **Config:** `miles-config.yaml` is the r48 file plus `sglang_moe_runner_backend: triton`, which R3 needs on the new SGLang. The run identity also changes: `experiment_name`, `project_name`, and `arena_sample_summary_dir`. r48 writes its sample summaries into the r47 folder. This run has its own folder.
 
 Behavior changes that come with the upstream base, for this config:
 
@@ -90,3 +90,7 @@ If a gate fails, report it. Ask the user before you stop the run.
 | 12:16 | User yes: Stop `l8x9j`. Cleanup ran; 0 resources left; the checkpoint dir is unchanged. |
 | 12:15 | Image `miles-glm53-recon-20261001b` (`da93977ba8`, `sha256:4023b5ff...`): the arena layer re-pins `opentelemetry-api` to the sdk version, and the build smoke starts a Ray head. |
 | 12:26 | T1 PASS (`recon-t1-{ref,new}-20261001a`, harness ConfigMap `recon-harness-20261001a`). The new job ran image a; image b differs only in `opentelemetry-api`. |
+| 15:20:16 | Attempt 2, `guparpit-agentic-debt-v2-9fqgp`, image b. Ray starts; the checkpoint sidecar loads; W&B `tl2gf2sb`; the engines start; the first weight update runs. |
+| 15:57 | Attempt 2 stops at rollout 60: `RoutingReplayError: routed_experts payload is all zeros`. On sm100, sglang-miles `14a1fa7d` resolves the `auto` MoE runner to `flashinfer_trtllm`, which captures no top-k ids. The r48 SGLang `9a26e749` leaves `flashinfer_trtllm` by itself when routed-expert capture is on. Cleanup ran on its own. |
+| 17:53:48 | Attempt 3, `guparpit-agentic-debt-v2-xk4qp`: the same image with `sglang_moe_runner_backend: triton`, as upstream `scripts/run_glm5_3_flash.py` sets for R3 (`fb7fd4b389`, cherry-picked as `09c6755e72`). W&B `ee23gfx9`. |
+| 19:31:02 | Rollout 60 complete: 32 groups, avg_reward 0.767; routing replay materialized 32 groups, 0 lost; `rollout/weight_version/*` present (all 1 at the first rollout after a restart). |

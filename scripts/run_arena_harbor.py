@@ -235,7 +235,9 @@ def _save_hf_requested(args: ScriptArgs, consumed: dict) -> bool:
 # runs ran on SGLang 9a26e749, which leaves flashinfer_trtllm by itself when
 # routed-expert capture is on. This check rejects their committed files. Before
 # a rerun of one of them on a newer trainer image, add the key.
-_R3_MOE_RUNNERS_WITHOUT_TOPK_IDS = (None, "auto", "flashinfer_trtllm")
+# An allow-list: triton is the only runner checked with R3 on this SGLang. Add a
+# runner here only after a run shows that it captures routed experts.
+_R3_MOE_RUNNERS_WITH_TOPK_IDS = ("triton",)
 
 
 def _check_r3_moe_runner(argv: list[str]) -> None:
@@ -247,9 +249,14 @@ def _check_r3_moe_runner(argv: list[str]) -> None:
     """
     if "--use-rollout-routing-replay" not in argv or "--load-debug-rollout-data" in argv:
         return
-    runners = [argv[i + 1] for i, token in enumerate(argv[:-1]) if token == "--sglang-moe-runner-backend"]
-    runner = runners[-1] if runners else None
-    if runner in _R3_MOE_RUNNERS_WITHOUT_TOPK_IDS:
+    flag = "--sglang-moe-runner-backend"
+    runner = None
+    for i, token in enumerate(argv):
+        if token == flag and i + 1 < len(argv):
+            runner = argv[i + 1]
+        elif token.startswith(flag + "="):
+            runner = token.split("=", 1)[1]
+    if runner not in _R3_MOE_RUNNERS_WITH_TOPK_IDS:
         raise typer.BadParameter(
             "R3 (use_rollout_routing_replay) needs a MoE runner that materializes the top-k ids, but "
             f"sglang_moe_runner_backend is {runner or 'unset (auto)'}. Set sglang_moe_runner_backend: triton, "

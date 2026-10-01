@@ -3,7 +3,9 @@
 This file records how branch `arpit-reconcile-upstream` was made. It lists each
 dropped commit, each partial keep, and each conflict resolution. The decisions
 are in plugin ADR-0018 (`miles_plugins/arena/adr/0018-reconcile-with-upstream-main.md`;
-ADR-0016 until 2026-10-01).
+ADR-0016 until 2026-10-01). Section "Refresh 2026-10-01" at the end records
+branch `arpit-recon-20261001`: the same branch on a newer upstream `main`, with
+the later fork and R3 data-path commits.
 
 ## Inputs
 
@@ -452,3 +454,249 @@ not isolated.
 | 165 | `bc31f88ac` | `41d45863f` |  | feat(arena): make the per-save HF export opt-in |
 | 166 | `c10201fc5` | `d7a4ded25` |  | docs(arena): record the miles-glm53-r15 trainer image |
 | 167 | `3028bc358` | `64882ca5f` |  | docs(arena): prepare r44 and r46 resumes with 8 engines |
+
+## Refresh 2026-10-01
+
+Branch `arpit-recon-20261001` is `arpit-reconcile-upstream` moved onto a newer
+upstream `main`, plus the fork commits after the first reconcile and the R3
+data-path branch. The goal is a trainer image with the r48 configuration on
+this code.
+
+### Inputs
+
+| item | value |
+| --- | --- |
+| start point | `fc93b6f23` (`arpit-reconcile-upstream`), saved as `refs/recon/pre-refresh-fc93b6f23` |
+| old base | upstream `23d41d711` (2026-09-26) |
+| new base | upstream `main` `d7f1a4210` (2026-09-30 PT, "feat(fsdp): load module-level compute kernels from the Hub (#2829)"), 13 commits after `23d41d711` |
+| fork | `arpit-glm-53` `be9d68a3f`: 37 non-merge commits after `3028bc358` (the source tip of the first reconcile), no merge commits |
+| r48 code | the live r48 image (`guparpit-agentic-debt-v1`) runs `arpit-glm-53` `4716a367a`. After `4716a367a` the fork changes only docs, run records, `gen-workflow.py` and tests |
+| R3 data path | `arpit-r3-datapath` `e193eae73`: 8 commits after `4716a367a` |
+
+### Method
+
+1. `git update-ref refs/recon/pre-refresh-fc93b6f23 HEAD`.
+2. `git rebase --onto upstream/main 23d41d711`: 152 commits, no conflict. The
+   diff of the old branch against its base and the diff of the new branch
+   against its base differ only in blob ids and hunk line numbers.
+   `git cherry` gives the same patch-id for all 152 commits.
+3. `git cherry-pick -x` of each commit of
+   `git rev-list --reverse --no-merges 3028bc358..arpit-glm-53`, in order.
+4. `git cherry-pick -x` of each commit of `4716a367a..arpit-r3-datapath`, in
+   order.
+5. New commits for the weight-version metrics and for the test findings.
+
+The picks keep the original author and author date. The committer is Arpit
+Gupta <arpitg1991@gmail.com>. Each pick message ends with
+`(cherry picked from commit <sha>)`.
+
+### Upstream commits in the refresh
+
+| upstream commit | change | effect on this branch |
+| --- | --- | --- |
+| `833d5bf78` #3718 | the command worker runs `exec <launch cmd>`, so the actor death frees its ports | no fork change in these files |
+| `f84b1496e` #3660, `55ec3d870` #3699 | e2e CI on H200 | tests only |
+| `9e4260de0` #3738 | the base image keeps the Mooncake of `lmsysorg/sglang`; no dev wheel | base image only. `examples/arena/Dockerfile` installs no Mooncake. The arena runs use the Ray object store |
+| `3439ec751` #3689 | DSv4 CSA indexer balanced across CP ranks | `get_batch` also builds `cu_seqlens_host`, and `get_packed_seq_params` returns `PackedSeqParamsWithHostCuSeqlens` for each thd batch, GLM-5.3 included. Merged without a conflict next to the fork `get_batch` keys |
+| `5ebc06f8d` #2541, `874b3e275` #3873, `077fb5922` #3157 | ROCm CI, ROCm images, AMD LoRA launcher | not used |
+| `bb35ecc49` #3872 | two megatron rpc fast tests | tests only |
+| `f602ca207` #3867 | a Claude rule for launch and request args | docs only |
+| `79ef601d6` #3869 | each trainer pins its NUMA node from the PCI bus id of its GPU (`miles/ray/train_actor.py`) | a different file from `4316e4957` (the head node from the GCS node table, `miles/utils/ray_utils.py`). Both stay: upstream still reads the head from the dashboard |
+| `8f409c7c4` #3647 | the base image patches the TileLang fp16 256-bit store on Blackwell | base image only |
+| `d7f1a4210` #2829 | FSDP kernels from the Hub | FSDP only. The only change to `miles/utils/arguments.py` in the refresh is the FSDP `validate_kernel_backend_args` call |
+
+No upstream commit does the work of a fork commit, so the refresh drops no
+fork commit.
+
+### Pick conflicts and resolutions
+
+| source commit | new commit | file | resolution |
+| --- | --- | --- | --- |
+| `a9207dd7d` feat(glm5-next): shard KDA across tensor-parallel ranks | `8fe7f9b46` | `miles/backends/megatron_utils/update_weight/common.py` (deleted upstream) | upstream #2754 (`0e539b795`, already in `23d41d711`) moved `_check_and_fix_partition` and `_gather_with_stride` to `update_weight/hf_weight_iterator_direct.py`. The stride-3 branch for `self_attention.kda.conv1d.weight` goes there. `_gather_with_stride` has the same interleave on both sides. `test_glm5_next_kda_tp.py` imports from the new module. The other four files merged; their added and removed lines are the same as in the source commit |
+| `3ad0037e8` docs(arena): record the miles-glm53-r17 trainer image | `ea78cb3c4` | `examples/arena/README.md` | keep both table additions: the three recon test rows (2026-09-27), then the r17 row (2026-09-28) and its note |
+| `12fae498b` docs(arena): record the KDA tensor-parallel sharding decision (ADR-0016) | `ed3df8943` | `miles_plugins/arena/adr/README.md` | number collision; see "ADR numbers" |
+| `f3c7ea1ce` chore(arena): add training-runs records and move the GLM-5.3 run records | `a0d1fa188` | `miles_plugins/arena/RUNLOG.md` | take the new `training-runs/` path in the old line; keep the two reconcile entries after it. The 195 renames applied; the file set under `examples/arena/harbor-rl-glm53-flash/` and `training-runs/` equals the fork commit |
+| `d93d7eff7` docs(arena): record the training-runs convention (ADR-0017) | `b964d9a27` | `miles_plugins/arena/adr/README.md` | index rows in number order: 0016, 0017, 0018 |
+| `2587b1d55` feat(r3): carry rollout routing as int16 and log the data path | `d0c58651b` | `miles/ray/rollout/rollout_manager.py` (deleted upstream), `miles/utils/data.py`, `miles/utils/object_store.py` | upstream moved `RolloutManager.get` to `RolloutExecutor.get` (`rollout_executor.py`): the load and convert timing and the `rollout_id` of `split_train_data_by_dp` go there. Upstream refs are pydantic models with a `ray.ObjectRef` `payload`, not `Box`, so `locate()` and two new tests read `ref.payload`. `data.py` keeps the upstream `RolloutDataPack` and `remove_rollout_data_refs` |
+| `fce93b637` perf(r3): copy only the local rows in the thd replay fill | `238a3b9c4` | `miles/backends/megatron_utils/actor.py` | import block only: add the `r3_log` import; upstream removed the `Box` import |
+| `23423ad6a` feat(r3): prefetch the next rollout shard behind --prefetch-rollout-data | `a323dcbab` | `miles/ray/train/actor_factory.py` (deleted upstream by #2162), `tests/fast/ray/test_actor_factory.py`, `miles/backends/megatron_utils/model.py`, `miles/utils/data.py`, `miles_plugins/arena/train_async_arena.py` | ported to the upstream worker structure; see "Prefetch port" |
+| `d47c7951c` fix(r3): add prefetch_rollout_data to the v1 train group | `8a1f304c5` | `miles/ray/actor_group.py` (deleted upstream) | upstream has no v1 `RayTrainGroup` and no `_select_train_group_class`; the driver always calls `TrainerController`. The v1 hunk and `tests/fast/ray/test_train_group_prefetch.py` do not apply. The intent stays as a test of `TrainerController.prefetch_rollout_data` with a failed cell |
+
+Skipped: `1c981e69d` test(kdatp): copy the prof harness of `arpit-glm-53`
+`c2e17e5870`. The five files are byte-equal on the branch after the fork picks
+(they come from `e7a0d35ba` to `c2e17e587`), so the pick is empty.
+
+`git cherry` after the picks: 32 of the 37 fork commits and 3 of the 8 R3
+commits have the same patch-id on the branch. The others are the conflict
+picks above and the skipped commit.
+
+### ADR numbers
+
+`arpit-glm-53` gave ADR-0016 to the KDA sharding decision and ADR-0017 to the
+training-runs convention, and its run records cite both numbers. The reconcile
+ADR was Proposed and existed only on the reconcile branches. `30321858a` moves
+it to ADR-0018 with its index row, the amendment lines in ADR-0005, ADR-0006,
+ADR-0008 and ADR-0011, the plugin RUNLOG entry, this file, and the code
+comments. The Apps ADR-0016 citations stay. `83a59c5d4` closes the numbering
+notes in ADR-0016 and ADR-0017.
+
+### Prefetch port
+
+- `TrainRayActor.prefetch_rollout_data` has
+  `@rpc(concurrency_group="rollout_prefetch")` and full type hints (the RPC
+  surface needs them). `TRAINER_CONCURRENCY_GROUPS` declares
+  `rollout_prefetch`.
+- Upstream threads the trainer actor only with `--use-fault-tolerance`
+  (a threaded non-FT actor deadlocked in NCCL setup). So
+  `--prefetch-rollout-data` now also requires `--use-fault-tolerance`. Each
+  GLM-5.3 config sets it.
+- `TrainerController.prefetch_rollout_data(rollout_id, rollout_data_pack)`
+  sends the call to each alive cell with `kill_on_failure=False`. The driver
+  holds a worker handle, so `prefetch_when_generated` awaits the generate task
+  and then calls the controller. A failure logs a warning.
+- `RayObjectStore.pull` reads `ref.payload`.
+- The upstream `train_one_step` has no multi-LoRA branch, so only
+  `optimizer.step()` gets the optimizer timing.
+
+Upstream bug found by the port: `_route_method_to_concurrency_group` wrapped the
+method with `functools.wraps`, which sets `__wrapped__`. Ray 2.58 reads
+`__ray_concurrency_group__` from `inspect.unwrap(method)`, so each routed
+method ran in the default group, behind `train()`. A local Ray probe in the
+test venv showed this. The upstream tests use a fake Ray cluster. `1b5d2978c`
+drops `__wrapped__` and keeps the signature. With `--use-fault-tolerance` and
+the Ray comm backend, `get_heartbeat_status`, `inject_fault`, `kill_self` and
+`prefetch_rollout_data` now run in their own groups, as the static
+`@ray.method` groups of the fork actor factory did. A trainer with one cell
+(r48) starts no heartbeat checker.
+
+### Weight-version metrics
+
+`arpit-glm-53` logs `rollout/weight_version/{min,mean,median,max}` and
+`rollout/weight_version/mixed_version_ratio` from `Sample.weight_versions`
+strings (`miles/ray/rollout/metrics.py`). Upstream #1891 computes the same keys
+from `WeightVersionSpan` objects. The NATS path keeps the versions in
+`Sample.metadata["arena_weight_versions"]` (ADR-0018 decision 4), so the keys
+were absent.
+
+Filling the upstream spans was the first choice. A span needs the token range
+of each turn, and the gym sends none. A made-up range also reaches
+`assert_samples_weight_version_sane`, the token-weighted staleness filter,
+`train_data["weight_versions"]` on every rank, and the dashboard. ADR-0018
+rejected that. So `3f9010e73` adds
+`rollout_metrics.compute_weight_version_metrics`: it uses the upstream
+`compute_statistics` and the two upstream expressions (the oldest numeric
+version of each sample; the share of all samples with more than one distinct
+version). `nats_rollout` logs the keys in its `rollout/` metrics dict, at
+`rollout/step`, over every training row of the final batch, pads included. A
+compact batch (`arena_train_segments: all`) is not trimmed, so this is the list
+that upstream `log_rollout_data` gets, as on `arpit-glm-53`. A test checks the
+values against upstream `Sample` spans with the same versions. ADR-0018 has an
+amendment.
+
+### Other new commits
+
+| commit | change |
+| --- | --- |
+| `8268c4991` | `kdatp/t1_parity.py` imports `all_gather_params_async` from `hf_weight_iterator_direct.py` (upstream #2754) |
+| `4f743c5bf` | `kdatp-prof-run.sh` and `dsa-run.sh` take the checkout only from `AGISLIME_DIR`, which both job manifests set. Upstream `test_shell_script_hygiene` rejects `/root/miles` in a script |
+| `87db4caa4` | `test_rollout_prefetch.py` and `test_r3_log_parse.py` use the session fixture `ray_local_mode`. Upstream `test_ray_cluster_bootstrap` allows only `tests/conftest.py` to call `ray.init` |
+| `2c172d505` | the two `split_train_data_by_dp` fakes in `test_rollout_executor_multi_policy.py` accept the `rollout_id` keyword of the R3 port |
+| this commit | this section |
+
+### Validation (CPU, 2026-10-01)
+
+The test venv is `/workplace/guparpit/kdfast/testvenv` (python 3.12, torch
+2.14 CPU, Ray 2.58, no sglang, no megatron). Two sglang stand-ins, both outside
+the repo:
+
+- `stub`: the files of `/tmp/sglang-stub` (the first reconcile), with
+  `--noconftest`.
+- `stubfull`: `stub` plus an `sglang.srt.server_args.ServerArgs` that
+  registers the 90 `--sglang-*` flags the repo uses, and placeholder modules
+  for every other `sglang.*` import. With it the conftests load, so the
+  fixtures exist. The placeholders also make some tests wait for servers, so
+  the `stubfull` sweep skips `rollout` and `router`.
+
+Ray sockets must be shorter than 108 bytes, so a run with a local Ray cluster
+starts pytest in the scratch dir with `RAY_TMPDIR=/proc/self/cwd/r` and
+`--rootdir` on the repo. The upstream reference is a detached worktree of
+`d7f1a4210` in the same venv.
+
+| check | result |
+| --- | --- |
+| arena fast tests: `tests/fast/plugins/arena`, `stub` | 339 passed, 1 failed (`test_training_runs_index`, see below). `arpit-glm-53` `be9d68a3f`: 335 passed, the same failure. The 4 new tests are the weight-version tests |
+| launcher tests: `tests/fast/launch_scripts`, `stub` | 62 passed, 1 failed: `test_workplace_backend.py::test_workplace_launch_uses_the_configured_backend`, which also fails on upstream (53 passed, 1 failed) |
+| launcher snapshots: `tests/manual/launch_scripts/test_py_launch_scripts.py -k "run_arena_harbor or run_glm5_3_flash"` | 6 passed, with each stub |
+| KDA TP: `tests/fast/backends/megatron_utils/test_glm5_next_kda_tp.py` | skipped: the module needs `megatron.core`. The stride-3 gather check of that file, run on the two functions lifted from `hf_weight_iterator_direct.py`, passes: the gather of 8 TP shards of the packed [q; k; v] conv equals the full tensor, and stride 1 raises |
+| R3, replay, and prefetch tests, `stubfull`, conftests, local Ray | `test_rollout_prefetch.py` 8 passed (with the real-Ray test that the prefetch runs next to `train()` and gives `prefetch=hit`), `test_r3_log.py` and `test_r3_log_parse.py` 8, `test_route_method_to_concurrency_group.py` 2, `test_replay_base.py` 6, `test_replay_data.py` 291, `test_object_store.py` 66 (2 Mooncake skips), `test_train_data_conversion.py` 60, `test_rollout_metrics.py` 17, `test_rollout_executor_multi_policy.py` 11, `test_train_actor_rpc_surface.py` 15 (4 megatron skips), `test_ray_cluster_bootstrap.py` 10, `test_ray_utils.py` 4. `test_shared_ppo_lifecycle.py` errors on both trees (no megatron) |
+| `tests/fast` sweep by directory, `stub`, `--noconftest` | this branch: 7041 passed, 130 failed, 692 errors, 368 skipped. Upstream: 6384 passed, 128 failed, 689 errors, 367 skipped. Of the tests on both trees, one changes outcome: `test_docs_examples_matches_the_readmes` (pass to fail). The 663 tests only on this branch: 658 passed, 1 skipped, 1 failed, 3 errors (see below). No test exists only on upstream |
+| sweep of `plugins`, `ray`, `utils`, `backends`, `launch_scripts`, `miles_plugins`, `scripts`, `tools` and the top-level files, `stubfull`, conftests, local Ray | this branch: 10642 passed, 461 failed, 81 errors, 127 skipped. Upstream: 9970 passed, 459 failed, 81 errors, 126 skipped. No test on both trees changes outcome. The 675 tests only on this branch: 672 passed, 1 skipped, 2 failed: `test_training_runs_index` and `test_register_nova_reasoning_parser` (the placeholder `ReasoningParser` of `stubfull` has no `DetectorMap`; the test passes with `stub`) |
+| r48 argv | parses on both trees with the miles parser; see "Behavior changes against r48" |
+| `git cherry` | all 152 commits of the first reconcile keep their patch-id; see "Pick conflicts and resolutions" for the picks |
+
+Upstream-baseline failures (`stub` sweep, the same tests and outcomes on both
+trees): 128 failed and 689 errors. The causes: modules that the venv lacks
+(`sglang.srt.server_args` 144, `megatron` 123, `sglang.srt.constants` 40, other
+`sglang.srt.*` 23, `tinker`, `msgspec`, `triton`), conftest fixtures that
+`--noconftest` removes (`handle`, `service`, `ray_local_mode`, `raw`, and
+others), and 49 `encoding_dsv4` attribute errors of the empty stub module.
+
+Test outcomes that exist only on this branch:
+
+- `tests/fast/doc/test_sync_example_docs.py::test_docs_examples_matches_the_readmes`
+  passes on upstream and fails here: `examples/README.md` lists no
+  `examples/arena` directory. `arpit-glm-53` and the first reconcile fail the
+  same way. The fix adds 8 fork-only bullets to an upstream index, so it waits
+  for the owner.
+- `tests/fast/plugins/arena/test_training_runs_index.py::test_committed_index_is_current`
+  fails here and on `arpit-glm-53` `be9d68a3f`: the r48 commit did not
+  regenerate `training-runs/INDEX.md`, and the r48 `RECORD.md` header lacks the
+  date, image, and outcome fields. A fix belongs in the r48 record on
+  `arpit-glm-53`.
+- Under `stub` with `--noconftest`, `test_r3_log_parse.py` and
+  `test_rollout_prefetch.py` do not collect (`sglang.srt.server_args`,
+  `sglang.srt.constants`), and `test_locate_reports_size_right_after_put` has
+  no `ray_local_mode` fixture. All three pass in the `stubfull` run with the
+  conftests and a local Ray cluster.
+
+### Behavior changes against r48 (`arpit-glm-53` `4716a367a`)
+
+Method: the launcher of each tree builds the argv of
+`training-runs/harbor-rl-glm53-flash/guparpit-agentic-debt-v1/miles-config.yaml`
+(`_build_train_args`, the model args of `scripts/models/glm5.3-flash.py`, and
+`--deploy-component all` on this branch). Then the miles parser of each tree
+parses it (`get_miles_extra_args_provider`, `parse_known_args`, the same
+`stubfull` sglang flags on both). The venv has no megatron, so the Megatron
+defaults and `miles_validate_args` are a static reading, not a parse.
+
+| area | r48 | this branch |
+| --- | --- | --- |
+| argv | the r48 argv | the same plus `--activation-func-clamp-value 10` (model script) and `--deploy-component all` (backend). No other flag or value differs |
+| miles defaults | | changed: `mini_ft_controller_enable` False to None, then resolved True by `use_fault_tolerance` (the controller on `api_server_port` 18080); `session_sample_picker_path` `drop_retries` to `drop_same_prompt_retries`. Removed: `control_server_port`, `rollout_external`, `sglang_gated_launch_port`, `eval_sglang_gated_launch_port`, the 9 `multi_lora_*` flags. New, inert for r48: `api_server_host`, `cluster_backend` ray, `worker_comm_backend` None (resolves to ray), `deploy_component`, `deploy_instance_id`, `run_uuid`, `trainer_controller_addrs`, `inference_controller_addr`, `init_expected_num_cells`, `megatron_config`, `env_report_interval_seconds` 3600, `rollout_health_check_failure_threshold` 1 (r48 also stops an engine at the first failed check), `rollout_external_router_pd`, `session_server_external_host`, `custom_inference_engine_provider_path`, `debug_unified_grad_fused_logprob`, three `ci_*` flags, and `prefetch_rollout_data` False |
+| resolved at validation (static) | | `activation_func_clamp_value` None to 10.0; `mini_ft_controller_enable` False to True; `save_debug_event_data` None to `<save>/events`; `rollout_health_check_first_wait` 0 to 0.0 (the list of the first reconcile; the refresh adds no change for this config) |
+| GLM-5.3 model | fork copy of PR #2786 | upstream #2786: RMSNorm on the DSA indexer query, the clamp 10, the mHC spec. KDA TP (`glm5_next_kda_tp: true`) is the same code on the upstream module |
+| events and checksums | | the event logger is on, `update_weights` runs `check_weights(action="checksum")` on each engine at each update, and each save copies the events dir |
+| driver | `rollout_manager.generate` | the upstream loop: `inference_controller.prepare_rollout` before each generate, the weight version published to the rollout executor after each update, the disposer teardown, the API server and the mini FT controller |
+| metrics | | `train_rollout_logprob_abs_diff` and `train_rollout_kl` from trainer-scored log-probs (#3655). `rollout/weight_version/*` have the r48 keys and meaning (`3f9010e73`) |
+| R3 data path | int32 routing | routing as int16 in the shards and the pinned replay buffers, widened to int32 at the router (the same replayed indices); the thd replay fill copies only the local rows (byte-equal to the old fill in the tests) |
+| logs | | always-on `[r3-timing]`, `[r3-mem]` and `[r3-digest]` lines. `[r3-digest]` hashes the replay buffers of each rank once per step and reports its own `seconds` |
+| Ray actors | static `@ray.method` FT groups | the upstream groups through `_route_method_to_concurrency_group` with `1b5d2978c`, plus `kill_self` and `rollout_prefetch` (idle with the flag off). Each trainer sets its NUMA affinity from the PCI bus id of its GPU (#3869) |
+| head node | the driver on the head | `RayWorkerManager` actor, head from the GCS node table (`4316e4957`) |
+| thd batches | `PackedSeqParams` | `PackedSeqParamsWithHostCuSeqlens`, a subclass with the host copy of `cu_seqlens` (#3689) |
+| command workers | `<launch cmd>` under a shell | `exec <launch cmd>`, so the death of the actor frees the ports (#3718) |
+| base image | `glm53next-upstream-20260902` (SGLang `9a26e749`, Megatron-LM `e8f57451`, fla 0.4.2, TileLang 0.1.9) | needs a base from the upstream `docker/build.py` at `d7f1a4210`: SGLang `sglang-miles` with `--gated-launch-port`, Megatron-LM `miles-main`, fla 0.5.2 with the upstream KDA patch and `fla_conv_int64_offsets.py`, TileLang 0.1.14 with the #3647 Blackwell patch, Mooncake from `lmsysorg/sglang` |
+
+### Open items of the refresh
+
+1. Build a test image on the new base and run the r48 argv through
+   `parse_args()` in it. That check covers the Megatron defaults
+   (Megatron-LM `e8f57451` to `miles-main`) and `miles_validate_args`.
+2. The open items of the first reconcile still apply: the engine path with
+   SGLang 0.5.21 and the event-logger checksum, the 18-21% slower log-prob pass
+   and the 8 GiB higher peak memory, the fla release with PR #1082.
+3. Offer `1b5d2978c` (the routed-method fix) and `4316e4957` to upstream.
+4. On `arpit-glm-53`: complete the r48 `RECORD.md` header and regenerate
+   `training-runs/INDEX.md`.
+5. `--prefetch-rollout-data` ran on GPU only on `arpit-r3-datapath`. The port
+   to the upstream worker structure passes the CPU tests with a local Ray
+   cluster, but it has no GPU run.

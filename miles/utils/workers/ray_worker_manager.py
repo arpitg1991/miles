@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -512,6 +513,10 @@ def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Calla
     def routed(self, *args, **kwargs):
         return method(self, *args, **kwargs)
 
+    # Ray reads the group from inspect.unwrap(method) (_ActorClassMethodMetadata), so a __wrapped__ link to the
+    # unrouted method puts the call in the default group, behind train(). Keep the signature for Ray's checks.
+    routed.__signature__ = inspect.signature(method)
+    del routed.__wrapped__
     return ray.method(concurrency_group=group)(routed)
 
 

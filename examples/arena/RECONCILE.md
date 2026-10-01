@@ -586,12 +586,22 @@ rejected that. So `3f9010e73` adds
 `rollout_metrics.compute_weight_version_metrics`: it uses the upstream
 `compute_statistics` and the two upstream expressions (the oldest numeric
 version of each sample; the share of all samples with more than one distinct
-version). `nats_rollout` logs the keys in its `rollout/` metrics dict, at
-`rollout/step`, over every training row of the final batch, pads included. A
-compact batch (`arena_train_segments: all`) is not trimmed, so this is the list
-that upstream `log_rollout_data` gets, as on `arpit-glm-53`. A test checks the
-values against upstream `Sample` spans with the same versions. ADR-0018 has an
-amendment.
+version). The keys cover every training row of the final batch, pads
+included. A compact batch (`arena_train_segments: all`) is not trimmed, so this
+is the list that upstream `log_rollout_data` gets, as on `arpit-glm-53`. A test
+checks the values against upstream `Sample` spans with the same versions.
+ADR-0018 has an amendment.
+
+`3f9010e73` put the keys only in the plugin W&B dict. That dict exists only
+with `use_wandb`, inside the `try` block that logs "Failed to log queue
+metrics". The r48 gate reads the keys from the `perf <rollout_id>` line
+(r48 `RECORD.md`, "Measurement plan"), and that line had none. `dda652e05`
+returns the keys in `RolloutFnTrainOutput.metrics`, the channel of the upstream
+rollout functions. `LegacyRolloutFnAdapter` passes it through, and
+`log_rollout_data` writes the keys to the perf line and to `tracking.log`, as
+on `arpit-glm-53`. The test runs `final` mode with W&B, and `all` mode without
+W&B and with two DP pads (mean 4.375 over 8 rows), then feeds the output to
+upstream `log_rollout_data`. Both cases fail on `3f9010e73`.
 
 ### Other new commits
 
@@ -601,7 +611,12 @@ amendment.
 | `4f743c5bf` | `kdatp-prof-run.sh` and `dsa-run.sh` take the checkout only from `AGISLIME_DIR`, which both job manifests set. Upstream `test_shell_script_hygiene` rejects `/root/miles` in a script |
 | `87db4caa4` | `test_rollout_prefetch.py` and `test_r3_log_parse.py` use the session fixture `ray_local_mode`. Upstream `test_ray_cluster_bootstrap` allows only `tests/conftest.py` to call `ray.init` |
 | `2c172d505` | the two `split_train_data_by_dp` fakes in `test_rollout_executor_multi_policy.py` accept the `rollout_id` keyword of the R3 port |
-| this commit | this section |
+| `25ed41e1f` | this section, first version |
+| `dda652e05` | `rollout/weight_version/*` through `log_rollout_data` (see "Weight-version metrics"). Five tests read `.samples` of the return value |
+| `2cb91b309` | the mini FT controller advice (see "Fault tolerance against r48"), and `test_yaml_false_emits_no_flag` |
+| `a43aa80f2` | `guparpit-agentic-debt-v2/miles-config.yaml` and `test_training_run_identity.py` (see "Launch from the r48 files") |
+| `000f49d2c` | open item 6, the KDA tensor-parallel checkpoint load check |
+| this commit | "Review findings (2026-10-01)" and the validation numbers |
 
 ### Validation (CPU, 2026-10-01)
 
@@ -624,8 +639,9 @@ starts pytest in the scratch dir with `RAY_TMPDIR=/proc/self/cwd/r` and
 
 | check | result |
 | --- | --- |
-| arena fast tests: `tests/fast/plugins/arena`, `stub` | 339 passed, 1 failed (`test_training_runs_index`, see below). `arpit-glm-53` `be9d68a3f`: 335 passed, the same failure. The 4 new tests are the weight-version tests |
-| launcher tests: `tests/fast/launch_scripts`, `stub` | 62 passed, 1 failed: `test_workplace_backend.py::test_workplace_launch_uses_the_configured_backend`, which also fails on upstream (53 passed, 1 failed) |
+| arena fast tests: `tests/fast/plugins/arena`, `stub` | 343 passed, 1 failed (`test_training_runs_index`, see below). `arpit-glm-53` `be9d68a3f`: 335 passed, the same failure. The 8 new tests: 5 weight-version tests and 3 run-identity tests. At `25ed41e1f`: 339 passed, the same failure |
+| launcher tests: `tests/fast/launch_scripts`, `stub` | 65 passed, 1 failed: `test_workplace_backend.py::test_workplace_launch_uses_the_configured_backend`, which also fails on upstream (53 passed, 1 failed). The 3 new tests are `test_yaml_false_emits_no_flag` |
+| arena tests and `test_run_arena_harbor.py`, `stubfull`, conftests, local Ray | 354 passed, 2 failed: `test_training_runs_index` and `test_register_nova_reasoning_parser` (see below) |
 | launcher snapshots: `tests/manual/launch_scripts/test_py_launch_scripts.py -k "run_arena_harbor or run_glm5_3_flash"` | 6 passed, with each stub |
 | KDA TP: `tests/fast/backends/megatron_utils/test_glm5_next_kda_tp.py` | skipped: the module needs `megatron.core`. The stride-3 gather check of that file, run on the two functions lifted from `hf_weight_iterator_direct.py`, passes: the gather of 8 TP shards of the packed [q; k; v] conv equals the full tensor, and stride 1 raises |
 | R3, replay, and prefetch tests, `stubfull`, conftests, local Ray | `test_rollout_prefetch.py` 8 passed (with the real-Ray test that the prefetch runs next to `train()` and gives `prefetch=hit`), `test_r3_log.py` and `test_r3_log_parse.py` 8, `test_route_method_to_concurrency_group.py` 2, `test_replay_base.py` 6, `test_replay_data.py` 291, `test_object_store.py` 66 (2 Mooncake skips), `test_train_data_conversion.py` 60, `test_rollout_metrics.py` 17, `test_rollout_executor_multi_policy.py` 11, `test_train_actor_rpc_surface.py` 15 (4 megatron skips), `test_ray_cluster_bootstrap.py` 10, `test_ray_utils.py` 4. `test_shared_ppo_lifecycle.py` errors on both trees (no megatron) |
@@ -678,7 +694,7 @@ defaults and `miles_validate_args` are a static reading, not a parse.
 | events and checksums | | the event logger is on, `update_weights` runs `check_weights(action="checksum")` on each engine at each update, and each save copies the events dir |
 | driver | `rollout_manager.generate` | the upstream loop: `inference_controller.prepare_rollout` before each generate, the weight version published to the rollout executor after each update, the disposer teardown, the API server and the mini FT controller |
 | fault tolerance | a failed engine stops at the first failed check and restarts at the next weight update | the mini FT controller restarts it at any time. Keep `mini_ft_controller_enable` unset; see "Fault tolerance against r48" |
-| metrics | | `train_rollout_logprob_abs_diff` and `train_rollout_kl` from trainer-scored log-probs (#3655). `rollout/weight_version/*` have the r48 keys and meaning (`3f9010e73`) |
+| metrics | | `train_rollout_logprob_abs_diff` and `train_rollout_kl` from trainer-scored log-probs (#3655). `rollout/weight_version/*` have the r48 keys and meaning (`3f9010e73`), on the perf line and in `tracking.log` as on r48 (`dda652e05`) |
 | R3 data path | int32 routing | routing as int16 in the shards and the pinned replay buffers, widened to int32 at the router (the same replayed indices); the thd replay fill copies only the local rows (byte-equal to the old fill in the tests) |
 | logs | | always-on `[r3-timing]`, `[r3-mem]` and `[r3-digest]` lines. `[r3-digest]` hashes the replay buffers of each rank once per step and reports its own `seconds` |
 | Ray actors | static `@ray.method` FT groups | the upstream groups through `_route_method_to_concurrency_group` with `1b5d2978c`, plus `kill_self` and `rollout_prefetch` (idle with the flag off). Each trainer sets its NUMA affinity from the PCI bus id of its GPU (#3869) |
@@ -733,7 +749,8 @@ sample-summary dir. r48 writes into the r47 sample-summary dir, and
 would replace the files of both. `test_training_run_identity.py` checks the
 key set, and that no two run folders share an experiment name or a
 sample-summary dir (r47 and r48 are the one recorded exception). The three
-tests fail when the v2 folder holds a copy of the r48 files.
+tests fail when the v2 folder holds copies of the r48 `miles-config.yaml` and
+`workflow.yaml`.
 
 The launch needs three more steps that no committed file holds:
 
@@ -756,6 +773,18 @@ The launch needs three more steps that no committed file holds:
    r48").
 
 Before the long run, do the KDA tensor-parallel load check (open item 6).
+
+### Review findings (2026-10-01)
+
+Four review findings against `25ed41e1f`. Each was checked again before a
+change.
+
+| finding | check | result |
+| --- | --- | --- |
+| The advice `mini_ft_controller_enable: false` has no effect, and turning the controller off is wrong | the launcher drops a false value; the probe table; the restart paths on both trees | real. `2cb91b309` |
+| `rollout/weight_version/*` go only to W&B, but the r48 gate reads the perf line | the keys are only in the `use_wandb` dict; upstream `log_rollout_data` merges `RolloutFnTrainOutput.metrics` | real. `dda652e05` |
+| A copy of the r48 files reuses the r47 and r48 checkpoints, the W&B run, and the sample summaries | `ckpt_dir` from `experiment-name`; the r47 sample-summary dir in the r48 config; `_load_extra_state` | real. `a43aa80f2` prepares the v2 config and its test. The experiment name and the checkpoint seed are launch steps ("Launch from the r48 files") |
+| No job has loaded a KDA-TP checkpoint on the new base | r47 config `glm5_next_kda_tp: true`; the GPU jobs of the first reconcile ran with KDA TP off; the CPU-only refresh check | real, open: it needs a GPU job. `000f49d2c` adds open item 6. One detail of the finding is not correct: upstream `kimi_k3` and `inkling` use the same Megatron checkpoint APIs as `kda.py` |
 
 ### Open items of the refresh
 
@@ -784,8 +813,8 @@ Before the long run, do the KDA tensor-parallel load check (open item 6).
    `make_tp_sharded_tensor_for_checkpoint` are the same in the Megatron tree
    of the 20260929c profile pods and in NVIDIA Megatron-LM `b4d72b79`. No
    tree of `miles-main` `f148a32b` was on disk, so that check is only a
-   static hint. Before the long run, run one
-   T1-style job on the new image with `glm5_next_kda_tp: true`:
+   static hint. Before the long run, run one T1-style job on the new image
+   with `glm5_next_kda_tp: true`:
    1. Load r47 `iter_0000059` with TP 8, as in the run.
    2. Compare the SHA-256 of the HF gather (the raw-mode weight sync path,
       with the stride-3 branch of `hf_weight_iterator_direct.py`) with the

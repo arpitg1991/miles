@@ -891,9 +891,13 @@ change.
       gym image, for example `gym-glm53-adr72-20260927a` of
       `guparpit-agentic-debt-v2`. The v2 trainer image `recon-20261001b` is
       older than this commit.
-   2. The Inspect `sglang_perstep` training path (`amzn_arena_streaming`)
-      sends `weight_versions` and no `weight_version_spans`. This trainer
-      stops on it until that path sends the spans.
+   2. That gym image MUST send the spans from both training runtimes: Harbor
+      and Inspect streaming (`amzn_arena_streaming`, `sglang_full` and
+      `sglang_perstep`). An Inspect streaming gym without the spans stops
+      this trainer at the first message. The error names the gym class of
+      each runtime (`test_inspect_streaming_without_spans_names_both_gym_runtimes`).
+      `test_inspect_streaming_spans_have_offset_zero` checks the offset 0 of
+      both Inspect providers.
    3. For the staleness filter or the staleness keys, set
       `rollout_function_path` to
       `miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn`.

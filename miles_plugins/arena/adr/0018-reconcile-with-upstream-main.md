@@ -74,8 +74,8 @@ ADR-0011 (where the per-turn weight versions live)
      `previous end <= start < end <= len(token_ids)`. A step with token arrays
      and without `weight_version_spans` stops the run when the trajectory
      reports a weight version (`weight_versions`, or `weight_version` on a
-     step). The error names the field and the minimum gym image. A bad entry
-     stops the run too. Both raise `WeightVersionSpansError`, which the NATS
+     step). The error names the field, the gym, the gym class of each training
+     runtime, and the minimum gym image. A bad entry stops the run too. Both raise `WeightVersionSpansError`, which the NATS
      worker treats as fatal, as a `RoutingReplayError`. A trajectory without
      any weight version (eval and no-SGLang paths) gives empty
      `Sample.weight_versions`, as upstream allows. The messages-only path
@@ -134,6 +134,12 @@ ADR-0011 (where the per-turn weight versions live)
 - Lockstep order for decision 4: gym first, trainer second. A trainer from
   this decision stops on the first message of an older gym image. A trainer
   image built before the decision ignores `weight_version_spans`.
+- Two gym runtimes ship token arrays to this trainer (ADR-0002): Harbor
+  (`amzn_arena_harbor.sglang_rollout.RolloutState`) and Inspect streaming
+  (`amzn_arena_streaming.sglang_provider.TrajectoryState`, both the
+  `sglang_full` and the `sglang_perstep` provider). The minimum gym image MUST
+  send the spans from both. Each Inspect provider trains a step whose
+  `token_ids` become `Sample.tokens`, so the offset is 0 there too.
 - Each segment now carries the versions of its own calls, not the trajectory
   list. On rows with the same versions, `rollout/weight_version/*` gives the
   values of the deleted plugin copy (the tests pin the numbers). Under

@@ -134,6 +134,51 @@ def test_hard_overflow_cuts_spans_as_upstream_strip_does():
     assert s.weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("4", 3, 5)]), WeightVersionsPerCall()]
 
 
+def _inspect_step(prompt: list[int], output: list[int], spans: list | None) -> dict:
+    """One step in the shape of the Inspect streaming ``TrajectoryState`` (no Harbor keys)."""
+    step = {
+        "token_ids": prompt + output,
+        "loss_mask": [0] * len(prompt) + [1] * len(output),
+        "log_probs": [0.0] * len(prompt) + [-0.1] * len(output),
+        "has_generate_tokens": True,
+        "finish_reasons": ["stop"],
+    }
+    if spans is not None:
+        step["weight_version_spans"] = spans
+    return step
+
+
+@pytest.mark.parametrize("mode", ["final", "all"])
+@pytest.mark.parametrize("provider", ["sglang_full", "sglang_perstep"])
+def test_inspect_streaming_spans_have_offset_zero(provider, mode):
+    """Both Inspect providers: the trained step token_ids are Sample.tokens, so the span offset is 0."""
+    if provider == "sglang_full":
+        # One cumulative step: call 1 output 201-202, tool output 301, call 2 output 401-402.
+        steps = [
+            _inspect_step(
+                [101, 102],
+                [201, 202, 301, 401, 402],
+                [{"version": 4, "start": 2, "end": 4}, {"version": 5, "start": 5, "end": 7}],
+            )
+        ]
+        steps[0]["loss_mask"][4] = 0
+        outputs = [[201, 202], [401, 402]]
+    else:
+        # One self-contained step per call. The trainer trains the last step.
+        steps = [
+            _inspect_step([101, 102], [201, 202], [{"version": 4, "start": 2, "end": 4}]),
+            _inspect_step([101, 102, 201, 202, 301], [401, 402], [{"version": 5, "start": 5, "end": 7}]),
+        ]
+        outputs = [[401, 402]]
+    (s,) = _convert(_result(steps), args=_make_args(arena_train_segments=mode))
+    assert s.tokens == steps[-1]["token_ids"]
+    assert [s.tokens[span.abs_start : span.abs_end] for span in s.all_weight_version_spans] == outputs
+    prompt_length = len(s.tokens) - s.response_length
+    for span in s.all_weight_version_spans:
+        width = span.abs_end - span.abs_start
+        assert s.loss_mask[span.abs_start - prompt_length : span.abs_end - prompt_length] == [1] * width
+
+
 def test_slow_path_has_no_spans(monkeypatch):
     """The messages-only path makes its own tokens, so the gym spans do not apply."""
     monkeypatch.setattr(mask_utils, "MultiTurnLossMaskGenerator", _StubMaskGenerator)
@@ -160,6 +205,18 @@ def test_old_gym_without_spans_names_the_field_and_the_image(result):
     with pytest.raises(WeightVersionSpansError, match="weight_version_spans") as info:
         _convert(result)
     assert _MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS in str(info.value)
+
+
+def test_inspect_streaming_without_spans_names_both_gym_runtimes():
+    """An Inspect streaming gym sends weight_versions and no spans: the error names its gym class too."""
+    steps = [_inspect_step([101, 102], [201, 202, 401], spans=None)]
+    with pytest.raises(WeightVersionSpansError, match="weight_version_spans") as info:
+        _convert(_result(steps, weight_versions=[4, 5]), args=_make_args(arena_train_segments="all"))
+    message = str(info.value)
+    assert "gym g" in message
+    assert "amzn_arena_streaming.sglang_provider.TrajectoryState" in message
+    assert "amzn_arena_harbor.sglang_rollout.RolloutState" in message
+    assert _MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS in message
 
 
 @pytest.mark.parametrize(

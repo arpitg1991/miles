@@ -509,9 +509,18 @@ def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | Non
     return s
 
 
-# The gym change that adds ``weight_version_spans`` is AREnATasks ADR-0074. No
-# gym image with it exists yet. Put the tag of the first one here when it is built.
-_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS = "a gym image built from AREnATasks with ADR-0074"
+# The gym change that adds ``weight_version_spans`` is AREnATasks ADR-0074. It
+# MUST cover both training gym runtimes, because both ship token arrays to this
+# trainer (ADR-0002). No gym image with it exists yet. Put the tag of the first
+# one here when it is built.
+_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS = (
+    "a gym image built from AREnATasks ADR-0074 that sends the spans from both training gym runtimes"
+)
+# The gym classes that build the token arrays of a training step, one per runtime.
+_WEIGHT_VERSION_SPANS_GYM_RUNTIMES = (
+    "Harbor (amzn_arena_harbor.sglang_rollout.RolloutState) and "
+    "Inspect streaming (amzn_arena_streaming.sglang_provider.TrajectoryState)"
+)
 
 
 class WeightVersionSpansError(RuntimeError):
@@ -555,9 +564,10 @@ def _step_weight_versions(step: dict[str, Any], ctx: _EpisodeContext, n_tokens: 
     if entries is None:
         if ctx.reports_weight_versions:
             raise WeightVersionSpansError(
-                f"Task {ctx.task_id}: the trajectory reports weight_versions, but a step has no "
-                f"weight_version_spans. The trainer needs {_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS} "
-                "or a later gym image (ADR-0018)."
+                f"Task {ctx.task_id} (gym {ctx.gym_name}): the trajectory reports weight_versions, but a "
+                "step has no weight_version_spans. The gym MUST send that field from each runtime that "
+                f"ships token arrays: {_WEIGHT_VERSION_SPANS_GYM_RUNTIMES}. The trainer needs "
+                f"{_MIN_GYM_IMAGE_FOR_WEIGHT_VERSION_SPANS}, or a later gym image (ADR-0018)."
             )
         # No call had an SGLang weight version (eval and no-SGLang paths).
         return []

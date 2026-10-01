@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import ray
 import torch
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
@@ -29,10 +28,8 @@ def _parser():
     return module
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _ray_cluster():
-    if not ray.is_initialized():
-        ray.init(address="local", num_cpus=2, include_dashboard=False, log_to_driver=False)
+@pytest.fixture(autouse=True)
+def _ray_cluster(ray_local_mode):
     yield
 
 

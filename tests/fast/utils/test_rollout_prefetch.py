@@ -147,14 +147,7 @@ class _Trainer:
         return result.value["tokens"], self.lines
 
 
-@pytest.fixture(scope="module")
-def ray_cluster():
-    if not ray.is_initialized():
-        ray.init(address="local", num_cpus=4, include_dashboard=False, log_to_driver=False)
-    yield
-
-
-def test_prefetch_runs_next_to_train_and_hands_over_the_right_shard(ray_cluster):
+def test_prefetch_runs_next_to_train_and_hands_over_the_right_shard(ray_local_mode):
     # The same routing as _ServeActorRayCommManager._compute_actor_class with the fault-tolerance groups.
     routed = {
         name: _route_method_to_concurrency_group(getattr(_Trainer, name), group=group)

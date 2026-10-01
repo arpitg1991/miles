@@ -722,6 +722,39 @@ parser and the three upstream resolvers (`stubfull`).
 `test_run_arena_harbor.py::test_yaml_false_emits_no_flag` checks the argv
 column.
 
+### Launch from the r48 files
+
+`training-runs/harbor-rl-glm53-flash/guparpit-agentic-debt-v2/miles-config.yaml`
+is the r48 config with a new run identity. Only `experiment_name`,
+`project_name` (both launcher keys) and `arena_sample_summary_dir` differ.
+The launcher builds the same 190-token argv from both files, except for the
+sample-summary dir. r48 writes into the r47 sample-summary dir, and
+`_write_sample_summary` replaces `rollout_<id>.jsonl`, so a third run there
+would replace the files of both. `test_training_run_identity.py` checks the
+key set, and that no two run folders share an experiment name or a
+sample-summary dir (r47 and r48 are the one recorded exception). The three
+tests fail when the v2 folder holds a copy of the r48 files.
+
+The launch needs three more steps that no committed file holds:
+
+1. Set the workflow parameter `experiment-name` to
+   `guparpit-agentic-debt-v2`. The launcher sets `--load` and `--save` to
+   `<ARENA_CHECKPOINTS_DIR>/slime_experiments/<experiment-name>` and ignores
+   the config `experiment_name`. With the r48 value, the run resumes from
+   the latest r48 checkpoint and saves into the r48 dir. The W&B group and
+   run name come from the same parameter.
+2. Seed `slime_experiments/guparpit-agentic-debt-v2/` with a copy of a
+   checkpoint saved with `glm5_next_kda_tp: true`: r47 `iter_0000059` (the
+   r48 start, for a comparison at the same rollout ids) or a later r48 save.
+   Copy `rollout/arena_data_source_state_<N>.pt` too, and write
+   `latest_checkpointed_iteration.txt` last. Write the
+   `slime_extra_state.json` of the copy without `wandb_run_id`.
+   `_load_extra_state` restores that id, and the run then resumes the W&B
+   run of the source (r48 `631mke7d`, r47 `0ix3m75e`) at the same
+   `rollout/step` values.
+3. Keep `mini_ft_controller_enable` unset (see "Fault tolerance against
+   r48").
+
 ### Open items of the refresh
 
 1. Build a test image on the new base and run the r48 argv through

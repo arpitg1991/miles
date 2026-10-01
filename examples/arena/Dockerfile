@@ -35,6 +35,17 @@ FROM ${MILES_BASE_IMAGE}
 # probe WILL break autoscaling and eval triggering silently.
 RUN pip install --no-cache-dir "nats-py>=2.6.0" "kubernetes==35.0.0" lakefs boto3 omegaconf typer
 
+# opentelemetry-api is RE-PINNED to the version that opentelemetry-sdk pins.
+# The upstream base (docker/Dockerfile at d7f1a421) reinstalls sglang_router
+# with its dependencies; fastapi asks for opentelemetry-api>=1.44.0, so pip
+# takes 1.45.0 and leaves opentelemetry-sdk 1.44.0, which requires ==1.44.0.
+# The sdk import then fails, the Ray dashboard does not start, and
+# `ray start --head` exits 1 (guparpit-agentic-debt-v2-l8x9j, 2026-10-01).
+# The pin follows the installed sdk, so a base with a matched pair is a no-op.
+RUN pip install --no-cache-dir --no-deps \
+        "opentelemetry-api==$(pip show opentelemetry-sdk | sed -n 's/^Version: //p')" \
+    && python3 -c "import opentelemetry.sdk.metrics"
+
 # EFA userspace + aws-ofi-nccl (recipe proven in AGISlime 47900d5). WHY this
 # layer exists: on the EFA-fabric p6 nodes NCCL discovers a network plugin via
 # /opt/amazon/ofi-nccl/lib/libnccl-net.so; when it is absent NCCL does NOT
@@ -92,4 +103,6 @@ import miles_plugins.arena.train_async_arena; \
 from miles_plugins.arena.nats_arena.message_format import SALVAGEABLE_RESULT_STATUSES; \
 assert SALVAGEABLE_RESULT_STATUSES == ('success', 'truncated')" \
     && LD_LIBRARY_PATH=/tmp/cuda-stub:${LD_LIBRARY_PATH} python3 /root/miles/scripts/run_arena_harbor.py --help >/dev/null \
-    && rm -rf /tmp/cuda-stub
+    && ray start --head --num-cpus 1 --num-gpus 0 --disable-usage-stats \
+    && ray stop --force \
+    && rm -rf /tmp/cuda-stub /tmp/ray

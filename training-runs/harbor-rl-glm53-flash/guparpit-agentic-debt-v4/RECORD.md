@@ -81,7 +81,7 @@ The lag of a sample is the trainer version minus the version that generated the 
 | The cap holds | startup log line; `rollout/queue_depth_at_start` | `maxsize=64` in the trainer log; queue depth 64 or less at every rollout |
 | Fresher groups | lag of the mean and lag of the oldest sample (definitions above) | over rollouts 66 to 75: the mean lag of the mean at most (64 + 128) / D + 1, with D the mean `rollout/group_metrics/n_groups` over the same rollouts (4.0 at D 65, 7.0 at D 32); the mean lag of the mean and of the oldest sample below r50. r47 at rollout 63, trainer on version 10: mean 10 - 3.1 = 6.9, oldest 10 - 1 = 9 |
 | Same throughput | `perf/rollout_time`, `rollout/queue_depth_at_start` | the trainer does not wait: queue depth 32 or more at most rollouts, `perf/rollout_time` within 10% of r50 |
-| Same learning | `train/train_rollout_logprob_abs_diff`, `train/grad_norm`, `rollout/group_metrics/reward.mean` | log-prob diff at or below r50 (r48 rose from 0.033 to 0.049 on a stale queue); grad norm and reward within r50's range |
+| Same learning | `train/train_rollout_logprob_abs_diff`, `train/grad_norm`, `rollout/group_metrics/reward.mean` | log-prob diff at or below r50 (r47 rose from 0.033 at rollouts 0 to 7 to 0.049 at rollouts 56 to 63 on a stale queue); grad norm and reward within r50's range |
 
 ## Checks done before launch
 

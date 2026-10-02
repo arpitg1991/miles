@@ -24,6 +24,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         layer_number: int,
         attn_mask_type=AttnMaskType.padding,
         topk_backend: str = "torch",
+        sparse_attention_forward_backend: str = "tilelang",
         is_mtp_layer: bool = False,
         cp_comm_type: str | None = None,
         model_comm_pgs=None,
@@ -37,6 +38,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             layer_number=layer_number,
             attn_mask_type=attn_mask_type,
             topk_backend=topk_backend,
+            sparse_attention_forward_backend=sparse_attention_forward_backend,
             is_mtp_layer=is_mtp_layer,
             cp_comm_type=cp_comm_type,
             model_comm_pgs=model_comm_pgs,
@@ -202,6 +204,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             topk_indices.unsqueeze(0),
             self.softmax_scale,
             d_v=self.config.kv_lora_rank,
+            forward_backend=self.sparse_attention_forward_backend,
         ).squeeze(0)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, w_vc)
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)

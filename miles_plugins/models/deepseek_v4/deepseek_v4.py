@@ -178,6 +178,7 @@ class DeepSeekV4Attention(MegatronModule):
             tp_group=self.tp_group,
         )
         self.softmax_scale = self.head_dim**-0.5
+        self.sparse_attention_forward_backend = config.miles_dsa_sparse_attention_forward_backend
         self.sequence_parallel = config.sequence_parallel
 
         if self.compress_ratio:
@@ -414,6 +415,7 @@ class DeepSeekV4Attention(MegatronModule):
             topk_idxs.unsqueeze(2),
             self.softmax_scale,
             attn_sink=self.core_attention.attn_sink,
+            forward_backend=self.sparse_attention_forward_backend,
         )
 
         o = torch.cat((o[..., :-rd], apply_rotary_emb(o[..., -rd:].clone(), freqs_cis, inverse=True)), dim=-1)
@@ -457,6 +459,7 @@ def get_dsv4_spec(args, config, vp_stage):
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.miles_dsa_sparse_attention_forward_backend = args.miles_dsa_sparse_attention_forward_backend
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):

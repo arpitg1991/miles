@@ -876,6 +876,31 @@ def _publisher_max_in_flight(args) -> int:
     return int(getattr(args, "arena_inflight_multiplier", 2)) * int(args.rollout_batch_size)
 
 
+def _output_queue_groups(args) -> int:
+    """Capacity of the worker output queue, in finished groups.
+
+    ``--arena-output-queue-groups`` sets the capacity. The default (None) keeps
+    the r10-lineage size of 10 x global_batch_size samples:
+    ``10 * global_batch_size // n_samples_per_prompt`` groups, 320 for GBS 256
+    and n 8. The worker ``put`` blocks on a full queue, so a smaller queue
+    holds groups of fewer weight versions. The upstream fully-async buffer
+    (``--async-data-buffer-capacity-factor``, default 2.0 x
+    rollout_batch_size) has the same role, but the NATS path does not run it.
+
+    Raises:
+        ValueError: The set value is less than ``rollout_batch_size``.
+    """
+    groups = getattr(args, "arena_output_queue_groups", None)
+    if groups is None:
+        return max(1, (10 * args.global_batch_size) // max(1, args.n_samples_per_prompt))
+    if groups < args.rollout_batch_size:
+        raise ValueError(
+            f"--arena-output-queue-groups {groups} is less than --rollout-batch-size "
+            f"{args.rollout_batch_size}. The output queue MUST hold one rollout batch."
+        )
+    return int(groups)
+
+
 def _rollout_max_seq_len(args) -> int:
     """Return the episode window that a Harbor training task carries as ``max_seq_len``.
 
@@ -1291,15 +1316,15 @@ class NATSRolloutWorker:
         self.data_source = data_source
         self.data_source_lock = threading.Lock()
         self.running = True
-        # Queue capacity expressed in groups, sized to hold ~10 GBS-worth
-        # of samples. Each group is ``n_samples_per_prompt`` samples, so
-        # total sample capacity = (10 * GBS / n_per_prompt) groups *
-        # n_per_prompt samples = 10 * GBS samples. With GBS=256 and
-        # n=16 that's 160 groups (= 10 training steps' buffer). The .put
+        # Capacity in finished groups (see _output_queue_groups). The .put
         # call is blocking — when full, the publisher waits for the
         # trainer to drain rather than dropping data.
-        self.output_queue: queue.Queue[list[Sample]] = queue.Queue(
-            maxsize=max(1, (10 * args.global_batch_size) // max(1, args.n_samples_per_prompt))
+        output_queue_groups = _output_queue_groups(args)
+        self.output_queue: queue.Queue[list[Sample]] = queue.Queue(maxsize=output_queue_groups)
+        logger.info(
+            "NATSRolloutWorker output queue: maxsize=%d groups (--arena-output-queue-groups=%s)",
+            output_queue_groups,
+            getattr(args, "arena_output_queue_groups", None),
         )
         self.worker_thread = None
         # Set by the worker loop before it dies on a RoutingReplayError, so
@@ -2865,6 +2890,16 @@ def _add_arena_arguments(parser):
         "(max_in_flight = multiplier x rollout_batch_size). 2 keeps the "
         "r10-lineage oversubscription; raise it when SGLang engines sit "
         "under-fed with an empty queue.",
+    )
+    group.add_argument(
+        "--arena-output-queue-groups",
+        type=int,
+        default=None,
+        help="Capacity of the finished-group output queue. When the queue is "
+        "full, the worker waits for the trainer. A smaller queue trains on "
+        "groups from fewer weight versions. MUST be at least "
+        "rollout_batch_size. None = 10 * global_batch_size // "
+        "n_samples_per_prompt groups (320 for GBS 256 and n 8).",
     )
     group.add_argument(
         "--arena-length-reward-coef",

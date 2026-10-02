@@ -258,10 +258,19 @@ def kpool_select_topk(
     pool_cu_seqlens: torch.Tensor,
     index_topk: int,
     kpool: int,
+    token_ids: torch.Tensor | None = None,
 ) -> torch.Tensor:
+    """Top-k token indices of each query. ``index_q`` and ``head_weights`` hold the queries; ``pooled_k``,
+    ``cu_seqlens`` and ``pool_cu_seqlens`` cover the whole packed sequence. ``token_ids`` gives the position of
+    each query in the packed sequence (default: the queries are all tokens, in order)."""
     num_tokens = index_q.shape[0]
     device = index_q.device
-    token_ids = torch.arange(num_tokens, device=device)
+    if token_ids is None:
+        token_ids = torch.arange(num_tokens, device=device)
+    else:
+        assert token_ids.shape == (num_tokens,), (token_ids.shape, num_tokens)
+        assert not indexer_replay_manager.enabled, "the indexer replay holds the top-k of all tokens"
+        token_ids = token_ids.to(device=device, dtype=torch.int64)
     seq_indices = torch.searchsorted(cu_seqlens, token_ids, right=True) - 1
     seq_token_base = cu_seqlens[seq_indices].to(torch.int32)
     pool_base = pool_cu_seqlens[seq_indices].to(torch.int32)

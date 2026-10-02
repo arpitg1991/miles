@@ -1,20 +1,91 @@
+import logging
+
 import torch
 import torch.nn.functional as F
 from megatron.core import parallel_state
-from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
+from megatron.core.tensor_parallel.mappings import all_to_all, gather_from_sequence_parallel_region
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction
 
 from miles.kernels.attention.dsa import sparse_attention
+from miles.kernels.attention.dsa.sparse_attention import _default_forward_backend
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.glm5.glm5 import DSAMLASelfAttention
 from miles_plugins.models.glm5_next.ops.kpool_indexer import build_pooled_keys, kpool_select_topk, pool_boundaries
 
+logger = logging.getLogger(__name__)
+
 _SPARSE_MLA_TAIL_DIM = 64
 
 
+def heads_to_sequence_a2a_input(x: torch.Tensor, tp_size: int) -> torch.Tensor:
+    """[S, h_local, D] in the head-parallel layout -> the all-to-all input [tp, S / tp, h_local, D].
+
+    Chunk ``c`` of the sequence (rows ``c * S / tp`` to ``(c + 1) * S / tp``, the sequence-parallel
+    chunk of rank ``c``) goes to rank ``c``. The view is free: the chunks are contiguous rows.
+    """
+    seq_len, h_local, dim = x.shape
+    assert seq_len % tp_size == 0, f"sequence length {seq_len} is not divisible by tp={tp_size}"
+    return x.view(tp_size, seq_len // tp_size, h_local, dim)
+
+
+def heads_to_sequence_a2a_output(y: torch.Tensor) -> torch.Tensor:
+    """The all-to-all output [tp, S / tp, h_local, D] (dim 0 = source rank = head group) -> [S / tp, tp * h_local, D].
+
+    Head ``j * h_local + i`` is head ``i`` of rank ``j``, the global head order of the column-parallel
+    projections.
+    """
+    tp_size, seq_local, h_local, dim = y.shape
+    return y.permute(1, 0, 2, 3).reshape(seq_local, tp_size * h_local, dim)
+
+
+def sequence_to_heads_a2a_input(y: torch.Tensor, tp_size: int) -> torch.Tensor:
+    """[S / tp, tp * h_local, D] -> the all-to-all input [tp, S / tp, h_local, D]: head group ``j`` goes to rank ``j``."""
+    seq_local, heads, dim = y.shape
+    assert heads % tp_size == 0, f"{heads} heads are not divisible by tp={tp_size}"
+    return y.view(seq_local, tp_size, heads // tp_size, dim).permute(1, 0, 2, 3).contiguous()
+
+
+def sequence_to_heads_a2a_output(x: torch.Tensor) -> torch.Tensor:
+    """The all-to-all output [tp, S / tp, h_local, D] (dim 0 = source rank = sequence chunk) -> [S, h_local, D]."""
+    tp_size, seq_local, h_local, dim = x.shape
+    return x.view(tp_size * seq_local, h_local, dim)
+
+
+def heads_to_sequence(x: torch.Tensor, tp_group) -> torch.Tensor:
+    """Head-parallel [S, h_local, D] -> query-parallel [S / tp, tp * h_local, D] over the tensor-parallel group."""
+    tp_size = tp_group.size()
+    if tp_size == 1:
+        return x
+    return heads_to_sequence_a2a_output(all_to_all(tp_group, heads_to_sequence_a2a_input(x, tp_size)))
+
+
+def sequence_to_heads(y: torch.Tensor, tp_group) -> torch.Tensor:
+    """Query-parallel [S / tp, tp * h_local, D] -> head-parallel [S, h_local, D]; the inverse of ``heads_to_sequence``."""
+    tp_size = tp_group.size()
+    if tp_size == 1:
+        return y
+    return sequence_to_heads_a2a_output(all_to_all(tp_group, sequence_to_heads_a2a_input(y, tp_size)))
+
+
 class Glm5NextDSAAttention(DSAMLASelfAttention):
+    """GLM-5.3 sparse attention (DSA) layer.
+
+    ``query_parallel`` (``--glm5-next-dsa-qp``) changes only the layout of the attention core and the
+    indexer; every parameter, its sharding and the checkpoint keys stay the same:
+
+    - Default (head-parallel): each tensor-parallel rank runs the top-k indexer for all ``S`` tokens
+      and the sparse-attention kernel for all ``S`` queries on its ``64 / tp`` heads. The kernel gathers
+      the ``topk`` selected KV rows per query, so the gather and the backward ``dKV`` atomics repeat on
+      every rank: the per-rank work does not shrink with the head count.
+    - Query-parallel: each rank runs the indexer and the kernel for its sequence-parallel chunk of
+      ``S / tp`` queries on all 64 heads. One all-to-all over the tensor-parallel group moves the
+      absorbed queries from the head split to the sequence split, and one moves the attention
+      output back for the head-split ``w_vc`` and the row-parallel output projection. The KV rows
+      are gathered once per query instead of ``tp`` times, and the ``[S, S / kpool]`` fp32 indexer
+      logits shrink by ``tp``.
+    """
 
     def __init__(
         self,
@@ -28,6 +99,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         model_comm_pgs=None,
         pg_collection=None,
         name: str | None = None,
+        query_parallel: bool = False,
     ):
         assert config.qk_pos_emb_head_dim == 0, "GLM-5.3 DSA skips rope; qk_pos_emb_head_dim must be 0"
         super().__init__(
@@ -45,6 +117,15 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         self.softmax_scale = self.q_head_dim**-0.5
         self.index_topk = int(getattr(config, "index_topk", 2048))
         self.index_kpool = int(getattr(config, "index_kpool", 4))
+        self.query_parallel = bool(query_parallel)
+        self._qp_backend_logged = False
+        if self.query_parallel:
+            # The query chunk of a rank is its sequence-parallel chunk, so the layout needs sequence parallelism.
+            assert config.sequence_parallel, "--glm5-next-dsa-qp requires --sequence-parallel"
+            assert not indexer_replay_manager.enabled, (
+                "--glm5-next-dsa-qp runs the indexer on each rank's query chunk; the indexer replay "
+                "holds the top-k of all tokens and is not supported with it"
+            )
 
         self.index_kpool_compress_gate = torch.nn.Parameter(torch.zeros(config.index_head_dim, config.hidden_size))
         self.index_kpool_compress_ape = mark_keep_in_fp32(
@@ -105,9 +186,13 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         q_compressed = q_compressed.detach()
         hidden_states = hidden_states.detach()
 
+        # Query-parallel: the index queries and the head weights stay on this rank's sequence chunk.
+        # The index keys and the gate scores cover the whole sequence on every rank in both layouts.
+        gather_queries = self.config.sequence_parallel and not self.query_parallel
+
         index_q, _ = self.wq_b(q_compressed)
         index_q = index_q.view(*index_q.size()[:-1], self.config.index_num_attention_heads, self.config.index_head_dim)
-        if self.config.sequence_parallel:
+        if gather_queries:
             index_q = gather_from_sequence_parallel_region(index_q)
 
         index_k, _ = self.wk(hidden_states)
@@ -127,12 +212,12 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
         head_weights = head_weights.squeeze(1) * (
             (self.config.index_num_attention_heads**-0.5) * (self.config.index_head_dim**-0.5)
         )
-        if self.config.sequence_parallel:
+        if gather_queries:
             head_weights = gather_from_sequence_parallel_region(head_weights)
 
         return query, key, w_vc, index_q, index_k, head_weights, gate_score
 
-    def _kpool_select(self, index_q, index_k, head_weights, gate_score, packed_seq_params):
+    def _kpool_select(self, index_q, index_k, head_weights, gate_score, packed_seq_params, token_ids=None):
         if parallel_state.get_context_parallel_world_size() > 1:
             raise NotImplementedError("GLM-5.3 kpool indexer selection does not support context parallelism yet.")
         cu_seqlens = packed_seq_params.cu_seqlens_kv
@@ -152,7 +237,60 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             pool_cu_seqlens=pool_cu_seqlens,
             index_topk=self.index_topk,
             kpool=self.index_kpool,
+            token_ids=token_ids,
         )
+
+    def _core_attention_head_parallel(self, query, key, index_q, index_k, head_weights, gate_score, packed_seq_params):
+        """All ``S`` queries on this rank's heads. The 64-wide zero tail is the layout of the first GLM-5.3 port."""
+        topk_indices = self._kpool_select(index_q, index_k, head_weights, gate_score, packed_seq_params)
+        query = F.pad(query, (0, _SPARSE_MLA_TAIL_DIM)).contiguous()
+        key = F.pad(key, (0, _SPARSE_MLA_TAIL_DIM)).contiguous()
+        return sparse_attention(
+            query.unsqueeze(0),
+            key.unsqueeze(0),
+            topk_indices.unsqueeze(0),
+            self.softmax_scale,
+            d_v=self.config.kv_lora_rank,
+        ).squeeze(0)
+
+    def _core_attention_query_parallel(
+        self, query, key, index_q, index_k, head_weights, gate_score, packed_seq_params
+    ):
+        """This rank's sequence chunk of queries on all heads; the result comes back in the head-parallel layout."""
+        tp_group = parallel_state.get_tensor_model_parallel_group()
+        tp_size = parallel_state.get_tensor_model_parallel_world_size()
+        tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        seq_len = key.shape[0]
+        assert seq_len % tp_size == 0, f"sequence length {seq_len} is not divisible by tp={tp_size}"
+        seq_local = seq_len // tp_size
+        assert index_q.shape[0] == seq_local, (index_q.shape, seq_local)
+        # The global token ids of this rank's sequence-parallel chunk: the indexer masks and the
+        # selected indices are absolute positions in the packed sequence.
+        token_ids = torch.arange(tp_rank * seq_local, (tp_rank + 1) * seq_local, device=key.device)
+        topk_indices = self._kpool_select(
+            index_q, index_k, head_weights, gate_score, packed_seq_params, token_ids=token_ids
+        )
+        query = heads_to_sequence(query, tp_group)
+        if not self._qp_backend_logged:
+            # Once per process: which forward kernel the shape selects (FlashMLA on SM90/SM100 when installed).
+            self._qp_backend_logged = True
+            backend = _default_forward_backend(query.unsqueeze(0), key.unsqueeze(0), self.config.kv_lora_rank)
+            logger.warning(
+                "glm5_next DSA query-parallel core: layer %d, %d heads x %d local queries, forward backend %s",
+                self.layer_number,
+                query.shape[1],
+                query.shape[0],
+                backend,
+            )
+        # No zero tail: q and kv are the kv_lora_rank-wide latent, and d_v covers the full width.
+        core_attn_out = sparse_attention(
+            query.unsqueeze(0),
+            key.unsqueeze(0),
+            topk_indices.unsqueeze(0),
+            self.softmax_scale,
+            d_v=self.config.kv_lora_rank,
+        ).squeeze(0)
+        return sequence_to_heads(core_attn_out, tp_group)
 
     def forward(
         self,
@@ -184,18 +322,8 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             inference_context=inference_context,
         )
 
-        topk_indices = self._kpool_select(index_q, index_k, head_weights, gate_score, packed_seq_params)
-
-        query = F.pad(query, (0, _SPARSE_MLA_TAIL_DIM)).contiguous()
-        key = F.pad(key, (0, _SPARSE_MLA_TAIL_DIM)).contiguous()
-
-        core_attn_out = sparse_attention(
-            query.unsqueeze(0),
-            key.unsqueeze(0),
-            topk_indices.unsqueeze(0),
-            self.softmax_scale,
-            d_v=self.config.kv_lora_rank,
-        ).squeeze(0)
+        core = self._core_attention_query_parallel if self.query_parallel else self._core_attention_head_parallel
+        core_attn_out = core(query, key, index_q, index_k, head_weights, gate_score, packed_seq_params)
         core_attn_out = torch.einsum("thm,hdm->thd", core_attn_out, w_vc)
         core_attn_out = core_attn_out.reshape(core_attn_out.size(0), 1, -1)
 

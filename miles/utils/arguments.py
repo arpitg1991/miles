@@ -2474,6 +2474,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--glm5-next-dsa-qp",
+                action="store_true",
+                default=False,
+                help=(
+                    "GLM-5.3 (glm5_next): query-parallel sparse attention. Each tensor-parallel rank runs the "
+                    "DSA indexer and the sparse-attention kernel for its sequence-parallel chunk of queries on "
+                    "all heads (two all-to-alls over the tensor-parallel group), instead of all queries on its "
+                    "head slice. Same parameters, sharding and checkpoint keys; requires --sequence-parallel and "
+                    "no indexer replay."
+                ),
+            )
+            parser.add_argument(
                 "--custom-megatron-init-path",
                 type=str,
                 default=None,

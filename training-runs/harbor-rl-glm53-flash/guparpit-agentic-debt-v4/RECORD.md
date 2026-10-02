@@ -58,10 +58,18 @@ Upstream radixark/miles `main` `d7f1a421` (2026-09-30, the base of the recon bra
 
 Compare r51 with r50 at the same rollout ids. Start the gates at rollout 66, after the queue first fills.
 
+The lag of a sample is the trainer version minus the version that generated the sample. The weight-version counter starts at 0 in each trainer process (`updater.py`). The startup sync makes version 1, and version 1 trains rollout 60. Thus the trainer version at rollout id r is r - 59 in r50 and in r51. `rollout/weight_version/*` holds the oldest version of each training sample, so:
+
+- lag of the mean = (r - 59) - `rollout/weight_version/mean`
+- lag of the oldest sample = (r - 59) - `rollout/weight_version/min`
+- cross-check: `rollout/off_policy_round/mean` - 60. This metric uses the mean version of the turns of each sample, over all groups taken from the queue, and adds the start rollout 60.
+
+`rollout/weight_version/max` - `rollout/weight_version/mean` is not a lag. It is the spread inside one batch. The queue is FIFO (first in, first out), so a longer wait in the queue moves `min`, `mean` and `max` by the same amount, and the spread stays the same.
+
 | Question | Signal | Gate |
 | --- | --- | --- |
 | The cap holds | startup log line; `rollout/queue_depth_at_start` | `maxsize=64` in the trainer log; queue depth 64 or less at every rollout |
-| Fresher groups | `rollout/weight_version/max` - `rollout/weight_version/mean`; `rollout/weight_version/min` | lag of the mean at most 3 versions (r47 at rollout 63: 9 - 3.1 = 5.9); lag of the min less than r50 |
+| Fresher groups | lag of the mean and lag of the oldest sample (definitions above) | lag of the mean at most 3 versions; lag of the oldest sample less than r50. r47 at rollout 63, trainer on version 10: mean 10 - 3.1 = 6.9, oldest 10 - 1 = 9 |
 | Same throughput | `perf/rollout_time`, `rollout/queue_depth_at_start` | the trainer does not wait: queue depth 32 or more at most rollouts, `perf/rollout_time` within 10% of r50 |
 | Same learning | `train/train_rollout_logprob_abs_diff`, `train/grad_norm`, `rollout/group_metrics/reward.mean` | log-prob diff at or below r50 (r48 rose from 0.033 to 0.049 on a stale queue); grad norm and reward within r50's range |
 
@@ -100,3 +108,4 @@ Compare r51 with r50 at the same rollout ids. Start the gates at rollout 66, aft
 - miles `arpit-r51-queue-cap` `2566c00328` (`miles_plugins/arena/nats_arena/nats_rollout.py`, `_output_queue_groups`).
 - Base run files: `arpit-recon-20261001:training-runs/harbor-rl-glm53-flash/guparpit-agentic-debt-v3/`.
 - r47 queue and version numbers: the `guparpit-agentic-debt-v1` header of `miles-config.yaml`.
+- Lag: `miles/backends/training_utils/weight_update/updater.py` (the version counter), `miles_plugins/arena/train_async_arena.py` (the startup sync), `miles_plugins/arena/rollout_metrics.py` (`compute_weight_version_metrics`, `compute_off_policy_round_metrics`).

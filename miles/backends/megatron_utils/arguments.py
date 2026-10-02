@@ -54,6 +54,8 @@ def set_default_megatron_args(args):
 
     if not hasattr(args, "miles_dsa_topk_backend"):
         args.miles_dsa_topk_backend = "torch"
+    if not hasattr(args, "miles_dsa_sparse_attention_forward_backend"):
+        args.miles_dsa_sparse_attention_forward_backend = "tilelang"
 
     if is_dsv4_model(args):
         normalize_dsv4_args(args)

@@ -454,6 +454,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Top-k backend for Miles DSA indexer.",
             )
             parser.add_argument(
+                "--miles-dsa-sparse-attention-forward-backend",
+                type=str,
+                choices=["tilelang", "flash_mla"],
+                default="tilelang",
+                help=(
+                    "Forward kernel of the Miles DSA sparse attention (GLM-5, GLM-5.3-Flash, DeepSeek-V4); "
+                    "the value is passed as forward_backend to miles.kernels.attention.dsa.sparse_attention. "
+                    "'tilelang' (default) is the TileLang kernel. 'flash_mla' is FlashMLA's sparse prefill "
+                    "kernel; it needs the flash_mla package, SM90 or SM100, d_v 512, one latent group and "
+                    "at most 128 query heads per rank. The backward is the TileLang kernel for both."
+                ),
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,

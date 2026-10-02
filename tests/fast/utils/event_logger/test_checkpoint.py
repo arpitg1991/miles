@@ -1,5 +1,7 @@
 """Tests for miles.utils.audit_utils.event_logger.checkpoint."""
 
+import os
+import shutil
 from argparse import Namespace
 from pathlib import Path
 
@@ -76,6 +78,68 @@ class TestSnapshotRestoreRoundtrip:
         event_logger_checkpoint.snapshot(_args(event_dir=events, save=ckpt), iteration=1)
 
         assert (ckpt / "iter_0000001" / "debug_events" / "main.jsonl").read_text() == "v2\n"
+
+
+# Linux kernel ENOTSUPP; the errno module has no name for it.
+ENOTSUPP = 524
+S3_FILES_XATTR = "user.s3files.status;<arbitrary>"
+
+
+def _write_event_tree(root: Path) -> None:
+    files = {
+        "main.jsonl": b'{"rollout_id": 68}\n',
+        "actor_cell00000_rank00040.jsonl": b'{"rank": 40}\n' * 1000,
+        "nested/worker_manager.jsonl": b"",
+    }
+    for name, content in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(content)
+    (root / "empty").mkdir()
+
+
+def _read_tree(root: Path) -> dict[str, bytes | None]:
+    return {str(p.relative_to(root)): None if p.is_dir() else p.read_bytes() for p in root.rglob("*")}
+
+
+class TestS3FilesMount:
+    """S3 Files lists an xattr on every file and directory and rejects a copy of it with errno 524 (ENOTSUPP)."""
+
+    @pytest.fixture
+    def s3_files_xattr(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _reject(path: object, *args: object, **kwargs: object) -> None:
+            raise OSError(ENOTSUPP, os.strerror(ENOTSUPP), path)
+
+        monkeypatch.setattr(os, "listxattr", lambda *args, **kwargs: [S3_FILES_XATTR])
+        monkeypatch.setattr(os, "getxattr", lambda *args, **kwargs: b"")
+        monkeypatch.setattr(os, "setxattr", _reject)
+
+    def test_snapshot_copies_every_file(self, tmp_path: Path, s3_files_xattr: None) -> None:
+        """The run must not die at its first checkpoint save, as four runs did at iteration 69."""
+        events = tmp_path / "events"
+        events.mkdir()
+        _write_event_tree(events)
+        with pytest.raises(shutil.Error, match="Errno 524"):
+            shutil.copytree(events, tmp_path / "copytree")
+
+        event_logger_checkpoint.snapshot(_args(event_dir=events, save=tmp_path / "ckpt"), iteration=69)
+
+        snapshot = tmp_path / "ckpt" / "iter_0000069" / "debug_events"
+        assert _read_tree(snapshot) == _read_tree(events)
+
+    def test_restore_copies_every_file(self, tmp_path: Path, s3_files_xattr: None) -> None:
+        """A resumed run gets back exactly the snapshotted events."""
+        ckpt = tmp_path / "ckpt"
+        snapshot = ckpt / "iter_0000069" / "debug_events"
+        snapshot.mkdir(parents=True)
+        _write_event_tree(snapshot)
+        _write_tracker(ckpt, "69")
+        events = tmp_path / "events"
+        events.mkdir()
+        (events / "main.jsonl").write_bytes(b"rewound-future\n")
+
+        event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt))
+
+        assert _read_tree(events) == _read_tree(snapshot)
 
 
 class TestNoOpCases:

@@ -25,7 +25,7 @@ def snapshot(args: Namespace, iteration: int) -> None:
     if dst.exists():
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst)
+    _copy_file_contents(src, dst)
     logger.info("Snapshotted event dir %s -> %s", src, dst)
 
 
@@ -46,7 +46,7 @@ def restore(args: Namespace) -> None:
     if dst.exists():
         trash = _move_aside(dst)
         logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
-    shutil.copytree(src, dst)
+    _copy_file_contents(src, dst)
     logger.info("Restored event dir %s <- %s", dst, src)
 
 
@@ -79,6 +79,17 @@ def _move_aside(dst: Path) -> Path:
     trash = dst.parent / f".trash_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     dst.rename(trash)
     return trash
+
+
+def _copy_file_contents(src: Path, dst: Path) -> None:
+    # Copy bytes only. shutil.copytree also copies the xattrs of every file and directory, and S3 Files
+    # lists a `user.s3files.status` xattr on each of them that it refuses to set with errno 524 (ENOTSUPP).
+    dst.mkdir(parents=True)
+    for entry in src.iterdir():
+        if entry.is_dir():
+            _copy_file_contents(entry, dst / entry.name)
+        else:
+            shutil.copyfile(entry, dst / entry.name)
 
 
 def _snapshot_dir(checkpoint_root: Path, iteration: int) -> Path:

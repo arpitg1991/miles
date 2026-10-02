@@ -1,0 +1,25 @@
+# kdatp-prof-20261003q. Image miles-glm53-r19-20261003a (miles a56d9a9c: arpit-glm-53 + arpit-dsa-3608 + query-parallel DSA).
+# Train-only timing test on replayed T2 rows (r45 sample summary rollout 43 + r43 token files), dp 2, the r47 layout.
+# Dataset of record, NOT used here: lakefs://arena-inspect/main/internal/agentic-debt-r3/agentic-debt-766/.
+# replay_rollout 40: each step loads data/t2/rollout_40.pt, the rows of the 778.6 s r17 control (20260929a) and of the
+# 588.9 s r18dsa control (20260930f base, the same code as this image with the flag off).
+- name: qp             # the flag alone on the r47 layout (TP8 SP, PP4 11/11/11/12, EP16)
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 4800
+  set: {glm5_next_dsa_qp: true}
+- name: qp-ep8         # plus the expert groups inside one node (20260930f ep8: 470.7 s)
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 4200
+  set: {glm5_next_dsa_qp: true, expert_model_parallel_size: 8}
+- name: qp-ep8-pp12    # plus the stage split 12/11/11/11: with the DSA cost gone, the last stage (12 layers + head) is the longest
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 4200
+  set: {glm5_next_dsa_qp: true, expert_model_parallel_size: 8, decoder_first_pipeline_num_layers: 12, decoder_last_pipeline_num_layers: 11}
+- name: base           # same-job control: the flag off (the r18dsa path); numerics reference for grad_norm and the log-prob gap
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 4200
+  set: {}

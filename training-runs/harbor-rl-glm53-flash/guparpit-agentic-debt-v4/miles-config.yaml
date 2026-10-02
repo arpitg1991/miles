@@ -647,9 +647,13 @@ arena_inflight_multiplier: 4  # guparpit-agentic-debt-v1 2026-10-01: 10 -> 4 (st
 # key): the worker output queue holds 64 finished groups, not the default 320
 # (10 x global_batch_size 256 / n_samples_per_prompt 8). The worker put blocks
 # on a full queue, so the cap slows the gyms and drops no group. The in-flight
-# cap above limits only the dispatched tasks. Thus r47 held a full queue of 320
-# finished groups (10 rollouts of 32) at rollouts 55..64, and a group waited up
-# to 10 rollouts in the queue. At 64, a group waits at most 2 rollouts there.
+# cap above limits only the dispatched tasks. The put also stops the whole
+# worker loop (no fetch, no ack, no publish), so the 128 finished in-flight
+# results wait unfetched in JetStream. A group thus waits about
+# (64 + 128) / D steps before the drain, with D the groups that one step takes
+# from the queue, against (320 + 128) / D at the default. The drain during the
+# previous train step adds 1 version. Expected lag of the mean: 7.0 (default
+# 15.0) at D 32, 4.0 (default 7.9) at D 65.
 # 64 is 2 x rollout_batch_size, the upstream fully-async default
 # (--async-data-buffer-capacity-factor 2.0), which the NATS path does not read.
 arena_output_queue_groups: 64

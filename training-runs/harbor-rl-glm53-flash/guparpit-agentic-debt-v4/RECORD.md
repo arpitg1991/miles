@@ -39,7 +39,17 @@ r51 is r50 with one more key. EP8 stays.
 | `expert_model_parallel_size` | 8 | 8 |
 | `arena_inflight_multiplier` | 4 (128 groups in flight) | 4 |
 
-The worker output queue holds finished groups until the trainer takes them. Its capacity was `10 * global_batch_size // n_samples_per_prompt` groups, 320 here. The worker `put` blocks on a full queue, so the cap is back-pressure: it slows the gyms and drops no group. `arena_inflight_multiplier` limits only the dispatched tasks. Thus r47 held a full queue of 320 groups at rollouts 55 to 64 (10 rollouts of 32), and r47 and r48 trained on groups about 10 to 14 weight versions old. At 64 groups, a finished group waits at most 2 rollouts in the queue.
+The worker output queue holds finished groups until the trainer takes them. Its capacity was `10 * global_batch_size // n_samples_per_prompt` groups, 320 here. The worker `put` blocks on a full queue, so the cap is back-pressure: it slows the gyms and drops no group. `arena_inflight_multiplier` limits only the dispatched tasks.
+
+The queue is not the only wait. `_process_group` (`nats_rollout.py`) calls the blocking `queue.Queue.put` inside the asyncio worker loop. A full queue thus stops the whole loop: no fetch, no ack, no publish. The gyms still finish the in-flight tasks (`arena_inflight_multiplier` 4 x 32 = 128 groups), and their results wait unfetched in the JetStream results stream. `in_flight` drops only at a fetch, so no new task starts. When the trainer is the bottleneck, a group waits about (cap + in-flight) / D steps from dispatch to drain. D is the number of groups that one step takes from the queue (`rollout/group_metrics/n_groups`). D is more than 32 when dynamic sampling drops groups. The 128 / D part does not depend on the episode length: the in-flight stage holds 128 groups and passes D groups per step (Little's law). The drain of rollout r runs while rollout r - 1 trains, and that adds 1 version. The expected lag of the mean is thus:
+
+| D | r51: (64 + 128) / D + 1 | r50: (320 + 128) / D + 1 |
+| --- | --- | --- |
+| 32 (no group dropped) | 7.0 | 15.0 |
+| 52 (r47 rollout 11, 38.5% dropped) | 4.7 | 9.6 |
+| 65 (r45, 51% dropped) | 4.0 | 7.9 |
+
+The cap removes (320 - 64) / D versions of lag: 8 at D 32, 3.9 at D 65. The in-flight term stays, and `arena_inflight_multiplier` is its lever. r47 is not at this steady state in the baseline below: it had 320 groups in flight (multiplier 10), and its queue was full only from rollout 62 on (the `guparpit-agentic-debt-v1` record).
 
 The image commit `2566c00328` is the r50 image commit `da93977ba8` plus `--arena-output-queue-groups` (YAML `arena_output_queue_groups`). The default (None) keeps the 320-group formula. A value less than `rollout_batch_size` stops the worker at startup. At startup, the worker logs `NATSRolloutWorker output queue: maxsize=64 groups (--arena-output-queue-groups=64)`.
 
@@ -69,7 +79,7 @@ The lag of a sample is the trainer version minus the version that generated the 
 | Question | Signal | Gate |
 | --- | --- | --- |
 | The cap holds | startup log line; `rollout/queue_depth_at_start` | `maxsize=64` in the trainer log; queue depth 64 or less at every rollout |
-| Fresher groups | lag of the mean and lag of the oldest sample (definitions above) | lag of the mean at most 3 versions; lag of the oldest sample less than r50. r47 at rollout 63, trainer on version 10: mean 10 - 3.1 = 6.9, oldest 10 - 1 = 9 |
+| Fresher groups | lag of the mean and lag of the oldest sample (definitions above) | over rollouts 66 to 75: the mean lag of the mean at most (64 + 128) / D + 1, with D the mean `rollout/group_metrics/n_groups` over the same rollouts (4.0 at D 65, 7.0 at D 32); the mean lag of the mean and of the oldest sample below r50. r47 at rollout 63, trainer on version 10: mean 10 - 3.1 = 6.9, oldest 10 - 1 = 9 |
 | Same throughput | `perf/rollout_time`, `rollout/queue_depth_at_start` | the trainer does not wait: queue depth 32 or more at most rollouts, `perf/rollout_time` within 10% of r50 |
 | Same learning | `train/train_rollout_logprob_abs_diff`, `train/grad_norm`, `rollout/group_metrics/reward.mean` | log-prob diff at or below r50 (r48 rose from 0.033 to 0.049 on a stale queue); grad norm and reward within r50's range |
 
@@ -101,11 +111,11 @@ The lag of a sample is the trainer version minus the version that generated the 
 
 ## Follow-ups
 
-- If the lag of the min stays high, the cause is long in-flight episodes, not the queue. Then evaluate a staleness filter like upstream `--max-weight-staleness`.
+- While `put` blocks, the whole worker loop stops, and the finished in-flight results wait unfetched in JetStream. That wait is the 128 / D term of the lag, and the cap does not remove it. If the lag stays too high at the cap, lower `arena_inflight_multiplier`, or evaluate a staleness filter like upstream `--max-weight-staleness`.
 
 ## Sources
 
-- miles `arpit-r51-queue-cap` `2566c00328` (`miles_plugins/arena/nats_arena/nats_rollout.py`, `_output_queue_groups`).
+- miles `arpit-r51-queue-cap` `2566c00328` (`miles_plugins/arena/nats_arena/nats_rollout.py`: `_output_queue_groups`; the blocking `put` in `_process_group`; the `in_flight` count in `_worker_loop`).
 - Base run files: `arpit-recon-20261001:training-runs/harbor-rl-glm53-flash/guparpit-agentic-debt-v3/`.
 - r47 queue and version numbers: the `guparpit-agentic-debt-v1` header of `miles-config.yaml`.
 - Lag: `miles/backends/training_utils/weight_update/updater.py` (the version counter), `miles_plugins/arena/train_async_arena.py` (the startup sync), `miles_plugins/arena/rollout_metrics.py` (`compute_weight_version_metrics`, `compute_off_policy_round_metrics`).

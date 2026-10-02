@@ -42,6 +42,7 @@ from miles_plugins.arena.nats_arena.nats_rollout import (
     _pad_rows_to_dp_alignment,
     _result_to_episodes_full_trajectory,
     _result_to_samples_full_trajectory,
+    _stop_metrics,
     _train_segments_mode,
     _training_steps,
     generate_rollout,
@@ -279,12 +280,97 @@ def test_slow_path_sample_is_segment_zero_of_one(monkeypatch):
     # fast-path episode, so a consumer can index metadata["segment"] everywhere.
     monkeypatch.setattr(mask_utils, "MultiTurnLossMaskGenerator", _StubMaskGenerator)
     (s,) = _result_to_samples_full_trajectory(
-        _result([{"reward": 1.0, "messages": [{"role": "user", "content": "x"}]}]),
+        _result([{"reward": 1.0, "messages": [{"role": "user", "content": "x"}], "masked_output_tokens": 5}]),
         tokenizer=None,
         args=_args("all"),
     )
     assert s.response_length == 6  # stub mask: 10 tokens, 6-token response
     assert (s.metadata["segment"], s.metadata["n_segments"]) == (0, 1)
+    # The one slow-path sample covers the whole trajectory, so it carries the totals.
+    assert (s.metadata["masked_output_tokens"], s.metadata["episode_masked_output_tokens"]) == (5, 5)
+
+
+# ===========================================================================
+# 1b. Gym counters: per segment on each Sample, per episode in _stop_metrics
+# ===========================================================================
+
+
+def _counted(step: dict, clipped: int, masked: int) -> dict:
+    """A step with the per-segment counters that the Harbor gym sends (AREnATasks ADR-0066)."""
+    return {**step, "truncated_generates": clipped, "masked_output_tokens": masked}
+
+
+def _counted_episodes() -> list[dict]:
+    """Three trajectories; the totals are the gym sums over the steps."""
+    return [
+        # Only the middle segment had a masked call.
+        _traj(
+            [
+                _counted(_segment(_SEG_A, tag=1), 0, 0),
+                _counted(_segment(_SEG_B, tag=2), 1, 16384),
+                _counted(_step(_FINAL, tag=9), 1, 7),
+            ],
+            truncated_turns=2,
+            masked_output_tokens=16391,
+        ),
+        # The first segment has an all-zero loss_mask and leaves the episode.
+        _traj(
+            [_counted(_segment([0, 0, 0], tag=3), 1, 3), _counted(_step(_FINAL, tag=9), 0, 0)],
+            truncated_turns=1,
+            masked_output_tokens=3,
+        ),
+        _traj([_counted(_step(_FINAL, tag=9), 0, 0)]),
+    ]
+
+
+def test_each_segment_carries_its_own_gym_counters():
+    episodes = _result_to_episodes_full_trajectory(_result(_counted_episodes()), tokenizer=None, args=_args("all"))
+    a, b, f = episodes[0]
+    assert [s.metadata["truncated_turns"] for s in (a, b, f)] == [0, 1, 1]
+    assert [s.metadata["masked_output_tokens"] for s in (a, b, f)] == [0, 16384, 7]
+    assert all(s.metadata["episode_truncated_turns"] == 2 for s in (a, b, f))
+    assert all(s.metadata["episode_masked_output_tokens"] == 16391 for s in (a, b, f))
+    # The dropped first segment takes its count along; the episode total stays.
+    (kept,) = episodes[1]
+    assert (kept.metadata["masked_output_tokens"], kept.metadata["episode_masked_output_tokens"]) == (0, 3)
+
+
+@pytest.mark.parametrize("mode", ["all", "final"])
+def test_stop_metrics_keep_the_episode_totals(mode):
+    worker = _make_worker(_make_args(arena_train_segments=mode))
+    worker._process_group("t.g0.", [_result(_counted_episodes())])
+    groups = _drain(worker)
+    # The value before per-segment counters: each real episode read its trajectory
+    # total once, and the pad (N = 4, 3 real episodes) is no stop.
+    metrics = _stop_metrics(groups)
+    assert metrics["rollout/clipped_turns"] == pytest.approx((2 + 1 + 0) / 3)
+    assert metrics["rollout/masked_output_tokens"] == pytest.approx((16391 + 3 + 0) / 3)
+
+
+def test_gym_with_trajectory_totals_only():
+    # No Harbor gym image sends this shape: each image with a total also sends the
+    # step counters (AREnATasks 1b07eda, ADR-0066). The test pins the fallback only.
+    one_step = _traj([_step(_FINAL, tag=9)], truncated_turns=2, masked_output_tokens=40)
+    segmented = _traj(
+        [{k: v for k, v in st.items() if k != "truncated_generates"} for st in _three_segments()],
+        truncated_turns=2,
+        masked_output_tokens=40,
+    )
+    episodes = _result_to_episodes_full_trajectory(_result([one_step, segmented]), tokenizer=None, args=_args("all"))
+    # One step: the total is the counter of that step.
+    (s,) = episodes[0]
+    assert (s.metadata["truncated_turns"], s.metadata["masked_output_tokens"]) == (2, 40)
+    # Several steps without a split: each segment reads 0, and the episode keeps the total.
+    assert [(s.metadata["truncated_turns"], s.metadata["masked_output_tokens"]) for s in episodes[1]] == [(0, 0)] * 3
+    assert all(s.metadata["episode_masked_output_tokens"] == 40 for s in episodes[1])
+    for k, episode in enumerate(episodes):
+        for s in episode:
+            s.group_index, s.rollout_id = 0, k
+    assert _stop_metrics([[s for e in episodes for s in e]]) == {
+        "rollout/stop/unknown": 1.0,
+        "rollout/clipped_turns": 2.0,
+        "rollout/masked_output_tokens": 40.0,
+    }
 
 
 # ===========================================================================
@@ -700,6 +786,24 @@ def test_pad_rows_to_dp_alignment_pads_odd_rows_with_shortest_kept_sibling(caplo
     (record,) = caplog.records
     assert record.levelno == logging.WARNING
     assert "9 rows + 1 zero-loss pad(s) -> multiple of 2" in record.getMessage()
+
+
+def test_dp_pad_has_zero_segment_counters_and_keeps_the_episode_totals():
+    groups = _nine_rows()
+    src = groups[3][0]
+    src.metadata.update(
+        truncated_turns=1, masked_output_tokens=7, episode_truncated_turns=2, episode_masked_output_tokens=16391
+    )
+    before = _stop_metrics(groups)
+    assert _pad_rows_to_dp_alignment(groups, _dp2_args()) == 1
+    pad = groups[3][-1]
+    assert pad.metadata["mode"] == "dp_pad"
+    # The pad has no gym step behind it, so it claims no clipped turn and no masked token.
+    assert (pad.metadata["truncated_turns"], pad.metadata["masked_output_tokens"]) == (0, 0)
+    assert (src.metadata["truncated_turns"], src.metadata["masked_output_tokens"]) == (1, 7)
+    # The episode totals stay, and the per-episode metrics do not change.
+    assert (pad.metadata["episode_truncated_turns"], pad.metadata["episode_masked_output_tokens"]) == (2, 16391)
+    assert _stop_metrics(groups) == before
 
 
 def test_pad_rows_to_dp_alignment_even_rows_is_a_noop(caplog):

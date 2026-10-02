@@ -464,8 +464,8 @@ class _EpisodeContext:
     """Trajectory-level inputs of the per-step Sample conversion.
 
     One instance per trajectory. Every segment of a multi-segment episode is
-    converted against the same context, so reward and the stop telemetry stay
-    EPISODE properties (ADR-0011).
+    converted against the same context, so reward, ``agent_stop_reason`` and
+    the trajectory counter totals stay EPISODE properties (ADR-0011).
     """
 
     task_id: str
@@ -474,10 +474,13 @@ class _EpisodeContext:
     # Telemetry only (rollout/stop/<reason>, rollout/clipped_turns,
     # rollout/masked_output_tokens). The gym masks a clipped or empty generate
     # in loss_mask itself and its verifier ran on every trajectory it ships,
-    # so no stop reason removes a sample here.
+    # so no stop reason removes a sample here. The two counters are the
+    # trajectory totals, which the gym sums over its steps.
     agent_stop_reason: str
     truncated_turns: int
     masked_output_tokens: int
+    # The trajectory has one step, so the totals are also the counters of that step.
+    one_step: bool
     max_ctx: int | None
     args: Any
     # The gym saw an SGLang weight version on at least one call of the
@@ -486,8 +489,33 @@ class _EpisodeContext:
     reports_weight_versions: bool
 
 
-def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | None) -> Sample:
-    """Stamp the trajectory-level fields shared by the fast and slow paths."""
+def _step_counter(step: dict, key: str, *, total: int, one_step: bool) -> int:
+    """Return the gym counter ``key`` of one step (one segment).
+
+    Each Harbor gym step carries ``truncated_generates``. AREnATasks 1b07eda
+    (2026-09-14) added their sum as the trajectory ``truncated_turns``.
+    AREnATasks ADR-0066 (2026-09-23) added ``masked_output_tokens`` on each
+    step and as the trajectory sum. A step without the counter reads the
+    trajectory total when the trajectory has one step, and 0 otherwise.
+    """
+    value = step.get(key)
+    if value is None:
+        # ponytail: each Harbor gym image that sends a total also sends the
+        # step counters, so this 0 hides no count. A gym with a total only
+        # loses the split of a multi-step trajectory; add the step counters there.
+        return total if one_step else 0
+    return int(value)
+
+
+def _finish_sample(
+    s: Sample, ctx: _EpisodeContext, *, removal_reason: str | None, truncated_turns: int, masked_output_tokens: int
+) -> Sample:
+    """Stamp the metadata shared by the fast and slow paths.
+
+    ``truncated_turns`` and ``masked_output_tokens`` are the counters of this
+    sample only. The ``episode_`` keys hold the trajectory totals, which
+    ``_stop_metrics`` reads once per episode.
+    """
     # segment / n_segments land on EVERY sample (ADR-0011). The default is a
     # one-sample episode, which is what the slow path emits; the fast path
     # overwrites both for a multi-segment episode.
@@ -497,8 +525,10 @@ def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | Non
         "gym_name": ctx.gym_name,
         "segment": 0,
         "n_segments": 1,
-        "truncated_turns": ctx.truncated_turns,
-        "masked_output_tokens": ctx.masked_output_tokens,
+        "truncated_turns": truncated_turns,
+        "masked_output_tokens": masked_output_tokens,
+        "episode_truncated_turns": ctx.truncated_turns,
+        "episode_masked_output_tokens": ctx.masked_output_tokens,
     }
     # agent_stop_reason feeds rollout/stop/<reason>; removal_reason feeds the
     # per-rollout "Removal reasons" summary and is set only with remove_sample.
@@ -704,7 +734,15 @@ def _step_to_sample(step: dict, ctx: _EpisodeContext) -> Sample:
     if hard_overflow or bad_logprobs:
         s.remove_sample = True
         removal_reason = "bad_logprobs" if bad_logprobs else "context_overflow"
-    s = _finish_sample(s, ctx, removal_reason=removal_reason)
+    s = _finish_sample(
+        s,
+        ctx,
+        removal_reason=removal_reason,
+        truncated_turns=_step_counter(step, "truncated_generates", total=ctx.truncated_turns, one_step=ctx.one_step),
+        masked_output_tokens=_step_counter(
+            step, "masked_output_tokens", total=ctx.masked_output_tokens, one_step=ctx.one_step
+        ),
+    )
     if replay_enabled(args):
         # R3 (ADR-0012): keep only the {path,bytes,sha256} pointer (or the
         # inline base64) while the group waits in the output queue; the
@@ -821,7 +859,14 @@ def _messages_to_sample(messages: list[dict], ctx: _EpisodeContext, tokenizer) -
     if status == Sample.Status.TRUNCATED:
         s.remove_sample = True
         removal_reason = "context_overflow"
-    return _finish_sample(s, ctx, removal_reason=removal_reason)
+    # The one slow-path sample covers the whole trajectory.
+    return _finish_sample(
+        s,
+        ctx,
+        removal_reason=removal_reason,
+        truncated_turns=ctx.truncated_turns,
+        masked_output_tokens=ctx.masked_output_tokens,
+    )
 
 
 def _result_to_episodes_full_trajectory(
@@ -890,8 +935,11 @@ def _result_to_episodes_full_trajectory(
         # Stop telemetry (rollout/stop/<reason>, rollout/clipped_turns,
         # rollout/masked_output_tokens). The gym already masked every clipped
         # or empty generate in loss_mask and its verifier ran, so none of these
-        # removes a sample. An older gym image omits the counters, which reads
-        # as 0; ``truncated_spans`` from that image is ignored.
+        # removes a sample. The gym sends ``truncated_turns`` from AREnATasks
+        # 1b07eda (2026-09-14) and ``masked_output_tokens`` from AREnATasks
+        # ADR-0066 (2026-09-23), each only when non-zero. A missing counter
+        # reads as 0. The ``truncated_spans`` of an image before ADR-0066 is
+        # ignored.
         agent_stop_reason = str(traj.get("agent_stop_reason") or "").lower()
         ctx = _EpisodeContext(
             task_id=task_id,
@@ -900,6 +948,7 @@ def _result_to_episodes_full_trajectory(
             agent_stop_reason=agent_stop_reason,
             truncated_turns=int(traj.get("truncated_turns") or 0),
             masked_output_tokens=int(traj.get("masked_output_tokens") or 0),
+            one_step=len(steps) == 1,
             max_ctx=max_ctx,
             args=args,
             reports_weight_versions=_reports_weight_versions(traj),
@@ -1299,9 +1348,12 @@ def _stop_metrics(all_data: list[list[Sample]]) -> dict[str, float]:
     ``rollout/stop/<reason>`` is the fraction of episodes per lowercase
     ``agent_stop_reason`` (``unknown`` when the gym sent none).
     ``rollout/clipped_turns`` and ``rollout/masked_output_tokens`` are the means
-    of the gym's per-trajectory counters, 0 on an older gym image. A failed-slot
-    pad copies a sibling's tokens and has no agent loop behind it, so it is not
-    a stop; ``rollout/failed_frac`` counts it.
+    of the gym's per-trajectory counters. The first is 0 on a gym image before
+    AREnATasks 1b07eda (2026-09-14). The second is 0 on an image before
+    AREnATasks ADR-0066 (2026-09-23). They read the ``episode_`` keys, because
+    the plain keys count one segment only. A failed-slot pad copies a sibling's
+    tokens and has no agent loop behind it, so it is not a stop;
+    ``rollout/failed_frac`` counts it.
     """
     reps = [s for s in _episode_representatives(all_data) if (s.metadata or {}).get("mode") != "failed"]
     if not reps:
@@ -1312,7 +1364,10 @@ def _stop_metrics(all_data: list[list[Sample]]) -> dict[str, float]:
         reason = str((s.metadata or {}).get("agent_stop_reason") or "unknown").lower()
         counts[reason] = counts.get(reason, 0) + 1
     out = {f"rollout/stop/{reason}": c / n for reason, c in counts.items()}
-    counters = {"rollout/clipped_turns": "truncated_turns", "rollout/masked_output_tokens": "masked_output_tokens"}
+    counters = {
+        "rollout/clipped_turns": "episode_truncated_turns",
+        "rollout/masked_output_tokens": "episode_masked_output_tokens",
+    }
     for key, field in counters.items():
         out[key] = sum(int((s.metadata or {}).get(field) or 0) for s in reps) / n
     return out
@@ -2415,7 +2470,15 @@ def _pad_rows_to_dp_alignment(data: list[list[Sample]], args: Any) -> int:
         # copied TRUNCATED inflates rollout/truncated_ratio and train_data["truncated"].
         pad.status = Sample.Status.COMPLETED
         pad.remove_sample = False
-        pad.metadata = {**(src.metadata or {}), "mode": "dp_pad", "segment": len(episode) + k}
+        # The pad has no gym step behind it, so its segment counters are 0. The
+        # episode_ keys stay, because _stop_metrics reads them once per episode.
+        pad.metadata = {
+            **(src.metadata or {}),
+            "mode": "dp_pad",
+            "segment": len(episode) + k,
+            "truncated_turns": 0,
+            "masked_output_tokens": 0,
+        }
         group.append(pad)
     logger.warning(
         "DP alignment: %d rows + %d zero-loss pad(s) -> multiple of %d; "

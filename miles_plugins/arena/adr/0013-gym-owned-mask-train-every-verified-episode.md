@@ -16,6 +16,8 @@ ADR-0011 (one `Sample` per segment)
 **Pairs with:** AREnATasks ADR-0066 (the gym side of this contract, same date)
 **Amended by:** ADR-0015 (section 6: the Vulcan cap values, and their
 source in a gym image with AREnATasks ADR-0072)
+**Amended:** 2026-10-02 (section 5): each sample carries the counters of
+its own segment, and the `episode_` keys carry the trajectory totals.
 
 ## Summary
 
@@ -162,6 +164,24 @@ real trajectory. Pads with `mode == "failed"` are excluded.
 `Sample.metadata` on every sample. Read `rollout/stop/*` to explain why
 episodes end. NEVER read `rollout/truncated_ratio` for that purpose; it
 counts hard overflows only.
+
+Amendment 2026-10-02: the two keys above hold the counters of the
+sample's own segment. They come from the step fields `truncated_generates`
+and `masked_output_tokens`, which the gym sends on each step. The keys
+`episode_truncated_turns` and `episode_masked_output_tokens` hold the
+trajectory totals on every sample. `_stop_metrics` reads the `episode_`
+keys on one sample per episode, so both metrics keep their episode
+meaning and their values. Before this date, each segment carried the
+trajectory totals. A live check found 16,384 masked tokens on a segment
+without a masked call. A step without a counter reads the trajectory
+total when the trajectory has one step, and 0 when it has more steps.
+Each Harbor gym step carries `truncated_generates`. AREnATasks 1b07eda
+(2026-09-14) added their sum as the trajectory `truncated_turns`, before
+ADR-0066. ADR-0066 added `masked_output_tokens` on each step and as the
+trajectory sum. Thus each Harbor gym image that sends a total also sends
+the step counters. A DP-alignment pad (`mode == "dp_pad"`) has no gym
+step, so its two segment counters are 0. The pad keeps the `episode_`
+keys of its source.
 
 ### 6. Contract with the gym
 

@@ -16,8 +16,9 @@ Kernels (variants):
 Index sets:
 
 - ``causal``: ``causal_indices`` of the PR bench ``tests/manual/bench_dsa.py``.
-- ``kpool``: ``build_pooled_keys`` and ``kpool_select_topk`` of ``glm5_next/ops/kpool_indexer.py``
-  (index_topk 2048, kpool 4, 32 index heads of 128) on random index tensors, one sequence per row.
+- ``kpool``: ``build_pooled_keys`` of ``miles/kernels/attention/dsa/kpool.py`` and
+  ``kpool_select_topk`` of ``glm5_next/ops/kpool_indexer.py`` (index_topk 2048, kpool 4,
+  32 index heads of 128) on random index tensors, one sequence per row.
 
 Per case and variant: 2 warm-up and 5 timed calls. Each call records CUDA events before the
 forward, between the forward and the backward, and after the backward (``torch.autograd.grad``
@@ -129,7 +130,8 @@ def load_kernels():
 
     from miles.kernels.attention.dsa import sparse_attention
     from miles.kernels.attention.dsa.sparse_attention import flash_mla_sparse_fwd
-    from miles_plugins.models.glm5_next.ops.kpool_indexer import build_pooled_keys, kpool_select_topk, pool_boundaries
+    from miles.kernels.attention.dsa.kpool import build_pooled_keys, pool_boundaries
+    from miles_plugins.models.glm5_next.ops.kpool_indexer import kpool_select_topk
 
     spec = importlib.util.spec_from_file_location("bench_dsa", REPO / "tests/manual/bench_dsa.py")
     bench = importlib.util.module_from_spec(spec)

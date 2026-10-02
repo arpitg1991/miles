@@ -37,9 +37,10 @@ index width 2,112, `d_v` 512, and the model softmax scale `256**-0.5`
 
 - `causal`: `causal_indices` of `tests/manual/bench_dsa.py`, to compare with
   the PR tables.
-- `kpool`: `build_pooled_keys` and `kpool_select_topk` of
-  `glm5_next/ops/kpool_indexer.py` (index top-k 2,048, kpool 4, 32 index heads
-  of 128), one sequence per row. This is the real pool layout.
+- `kpool`: `build_pooled_keys` of `miles/kernels/attention/dsa/kpool.py` and
+  `kpool_select_topk` of `glm5_next/ops/kpool_indexer.py` (index top-k 2,048,
+  kpool 4, 32 index heads of 128), one sequence per row. This is the real pool
+  layout.
 - The seed depends on the indices and the length only. So the 512 and 576
   cases get the same values, and `results.md` shows if the zero tail changes
   any bit.

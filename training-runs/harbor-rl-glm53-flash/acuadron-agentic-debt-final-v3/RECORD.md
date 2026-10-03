@@ -15,7 +15,7 @@
 **Base:** `acuadron-agentic-debt-final-v2`
 <!-- gen-workflow:end -->
 **Argo workflow:** `acuadron-agentic-debt-final-v3-gblzd`
-**W&B run:** (set at launch)
+**W&B run:** (group `acuadron-agentic-debt-final-v3` in `agentic-debt`)
 **Task pin:** `7af3bbbece69` (every manifest row)
 **Image digests:** gym `sha256:57f0ed616892c50f727247a7b6eedf972bd35b98e70bd0ab4283f570554cdd0d`, trainer `sha256:b814139f278672d40a6e645b2a98b1d241f48020c2a8a186379504ac5f8f1762`
 **Trainer config deltas vs base:** trainer image r17 (`4716a367a`) -> r19 (`a56d9a9c`: arpit-glm-53 + the PR #3608 DSA kernel backport + ADR-0018); `glm5_next_dsa_qp` unset -> `true`; `expert_model_parallel_size` 16 -> 8; `decoder_first_pipeline_num_layers` 11 -> 12; `decoder_last_pipeline_num_layers` 12 -> 11; `experiment_name`, `project_name`, `arena_sample_summary_dir` renamed. Workflow: `experiment-name`, `trainer-image`, `miles-config` only.
@@ -50,3 +50,8 @@ on the T2 rows; see the table in `examples/arena/harbor-rl-glm53-flash/kdatp/qp-
 | UTC | Event |
 | --- | --- |
 | 2026-10-03 01:38 | Launched as `acuadron-agentic-debt-final-v3-gblzd` after final-v2 was stopped at 01:30 (its step 0: actor_train 4,229 s cold at DP 4, 2,864 rows). |
+| 2026-10-03 01:59 | NATS connected; 48 pods, 288 gyms. |
+| 2026-10-03 02:52 | Rollout 0 complete: 64 groups, 2,176 rows, 42.1M padded tokens (3,225 s). |
+| 2026-10-03 03:40 | Step 0 (cold: fresh kernel caches): `actor_train` 2,779 s; 142 GB used on the pp0 GPUs, no OOM; `train_rollout_logprob_abs_diff` 0.0217. |
+| 2026-10-03 03:56 | Step 1: 2,840 rows, 69.4M padded tokens (17.3M per DP rank), `actor_train` 725 s (41.8 us/token/rank), `update_weights` 24 s, step 905 s; log-prob gap 0.0226 after the first EP8 weight sync (final-v1 r17 at step 1: 0.0252). |
+| 2026-10-03 04:11 | Step 2: 2,832 rows, 82.4M padded tokens (20.6M per DP rank), `actor_train` 691 s (33.6 us/token/rank; final-v1 r17 step 2: 108 us/token/rank), step 941 s of which `train_wait` 249 s (data path 177 s). |

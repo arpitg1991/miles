@@ -78,7 +78,7 @@ keys and the weight sync do not change. Release image:
 | Kernels alone at 65,536 tokens, one rank: fwd / bwd | 19.9 (FlashMLA) / 322.6 ms; r17 kernels 102.7 / 496.3 ms | 2.3 / 42.3 ms | same; `kdatp/dsa/20260930a` |
 | T2 step (22.3M tokens, 8 nodes, TP8 PP4 EP16 DP2), `actor_train` warm mean | r17 776.9 s; r18dsa 588.9 s | 376.5 s (steps 41-43: 377.3 / 380.9 / 371.2; -51.5% vs r17, -36% vs r18dsa); grad_norm and the log-prob gap track the r18dsa base step by step (0.027294 vs 0.027268 at step 40) | `kdatp/prof/20261003q` |
 | T2 step with EP8 | r17 672.6 s; r18dsa 470.7 s | 259.5 s (steps 41-42: 259.7 / 259.2; -66.6% vs r17, -45% vs r18dsa ep8); torch max allocated 85.6 / 97.6 / 92.1 / 96.8 GiB by stage (r18dsa ep8: 95.7 / 106.9 / 100.9 / 102.4) | same |
-| T2 step with EP8 and the 12/11/11/11 split | - | T2_QP_EP8_PP12_PLACEHOLDER | same |
+| T2 step with EP8 and the 12/11/11/11 split | - | 242.0 s (steps 41-42: 242.6 / 241.3; -68.8% vs r17, 3.2x); same-job control (flag off, the r18dsa path) 581.5 s; torch max allocated 93.6 / 97.4 / 91.9 / 90.9 GiB by stage | same |
 
 ## Consequences
 

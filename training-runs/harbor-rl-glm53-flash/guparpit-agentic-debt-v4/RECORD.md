@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v4 (r51) — r50 with the output queue capped at 64 groups
 
-**Status:** Prepared
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-02
 **Family:** `harbor-rl-glm53-flash`
@@ -14,13 +14,13 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v3`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
+**Argo workflow:** `guparpit-agentic-debt-v4-h9z7m` (to iteration 69), then `guparpit-agentic-debt-v4-8l6jh` (resume, stopped 2026-10-04 17:08Z)
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
 **Image digests:** gym `sha256:57f0ed616892c50f727247a7b6eedf972bd35b98e70bd0ab4283f570554cdd0d`, trainer `sha256:8246fcae103253c75cfad780ad39ee0ea6b1e5c0119a6d7ec916c58c18ae086c`
 **Trainer config deltas vs base:** `arena_output_queue_groups` unset (320 groups) -> 64; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v4`, seeded from r47 `iter_0000059` (2026-10-01 02:51Z)
-**Outcome:** Prepared
+**Outcome:** Retired 2026-10-04 by the user at rollout 221. The queue cap worked on data age (about 7 updates against about 15 for r50), but the length bonus collapsed the run: true reward 0.74 (rollouts 60 to 69) to 0.63 (rollouts 90 to 99) and 0.51 to 0.66 (rollouts 216 to 221), tokens per episode 162K to 12K. It is the control of r53 (`guparpit-agentic-debt-v6`), which runs the same config without the bonus. Last save `iter_219`.
 
 Starts from r47 checkpoint `iter_0000059`: a copy that was made before this record, with a sidecar without `wandb_run_id`. miles resumes at rollout 60. Sibling arms: r50 (`guparpit-agentic-debt-v3`, r49 plus EP8) and r52 (`guparpit-agentic-debt-v5`, r49 plus EP8 plus the FlashMLA DSA kernel).
 
@@ -119,3 +119,9 @@ The lag of a sample is the trainer version minus the version that generated the 
 - Base run files: `arpit-recon-20261001:training-runs/harbor-rl-glm53-flash/guparpit-agentic-debt-v3/`.
 - r47 queue and version numbers: the `guparpit-agentic-debt-v1` header of `miles-config.yaml`.
 - Lag: `miles/backends/training_utils/weight_update/updater.py` (the version counter), `miles_plugins/arena/train_async_arena.py` (the startup sync), `miles_plugins/arena/rollout_metrics.py` (`compute_weight_version_metrics`, `compute_off_policy_round_metrics`).
+
+## Stop, 2026-10-04
+
+- Stopped by the user at rollout 221 with r49 and r52 (Stop strategy, cleanup ran). Last save `iter_219`.
+- Same-task analysis (`/workplace/guparpit/kdfast/scratch/drop/`): reward on repeat visits -0.054 by rollouts 85 to 89 and -0.070 by 95 to 99 (p = 0.0003); tokens per chain step 41K to 11K to 16K; tests after the last edit 82 to 86% to 69 to 73% of attempts. Cause: the length bonus under the GRPO spread division, see `length-bonus-tied-group-do-less`.
+- r53 at the same rollouts 85 to 88: true reward 0.747 against 0.663 here; 133K to 162K tokens against 62K to 90K.

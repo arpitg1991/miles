@@ -66,4 +66,4 @@ tolerance rebuilt that engine at 04:53Z. Both nodes were gone from the cluster b
 from AMP `container_memory_working_set_bytes{pod=...}` (the pods were deleted).
 Last checkpoint `iter_0000019` (11:59Z). Resume: `workflow-resume1.yaml` = the original workflow with
 both nodes appended to `excluded-nodes` (98 -> 100), same `experiment-name`, so miles loads
-`iter_0000019` and continues at rollout 20. Argo workflow: `acuadron-agentic-debt-final-v3-lvhn9`.
+`iter_0000019` and continues at rollout 20. Argo workflow: `acuadron-agentic-debt-final-v3-chdr7` (a first submission, lvhn9, failed spec validation: excluded-nodes must stay a JSON list).

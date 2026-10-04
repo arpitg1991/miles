@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `expert_model_parallel_size` 16 -> 8; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v3`, seeded from r47 `iter_0000059` (2026-10-01 02:51Z)
-**Outcome:** Prepared
+**Outcome:** Deleted by Thanatos 2026-10-04 13:13Z at 9.98% average GPU power: under the length bonus the episodes shrank to 7K tokens, rollouts took 2 minutes, and the engines idled. True reward had fallen from 0.69 (rollouts 110 to 119) to 0.30 (rollouts 200 to 201). Last save `iter_199`. Not resumed.
 
 Starts from r47 checkpoint `iter_0000059` (a fresh copy; sidecar `{"rollout_id": 59}`), the same weights as r49. Image `miles-glm53-recon-20261001b` and gym image `gym-glm53-adr72-20260927a`, as r49. Sibling arms: r51 (`guparpit-agentic-debt-v4`, r50 plus an output queue capped at 64 groups) and r52 (`guparpit-agentic-debt-v5`, r49 plus EP8 plus the FlashMLA DSA kernel).
 
@@ -45,3 +45,8 @@ Starts from r47 checkpoint `iter_0000059` (a fresh copy; sidecar `{"rollout_id":
 ## Launch
 
 <!-- filled at launch -->
+
+## Stop, 2026-10-04
+
+- Thanatos deleted the workflow `guparpit-agentic-debt-v3-7tknz` at 13:13:21Z (`DPU cleanup plan ... 9.98% average over 60m`). Last save `iter_199`.
+- Cause of the idle engines: the length bonus collapse (tokens per episode 61K at rollouts 110 to 119, 7K at 200), see `length-bonus-tied-group-do-less`. The EP8 result stands: +23% train throughput against r49 at the same step (29,409 against 23,851 tok/s at step 61).

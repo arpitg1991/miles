@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v2 (r49) — the r48 config on the refreshed upstream reconcile branch
 
-**Status:** Running
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-01
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `sglang_moe_runner_backend` unset -> `triton` (R3 on the new SGLang, see Launch); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v2`, seeded from r47 `iter_0000059` (2026-10-01 02:51Z)
-**Outcome:** Prepared
+**Outcome:** Retired 2026-10-04 17:08Z by the user, with r51 and r52. The length bonus (coef 0.10) taught the policy to do less: tokens per episode fell from 130K (rollouts 90 to 99) to 30K (rollouts 150 to 160) and the batch reward from 0.72 to 0.67. Last save `iter_149`.
 
 Starts from r47 checkpoint `iter_0000059`; miles resumes at rollout 60. Sibling of r48 `guparpit-agentic-debt-v1`: the same weights and the same training keys.
 
@@ -94,3 +94,8 @@ If a gate fails, report it. Ask the user before you stop the run.
 | 15:57 | Attempt 2 stops at rollout 60: `RoutingReplayError: routed_experts payload is all zeros`. On sm100, sglang-miles `14a1fa7d` resolves the `auto` MoE runner to `flashinfer_trtllm`, which captures no top-k ids. The r48 SGLang `9a26e749` leaves `flashinfer_trtllm` by itself when routed-expert capture is on. Cleanup ran on its own. |
 | 17:53:48 | Attempt 3, `guparpit-agentic-debt-v2-xk4qp`: the same image with `sglang_moe_runner_backend: triton`, as upstream `scripts/run_glm5_3_flash.py` sets for R3 (`fb7fd4b389`, cherry-picked as `09c6755e72`). W&B `ee23gfx9`. |
 | 19:31:02 | Rollout 60 complete: 32 groups, avg_reward 0.767; routing replay materialized 32 groups, 0 lost; `rollout/weight_version/*` present (all 1 at the first rollout after a restart). |
+
+## Stop, 2026-10-04
+
+- Stopped at rollout 160 (`guparpit-agentic-debt-v2-wfskl`, Stop strategy, cleanup ran). Last save `iter_149`.
+- Cause: the length bonus, see the r53 record (`guparpit-agentic-debt-v6`) and the memory note `length-bonus-tied-group-do-less`. r53 without the bonus held 0.74 true reward and 150K tokens at the same rollouts where this run had started to slide.

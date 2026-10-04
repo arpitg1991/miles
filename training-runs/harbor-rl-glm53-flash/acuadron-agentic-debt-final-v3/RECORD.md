@@ -55,3 +55,15 @@ on the T2 rows; see the table in `examples/arena/harbor-rl-glm53-flash/kdatp/qp-
 | 2026-10-03 03:40 | Step 0 (cold: fresh kernel caches): `actor_train` 2,779 s; 142 GB used on the pp0 GPUs, no OOM; `train_rollout_logprob_abs_diff` 0.0217. |
 | 2026-10-03 03:56 | Step 1: 2,840 rows, 69.4M padded tokens (17.3M per DP rank), `actor_train` 725 s (41.8 us/token/rank), `update_weights` 24 s, step 905 s; log-prob gap 0.0226 after the first EP8 weight sync (final-v1 r17 at step 1: 0.0252). |
 | 2026-10-03 04:11 | Step 2: 2,832 rows, 82.4M padded tokens (20.6M per DP rank), `actor_train` 691 s (33.6 us/token/rank; final-v1 r17 step 2: 108 us/token/rank), step 941 s of which `train_wait` 249 s (data path 177 s). |
+
+## Resume 1 (2026-10-03)
+
+`acuadron-agentic-debt-final-v3-gblzd` ended 2026-10-03 12:15Z at train step 20 with
+`torch.AcceleratorError: CUDA error: uncorrectable NVLink error` on actor node `i-0cd5889d5e3bb2f3b`
+(pod `trainer-worker-41`, ip 10.100.39.54; 9 ranks raised, Ray job failed, exit 1). An earlier NVLink
+error at 04:17Z hit engine node `i-04a18dae1bbb1150e` (`trainer-worker-43`, ip 10.100.112.215); fault
+tolerance rebuilt that engine at 04:53Z. Both nodes were gone from the cluster by 19:30Z. Node ids came
+from AMP `container_memory_working_set_bytes{pod=...}` (the pods were deleted).
+Last checkpoint `iter_0000019` (11:59Z). Resume: `workflow-resume1.yaml` = the original workflow with
+both nodes appended to `excluded-nodes` (98 -> 100), same `experiment-name`, so miles loads
+`iter_0000019` and continues at rollout 20. Argo workflow: `acuadron-agentic-debt-final-v3-lvhn9`.

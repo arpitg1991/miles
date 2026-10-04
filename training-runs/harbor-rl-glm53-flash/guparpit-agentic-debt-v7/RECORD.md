@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v7 (r54) — r52's FlashMLA trainer with the r53 loss (no bonus, token-level, no spread division)
 
-**Status:** Prepared
+**Status:** Running
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-04
 **Family:** `harbor-rl-glm53-flash`
@@ -14,12 +14,12 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v5`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
+**Argo workflow:** `guparpit-agentic-debt-v7-h6668`
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `arena_length_reward_coef` 0.10 -> 0.0; `calculate_per_token_loss` true; `disable_grpo_std_normalization` true; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v7`, seeded from r52 `iter_0000069`
-**Outcome:** Prepared
+**Outcome:** Running
 
 ## Goal
 
@@ -42,4 +42,8 @@ As r53 (`guparpit-agentic-debt-v6` record): `--calculate-per-token-loss` (DAPO) 
 
 ## Launch
 
-<!-- filled at launch -->
+| Time (UTC) | Event |
+| --- | --- |
+| 2026-10-04 17:56 | Seed copied from r52 `iter_0000069`: 135 objects match by name and size; sidecar `{"rollout_id": 69}`; data state 69; tracker 69. |
+| 17:59 | First submit `guparpit-agentic-debt-v7-6ndrr` went out with yesterday's exclusion list, which held none of the 47 nodes that were NotReady or tainted at the time. Stopped before the trainer existed; cleanup ran. |
+| 18:04:43 | Submit `guparpit-agentic-debt-v7-h6668` with 262 nodes excluded (every bad node covered). In-image parse: `calculate_per_token_loss True`, `grpo_std_normalization False`, `arena_length_reward_coef 0.0`, `miles_dsa_sparse_attention_forward_backend flash_mla`, EP 8, triton MoE runner. |

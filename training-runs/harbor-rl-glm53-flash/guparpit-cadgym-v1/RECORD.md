@@ -1,6 +1,6 @@
 # Run record: guparpit-cadgym-v1 — cadgym, first RL run, r44 recipe with the r47 trainer settings
 
-**Status:** Prepared
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-09-30
 **Family:** `harbor-rl-glm53-flash`
@@ -201,3 +201,11 @@ None yet.
 - Launcher and W&B code: miles `4716a367a` `scripts/run_arena_harbor.py`,
   `miles/utils/tracking_utils/wandb_utils.py`.
 - Template: `kubectl get wftmpl guparpit-miles-deployer-v10 -o yaml`.
+
+## Stop, 2026-10-04 (user decision, no resume)
+
+- Workflows: `guparpit-cadgym-v1-dkbr9` (2026-10-01 05:16Z to 10-03 10:35Z, stopped by an `uncorrectable NVLink error` on an engine node at step 150), then the resume `guparpit-cadgym-v1-msxj7` from `iter_0000149` (10-03 13:34Z to 10-04 ~00:00Z, stopped by the user). Last save `iter_0000169`.
+- True reward: 0.13 at rollouts 0 to 20, 0.28 to 0.46 at rollouts 152 to 160, then a collapse. In the last hour, 92% of trials scored 0.
+- Cause: a loophole in the length bonus (`arena_length_reward_coef 0.10`). The bonus measures `response_length`, the loss-masked window. A call that hits the 16,384-token cap is masked (ADR-0066), so its tokens cost nothing and get no gradient. Trained tokens per episode fell from 163K (rollout 5) to 1.2K (rollouts 150 to 175) while total output stayed at 55K to 75K. The policy ended at 6 clipped calls per trial, 0 tool calls, no design.
+- Evidence: sample summaries `debug/guparpit-cadgym-v1/sample_summary/rollout_{5,50,100,150,170,175}.jsonl` (trained against total tokens), published trials under `harbor-training/guparpit-cadgym-v1/` (hourly trend 10-03 14:00Z to 21:00Z), and the memory note `length-bonus-clipped-turn-loophole-cadgym`.
+- Rule for the next cad-gym run: measure the bonus on the full output including masked tokens, or turn the bonus off. Watch trained-against-total tokens and `rollout/clipped_turns`, not only the batch average.

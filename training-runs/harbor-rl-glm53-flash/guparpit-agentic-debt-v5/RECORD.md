@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v5 (r52) — r49 with EP8 and the FlashMLA DSA forward
 
-**Status:** Prepared
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-02
 **Family:** `harbor-rl-glm53-flash`
@@ -14,13 +14,13 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v3`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
+**Argo workflow:** `guparpit-agentic-debt-v5-fjd5g` (to iteration 69), `guparpit-agentic-debt-v5-2lg9s` (never trained, mount faults), `guparpit-agentic-debt-v5-l68m4` (resume, stopped 2026-10-04 17:08Z)
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
 **Image digests:** gym `sha256:57f0ed616892c50f727247a7b6eedf972bd35b98e70bd0ab4283f570554cdd0d`, trainer `sha256:6a0b7b8a6021ab743d9a0104d46ec2affd63056b44cc4f91641083edb92a83dd`
 **Trainer config deltas vs base:** `miles_dsa_sparse_attention_forward_backend` unset (`tilelang`) -> `flash_mla`; image `miles-glm53-recon-20261001b` -> `miles-glm53-recon-20261002-flashmla` (PR #3608 kernels); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v5`, seeded from r47 `iter_0000059` (2026-10-01 02:51Z)
-**Outcome:** Prepared
+**Outcome:** Retired 2026-10-04 by the user at rollout 255. FlashMLA worked: 42,593 tok/s at step 61, +79% against r49 and +45% against r50 (EP8), with the same log-prob gap. The length bonus then collapsed the run: true reward 0.70 (rollouts 90 to 99) to 0.59 (110 to 119) and 0.06 to 0.13 (250 to 255), tokens per episode 73K to 11K. The fast trainer walked down the same slope faster. Last save `iter_249`.
 
 Starts from r47 checkpoint `iter_0000059`: a copy that was made before this record, with a sidecar without `wandb_run_id`. miles resumes at rollout 60. This record copies no checkpoint. Sibling arms: r50 (`guparpit-agentic-debt-v3`, r49 plus EP8) and r51 (`guparpit-agentic-debt-v4`, r50 plus an output queue capped at 64 groups).
 
@@ -140,3 +140,10 @@ Before launch (not done, needs a GPU and a user go): run `tests/fast-gpu/kernels
 - miles `arpit-r52-flashmla` `a515a167b6`; upstream `refs/pull/3608/head` `557fb097c2`; earlier port `arpit-dsa-3608` `a60c648e61`.
 - Base run files: `arpit-recon-20261001:training-runs/harbor-rl-glm53-flash/guparpit-agentic-debt-v3/`.
 - T2 and L2 numbers: jobs `kdatp-prof-20260930f` (FlashMLA image), `kdatp-prof-20260930t` (TileLang-only image) and `kdatp-dsa1-20260930a`; their `results.json` files and the change inventory of 2026-09-30 (`B2`). The study `STUDY.md` on `arpit-glm-53` `6ae5099fca` does not hold these numbers yet.
+
+## Stop, 2026-10-04
+
+- Stopped by the user at rollout 255 with r49 and r51 (Stop strategy, cleanup ran). Last save `iter_249`.
+- The speed result stands and is independent of the collapse: T1 bitwise-equal weight sync, log-probs at the noise floor, 42,593 tok/s at step 61 (r50 EP8: 29,409; r49 EP16: 23,851).
+- The collapse is the length-bonus effect of `length-bonus-tied-group-do-less`, reached sooner because this trainer takes about 1.8x more steps per hour than r49.
+- Next FlashMLA run: r53's settings (bonus off, token-level loss, no spread division) on this image.

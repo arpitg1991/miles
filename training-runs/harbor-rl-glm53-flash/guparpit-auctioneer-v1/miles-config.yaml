@@ -1,0 +1,154 @@
+# guparpit-auctioneer-v1 deltas vs r44 resume 1 (prepared 2026-10-04): a fresh
+# auctioneer run on the r52/r53 trainer stack. The gym side and the dataset
+# are r44 resume 1 (r44/miles-config.yaml and r44/workflow-resume1.yaml on
+# arpit-glm-53): caponly-1034 on lakeFS branch dev (the manifest rows pin
+# commit e5ef91b0), gym auctioneer-caponly, gym image
+# gym-glm53-adr72-20260927a, gym-replicas 288, ack-wait 36000,
+# agent-timeout-multiplier 2, trainer-task-deadline-secs 39600, agent-kwargs
+# {}, publish-jobs-dir '', replicas 16 (8 actor nodes and 8 SGLang engines),
+# arena_inflight_multiplier 4, rollout_max_response_len 16384, window 131072,
+# radix cache and overlap schedule on, n_samples_per_prompt 8,
+# global_batch_size 256, num_rollout 300.
+# The trainer side is guparpit-agentic-debt-v7 (r54): image
+# miles-glm53-recon-20261002-flashmla-evfix (miles 0ffc4044ec, branch
+# arpit-r52-flashmla), expert_model_parallel_size 16 -> 8, glm5_next_kda_tp
+# true, skip_actor_forward_only true, miles_dsa_sparse_attention_forward_backend
+# flash_mla, sglang_moe_runner_backend triton (routing replay needs the
+# materialized top-k ids; the SM100 default resolves to a fused runner),
+# calculate_per_token_loss true, disable_grpo_std_normalization true,
+# arena_length_reward_coef 0.0. Unchanged against r44: TP 8 with sequence
+# parallel, PP 4 with the 11/11/11/12 split, use_rollout_routing_replay,
+# use_tis, lr 1.5e-6, save_interval 10, no_load_optim.
+# Batch shape: rollout_batch_size 64 -> 32. skip_actor_forward_only requires
+# global_batch_size == rollout_batch_size x n_samples_per_prompt
+# (miles/utils/arguments.py, validate_skip_actor_forward_only). r44 ran
+# 64 x 8 = 512 samples per rollout over two optimizer steps of 256. This run
+# keeps the 256-sample optimizer step and takes one step per rollout, as
+# guparpit-cadgym-v1 and guparpit-agentic-debt-v7 do. The in-image parse of
+# the r44 shape fails that assertion (RECORD.md, Checks done before launch).
+# Fresh start: no slime_experiments/guparpit-auctioneer-v1 prefix exists (S3
+# read 2026-10-04), so the trainer loads ref_load (the base DCP) and rollout
+# ids start at 0. W&B project auctioneer (user naming rule 2026-09-30); run
+# name and group guparpit-auctioneer-v1 (disable_wandb_random_suffix).
+user: guparpit
+cluster: bom
+experiment_name: guparpit-auctioneer-v1
+project_name: guparpit-auctioneer-v1
+agislime_dir: /root/miles
+replicas: 16
+num_trainers: 8
+model_arch: glm5.3-flash
+hf_checkpoint: /mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16
+ref_load: /mnt/scratch-s3files-rw/guparpit/checkpoints/dcp/glm5.3-flash_torch_dist
+save_interval: 10
+no_load_optim: true
+no_save_optim: true
+rollout_function_path: miles_plugins.arena.nats_arena.nats_rollout.generate_rollout
+data_source_path: miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWithBuffer
+prompt-data-list: '[{"path":"lakefs://arena-inspect/dev/internal/auctioneer/caponly/caponly-1034/manifest.jsonl","gym_name":"auctioneer-caponly","weight":1.0}]'
+sglang_disable_overlap_schedule: false
+pin_rollout_manager_to_head: true
+input_key: messages
+metadata_key: metadata
+apply_chat_template: false
+rollout_shuffle: true
+rollout_skip_special_tokens: true
+num_rollout: 300
+rollout_batch_size: 32  # guparpit-auctioneer-v1: 64 -> 32; skip_actor_forward_only needs 256 = 32 x 8 (header)
+n_samples_per_prompt: 8
+rollout_max_response_len: 16384
+rollout_temperature: 1
+global_batch_size: 256
+balance_data: true
+rollout_num_gpus_per_engine: 8
+sglang_tp_size: 8
+sglang_ep_size: 8
+sglang_dp_size: 1
+rollout_max_context_len: 131072
+sglang_context_length: 131072
+sglang_chunked_prefill_size: 8192
+sglang_disable_radix_cache: false
+sglang_dsa_prefill_backend: tilelang
+sglang_dsa_decode_backend: tilelang
+sglang_kv_cache_dtype: bfloat16
+sglang_moe_runner_backend: triton  # R3 on the new SGLang: scripts/run_glm5_3_flash.py forces triton for routing replay
+sglang_mem_fraction_static: 0.7
+sglang_router_port: 30000
+router_health_success_threshold: 1
+router_health_check_interval_secs: 15
+router_health_failure_threshold: 40
+update_weights_interval: 1
+partial_rollout: true
+gym_autoscale: false
+skip_eval_before_train: true
+distributed_timeout_minutes: 60
+rollout_health_check_interval: 300
+rollout_health_check_timeout: 900
+use_fault_tolerance: true
+tensor_model_parallel_size: 8
+sequence_parallel: true
+pipeline_model_parallel_size: 4
+decoder_first_pipeline_num_layers: 11
+decoder_last_pipeline_num_layers: 12
+context_parallel_size: 1
+expert_model_parallel_size: 8  # r44 ran 16; EP8 is the r50/r52 arm (-13.4% step, peak 109.7 GiB per GPU)
+expert_tensor_parallel_size: 1
+glm5_next_kda_tp: true
+miles_dsa_sparse_attention_forward_backend: flash_mla
+recompute_granularity: full
+recompute_method: uniform
+recompute_num_layers: 1
+micro_batch_size: 1
+use_dynamic_batch_size: true
+max_tokens_per_gpu: 8192
+data_pad_size_multiplier: 512
+attention_dropout: 0.0
+hidden_dropout: 0.0
+accumulate_allreduce_grads_in_fp32: true
+attention_softmax_in_fp32: true
+update_weight_buffer_size: 1073741824
+train_memory_margin_bytes: 3221225472
+qkv_format: thd
+model_name: glm5_next
+check_weight_update_equal: false
+advantage_estimator: grpo
+use_rollout_logprobs: false
+use_tis: true
+tis_clip: 2.0
+use_rollout_routing_replay: true
+tis_clip_low: 0.0
+keep_old_actor: false
+kl_coef: 0.0
+kl_loss_coef: 0.0
+entropy_coef: 0.0
+eps_clip: 0.2
+eps_clip_high: 0.28
+eps_clip_c: 2.0
+optimizer: adam
+lr: 1.5e-6
+lr_decay_style: constant
+weight_decay: 0.1
+adam_beta1: 0.9
+adam_beta2: 0.98
+use_distributed_optimizer: true
+optimizer_cpu_offload: true
+overlap_cpu_optimizer_d2h_h2d: true
+use_precision_aware_optimizer: true
+use_tensorboard: false
+use_wandb: true
+use_distributed_post: true
+arena_sample_mode: full_trajectory
+arena_inflight_multiplier: 4  # r44 value; a chain holds a worker for up to 5 segments
+arena_train_segments: all
+log_passrate: false
+wandb_host: https://mega.wandb.agi.amazon.dev
+wandb_project: auctioneer  # user naming rule 2026-09-30: the W&B project is the gym name
+disable_wandb_random_suffix: true
+wandb_team: arena
+wandb_always_use_train_step: false
+dynamic_sampling_filter_path: miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std
+arena_sample_summary_dir: /mnt/scratch-s3files-rw/guparpit/debug/guparpit-auctioneer-v1/sample_summary
+arena_length_reward_coef: 0.0  # off, as r44 (0) and r53/v7 (memory length-bonus-tied-group-do-less)
+calculate_per_token_loss: true
+disable_grpo_std_normalization: true
+skip_actor_forward_only: true

@@ -1,6 +1,6 @@
 # Run record: acuadron-agentic-debt-final-v3 — final-v2 on the query-parallel DSA trainer (r19), EP8, PP 12/11/11/11
 
-**Status:** Running
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-03
 **Family:** `harbor-rl-glm53-flash`
@@ -79,3 +79,13 @@ phase (Succeeded = cleanup ran) and greps a rotated pod log; the trainer exit co
 Third NVLink fault on a third node in 36 h; all three nodes left the cluster afterwards.
 Resume: `workflow-resume2.yaml` = resume 1 + `i-069f5cce45e61cccb` in `excluded-nodes` (100 -> 101), same
 `experiment-name`, loads `iter_0000019`, continues at rollout 20. Argo workflow: `acuadron-agentic-debt-final-v3-gfqwf`.
+
+## Retired (2026-10-05 07:36Z)
+
+Resume 2 (`acuadron-agentic-debt-final-v3-gfqwf`) ran 05:19-07:36Z: rollouts 20-22, steps 20-21 (step 22 in progress),
+no new checkpoint (latest stays `iter_0000019`). Stopped by the operator rule "keep v3 unless final-v4 finds no
+nodes": kueue could not place v4's 40 pods (298 p6 nodes: 261 busy, 33 under the burn-in taint, 4 disrupted -> 4 usable).
+Weight audit (2026-10-05, `iter_0000019` vs `ref_load`, 36 DCP tensors with identical chunking): bf16 tensors bit-identical
+or one ulp (3.05e-5) off in 5-12% of elements; fp32 scalars moved ~1e-5. At lr 1.5e-6 the policy had not left the base
+model in bf16; the fp32 master accumulation is not checkpointed (no_save_optim) and was discarded at each resume.
+Successor: `acuadron-agentic-debt-final-v4` (agentic-final-v2 dataset, lr 1e-5, fresh).

@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v18 (r56-ns, resubmit of v14 with the class rollout seam, resubmit of v13) — r56 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
 
-**Status:** Prepared
+**Status:** Running
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-05
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `rollout_function_path` `generate_rollout` -> `NatsRolloutFn`; `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `prefetch_rollout_data` true (from r56); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v18`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
-**Outcome:** Prepared. Resubmit of v16 (r56-ns) on the ns-b trainer image, which fixes `NatsRolloutFn`: it read `args.start_rollout_id`, None inside the RolloutExecutor actor, and v15 and v16 stopped at their first rollout with `TypeError: '>' not supported between instances of 'int' and 'NoneType'`.
+**Outcome:** Running. Resubmit of v16 (r56-ns) on the ns-b trainer image, which fixes `NatsRolloutFn`: it read `args.start_rollout_id`, None inside the RolloutExecutor actor, and v15 and v16 stopped at their first rollout with `TypeError: '>' not supported between instances of 'int' and 'NoneType'`.
 
 The owner's order of 2026-10-05: set the staleness cap to 8, log the count and
 the reward of the dropped groups, and run it with and without the prefetch, as
@@ -100,3 +100,5 @@ v12 against v13 for the prefetch.
 | 15:53 | Seed copied fresh from r54 `iter_0000089` into `guparpit-agentic-debt-v18` (`ckcopy-v18.sh`): 135 objects match; sidecar `{"rollout_id": 89}`; data state 89; tracker 89 last. |
 | 15:54 | Image `miles-glm53-ns-20261005b` (`45cd7e47ff`), digest `sha256:dbf0a3c78744ab28d96ac420e785cb5b1aa5cc2c96fb1b0b446a95de7fcc1551`, replica in ap-south-1 at 15:54:38Z; in-image fix check passed (see the v17 record). In-image parse (`parse-v18.out`): exit 0, 271 tokens, `rollout_function_path ...NatsRolloutFn`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `arena_output_queue_groups 64`, `prefetch_rollout_data True`. |
 | 16:02:52 | Submit `guparpit-agentic-debt-v18-dmndz`, after v17's 40 trainer pods were Running. Exclusions refreshed at submit: 304 B200 nodes, 34 bad; 345 excluded. Queue at submit: pending 0, admitted 14. |
+| 16:06:00 | Trainer PyTorchJob `guparpit-agentic-debt-v18-dmndz-trainer` created. Kueue admitted it within a minute; 40 Running at 16:07 and at 16:11. Argument dump: `rollout_function_path ...NatsRolloutFn`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `prefetch_rollout_data True`. |
+| 16:57 | Past the point where v12 to v16 died: the first `generate_rollout` call runs from 16:30 (`Waiting for results`), gym up; 1 of 32 groups after 27 min, no error. Live log capture continues in `ns/v18-follow.log`. |

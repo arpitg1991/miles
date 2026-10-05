@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v9 (r56) — r54 with the next rollout shard prefetched during the train step
 
-**Status:** Running
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-04
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `prefetch_rollout_data` true; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v9`, seeded from r52 `iter_0000069` (the seed r54 uses)
-**Outcome:** Running
+**Outcome:** Retired 2026-10-05 14:30Z on the owner's word, at rollout 89, last save `iter_0000079`. Replaced by v13 (`r56-ns`, the same config at inflight multiplier 8 with `max_weight_staleness` 8), seeded from r54 `iter_0000089`. Stopped with `spec.shutdown: Stop`; the onExit cleanup ran.
 
 A paired speed arm of r54 (`guparpit-agentic-debt-v7-h6668`). Same image, same
 config, same seed; the one change is `--prefetch-rollout-data`. The owner chose
@@ -83,3 +83,4 @@ and only aggregate step timing is compared.
 | 23:17:36 | Submit `guparpit-agentic-debt-v9-d6tx9`. Node exclusions refreshed at launch: 304 B200 nodes, 63 bad (20 NotReady, 48 with the `burn-in` taint, 5 both); 311 excluded = the r54 list (262, of which 227 name instances that no longer exist) plus the 63 bad nodes (49 new). `prompt-data-list` byte-equal to r54's. |
 | 23:20:45 | Trainer PyTorchJob `guparpit-agentic-debt-v9-d6tx9-trainer` created by the deployer and still present at 23:38 (the auctioneer trainer of 18:23 was deleted by the training-operator 12 s after creation; this one was not). Kueue workload `pytorchjob-guparpit-agentic-debt-v9-d6tx9-trainer-416f3`, queue `gpu.p6-b200-48xlarge`, priority 1000. |
 | 23:29 to 23:38 | Not admitted: `topology "p6-network" allows to fit only 37 out of 40 pod(s). Total nodes: 300; excluded: affinity: 19, resource "memory": 135, resource "nvidia.com/gpu": 47, taint burn-in: 61`. The run is the only queued workload in the queue and waits for 3 more free B200 nodes (r53, r54 and r55 hold 120). No preemption on prod-bom-v2. The gym Deployment starts after the trainer connects to NATS, so nothing of this run uses a GPU while it waits. |
+| 2026-10-05 14:30 | Retired on the owner's word together with r53, r54, r55 and r56 (r56 = this run), at rollout 89, last save `iter_0000079`. Replaced by v13 (`r56-ns`, the same config at inflight multiplier 8 with `max_weight_staleness` 8), seeded from r54 `iter_0000089`. Stopped with `spec.shutdown: Stop`. |

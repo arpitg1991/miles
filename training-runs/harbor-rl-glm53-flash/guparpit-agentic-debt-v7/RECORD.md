@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v7 (r54) — r52's FlashMLA trainer with the r53 loss (no bonus, token-level, no spread division)
 
-**Status:** Running
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-04
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `arena_length_reward_coef` 0.10 -> 0.0; `calculate_per_token_loss` true; `disable_grpo_std_normalization` true; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v7`, seeded from r52 `iter_0000069`
-**Outcome:** Running
+**Outcome:** Retired 2026-10-05 14:30Z on the owner's word, at rollout 100, last save `iter_0000099`. Replaced by v12 (`r54-ns`, the same config at inflight multiplier 8 with `max_weight_staleness` 8) and v13 (`r56-ns`), both seeded from this run's `iter_0000089`. Stopped with `spec.shutdown: Stop`; the onExit cleanup ran.
 
 ## Goal
 
@@ -47,3 +47,4 @@ As r53 (`guparpit-agentic-debt-v6` record): `--calculate-per-token-loss` (DAPO) 
 | 2026-10-04 17:56 | Seed copied from r52 `iter_0000069`: 135 objects match by name and size; sidecar `{"rollout_id": 69}`; data state 69; tracker 69. |
 | 17:59 | First submit `guparpit-agentic-debt-v7-6ndrr` went out with yesterday's exclusion list, which held none of the 47 nodes that were NotReady or tainted at the time. Stopped before the trainer existed; cleanup ran. |
 | 18:04:43 | Submit `guparpit-agentic-debt-v7-h6668` with 262 nodes excluded (every bad node covered). In-image parse: `calculate_per_token_loss True`, `grpo_std_normalization False`, `arena_length_reward_coef 0.0`, `miles_dsa_sparse_attention_forward_backend flash_mla`, EP 8, triton MoE runner. |
+| 2026-10-05 14:30 | Retired on the owner's word together with r53, r54, r55 and r56 (r54 = this run), at rollout 100, last save `iter_0000099`. Replaced by v12 (`r54-ns`, the same config at inflight multiplier 8 with `max_weight_staleness` 8) and v13 (`r56-ns`), both seeded from this run's `iter_0000089`. Stopped with `spec.shutdown: Stop`. |

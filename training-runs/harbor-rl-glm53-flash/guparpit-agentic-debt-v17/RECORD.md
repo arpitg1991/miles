@@ -10,11 +10,11 @@
 **Dataset:** `lakefs://arena-inspect/327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480/internal/agentic-debt-r3/agentic-debt-766/manifest.jsonl` (gym `agentic-debt`)
 **Manifest commit:** `327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480`
 **Gym image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-wvspans-20261001a@sha256:e29ba91a3392fd250e78f551fca6f33061520a2b456134693d419e1bf5c9eab9`
-**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-ns-20261005b` (digest recorded at submit)
+**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-ns-20261005b@sha256:dbf0a3c78744ab28d96ac420e785cb5b1aa5cc2c96fb1b0b446a95de7fcc1551`
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v7`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
+**Argo workflow:** `guparpit-agentic-debt-v17-s6s92`
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `rollout_function_path` `generate_rollout` -> `NatsRolloutFn`; `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
@@ -95,3 +95,6 @@ v12 against v13 for the prefetch.
 | Time (UTC) | Event |
 | --- | --- |
 | 2026-10-05 15:4x | v15 (`guparpit-agentic-debt-v15-cm6xh`) stopped at its first rollout: `_train_weight_version` compared the rollout id with `args.start_rollout_id`, which the driver sets on its own copy of `args` after the trainer loads (`miles/ray/placement_group.py`) and which stays None in the RolloutExecutor actor. The fix takes the start from the executor's `load(start - 1)` call, with the first call's rollout id as the fallback; regression test added. `miles/` is unchanged since the T1 image `20261005a`, so the T1 result stands for this image. |
+| 15:52 | Seed copied fresh from r54 `iter_0000089` into `guparpit-agentic-debt-v17` (`ckcopy-v17.sh`): 135 objects match; sidecar `{"rollout_id": 89}`; data state 89; tracker 89 last. |
+| 15:54 | Image `miles-glm53-ns-20261005b` built from `45cd7e47ff` (clean tree) and pushed to `arena-github/miles` us-east-1, digest `sha256:dbf0a3c78744ab28d96ac420e785cb5b1aa5cc2c96fb1b0b446a95de7fcc1551`; replica in ap-south-1 at 15:54:38Z. In-image check of the fix: `NatsRolloutFn.load(88)` then rollouts 89 and 90 at engine version 5 give train versions 5 and 6. In-image parse (`parse-v17.out`): exit 0, 270 tokens, `rollout_function_path ...NatsRolloutFn`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `arena_output_queue_groups 64`, `prefetch_rollout_data False`. |
+| 15:56:22 | Submit `guparpit-agentic-debt-v17-s6s92`. Exclusions refreshed at submit: 301 B200 nodes, 31 bad; 293 excluded. Queue at submit: pending 0, admitted 13. |

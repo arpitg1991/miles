@@ -3197,7 +3197,7 @@ def _add_arena_arguments(parser):
 generate_rollout.add_arguments = _add_arena_arguments
 
 
-def _train_weight_version(args, rollout_id: int, engine_version: int | None) -> int | None:
+def _train_weight_version(args, rollout_id: int, engine_version: int | None, start_rollout_id: int) -> int | None:
     """Return the weight version that trains rollout ``rollout_id``.
 
     ``RolloutFnTrainInput.weight_version`` is the engine version when the
@@ -3213,7 +3213,11 @@ def _train_weight_version(args, rollout_id: int, engine_version: int | None) -> 
     """
     if engine_version is None:
         return None
-    update_before_train = rollout_id > args.start_rollout_id and rollout_id % args.update_weights_interval == 0
+    # ``start_rollout_id`` comes from the caller, not from ``args``: the driver sets
+    # ``args.start_rollout_id`` after the trainer loads (miles/ray/placement_group.py),
+    # and the RolloutExecutor actor keeps its own copy of ``args`` where it stays None.
+    # v15 and v16 (2026-10-05) stopped at their first rollout on that None.
+    update_before_train = rollout_id > start_rollout_id and rollout_id % args.update_weights_interval == 0
     return engine_version + 1 if update_before_train else engine_version
 
 
@@ -3229,10 +3233,21 @@ class NatsRolloutFn(BaseRolloutFn):
     """
 
     add_arguments = staticmethod(_add_arena_arguments)
+    # The first rollout id this run trains. The executor's ``load(start_rollout_id - 1)``
+    # sets it before the first drain; a fresh start (``load(None)``) and a run whose
+    # ``args.start_rollout_id`` is set fall back to the first call's rollout id.
+    _start_rollout_id: int | None = None
+
+    def load(self, rollout_id: int | None) -> None:
+        if rollout_id is not None:
+            self._start_rollout_id = rollout_id + 1
 
     def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
         constructor = self.constructor_input
         args = constructor.args
+        if self._start_rollout_id is None:
+            start = getattr(args, "start_rollout_id", None)
+            self._start_rollout_id = input.rollout_id if start is None else start
         return generate_rollout(
             args,
             input.rollout_id,
@@ -3240,7 +3255,9 @@ class NatsRolloutFn(BaseRolloutFn):
             evaluation=input.evaluation,
             # generate_rollout raises on evaluation before it reads the version.
             weight_version=(
-                None if input.evaluation else _train_weight_version(args, input.rollout_id, input.weight_version)
+                None
+                if input.evaluation
+                else _train_weight_version(args, input.rollout_id, input.weight_version, self._start_rollout_id)
             ),
         )
 

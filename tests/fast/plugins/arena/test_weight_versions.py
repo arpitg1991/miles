@@ -470,6 +470,26 @@ def test_nats_rollout_fn_passes_the_version_that_trains_the_batch(
     assert calls == [{"args": (args, rollout_id, data_source), "evaluation": False, "weight_version": train_version}]
 
 
+def test_nats_rollout_fn_takes_the_start_rollout_from_load_when_args_have_none(monkeypatch):
+    """The executor actor's args keep start_rollout_id None (the driver sets it on its own copy after the trainer
+    loads); the executor calls load(start - 1) before the first drain. v15 and v16 stopped on the None."""
+    calls: list[int | None] = []
+    monkeypatch.setattr(nats_rollout, "generate_rollout", lambda *a, **kw: calls.append(kw["weight_version"]))
+    args = pytypes.SimpleNamespace(start_rollout_id=None, update_weights_interval=1)
+    fn = NatsRolloutFn(RolloutFnConstructorInput(args=args, data_source=None))
+    fn.load(88)
+    fn(RolloutFnTrainInput(rollout_id=89, weight_version=5))  # the first trained rollout: no update before it
+    fn(RolloutFnTrainInput(rollout_id=90, weight_version=5))  # one update before rollout 90 trains
+    assert calls == [5, 6]
+    # Without a load (fresh start, load(None)), the first call names the start rollout.
+    calls.clear()
+    fn2 = NatsRolloutFn(RolloutFnConstructorInput(args=args, data_source=None))
+    fn2.load(None)
+    fn2(RolloutFnTrainInput(rollout_id=0, weight_version=0))
+    fn2(RolloutFnTrainInput(rollout_id=1, weight_version=0))
+    assert calls == [0, 1]
+
+
 @pytest.mark.parametrize(("start_rollout_id", "interval"), [(0, 1), (0, 2), (3, 1), (3, 2)])
 def test_train_async_arena_order_gives_the_version_that_trains_each_batch(monkeypatch, start_rollout_id, interval):
     """Run the real train_async_arena loop with fakes; record the version each batch gets and trains under.

@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v12 (r54-ns) — r54 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
 
-**Status:** Running
+**Status:** Crashed at the first rollout (config defect); replaced by v15
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-05
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v12`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
-**Outcome:** Running
+**Outcome:** Crashed 2026-10-05 15:01:32Z: worker-0 exited with code 1 at the first rollout, the job went Failed and the training-operator deleted it (ttl 0), so the pod logs are gone. Cause: `rollout_function_path` was the legacy `generate_rollout`, which drops the engine weight version; with `max_weight_staleness` set, `generate_rollout` raises `ValueError("--max-weight-staleness needs the weight version that trains the batch... Only --rollout-function-path ...NatsRolloutFn passes it")` (ADR-0018). The fix is the class path `NatsRolloutFn`; v15 (r54-ns) carries it.
 
 The owner's order of 2026-10-05: set the staleness cap to 8, log the count and
 the reward of the dropped groups, and run it with and without the prefetch, as
@@ -102,3 +102,4 @@ v12 against v13 for the prefetch.
 | 14:28:56 | Trainer PyTorchJob `guparpit-agentic-debt-v12-zvmdk-trainer` created. Queued: the B200 queue fit 1 of 40 pods while r53 to r56 held 160 nodes. |
 | 14:30:38 | r53, r54, r55, r56 stopped (`spec.shutdown: Stop`, cleanup ran by 14:34:39). |
 | 14:33 | Kueue admitted the trainer; 40 worker pods Running. Argument dump: `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `arena_output_queue_groups 64`, `prefetch_rollout_data False`, `miles_dsa_sparse_attention_forward_backend flash_mla`, `sglang_moe_runner_backend triton`, `expert_model_parallel_size 8`, `calculate_per_token_loss True`, `grpo_std_normalization False`, `arena_length_reward_coef 0.0`, `use_rollout_routing_replay True`. The one `Traceback` in the log is Ray's `_get_docker_cpus` cpuset parse at `ray start` (benign, as in every run on this base). |
+| 15:01:32 | worker-0 `exitCode: 1` (training-operator events `ExitedWithCode`, `PyTorchJobFailed: 1 Worker replica(s) failed`), job deleted 15:01:33, pods garbage-collected. 28 min after start = the first `generate_rollout` call. The in-image parse cannot catch this: the refusal is a runtime check at the first rollout. Lesson for the recipe: `max_weight_staleness` requires `rollout_function_path: ...NatsRolloutFn`. |

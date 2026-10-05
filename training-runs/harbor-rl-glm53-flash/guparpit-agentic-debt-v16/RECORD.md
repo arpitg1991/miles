@@ -1,12 +1,12 @@
-# Run record: guparpit-agentic-debt-v14 (r56-ns, resubmit of v13) — r56 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
+# Run record: guparpit-agentic-debt-v16 (r56-ns, resubmit of v14 with the class rollout seam, resubmit of v13) — r56 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
 
-**Status:** Running
+**Status:** Prepared
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-05
 **Family:** `harbor-rl-glm53-flash`
-**Argo generateName:** `guparpit-agentic-debt-v14-`
-**Experiment name:** `guparpit-agentic-debt-v14`
-**W&B project:** `agentic-debt` (group `guparpit-agentic-debt-v14`)
+**Argo generateName:** `guparpit-agentic-debt-v16-`
+**Experiment name:** `guparpit-agentic-debt-v16`
+**W&B project:** `agentic-debt` (group `guparpit-agentic-debt-v16`)
 **Dataset:** `lakefs://arena-inspect/327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480/internal/agentic-debt-r3/agentic-debt-766/manifest.jsonl` (gym `agentic-debt`)
 **Manifest commit:** `327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480`
 **Gym image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-wvspans-20261001a@sha256:e29ba91a3392fd250e78f551fca6f33061520a2b456134693d419e1bf5c9eab9`
@@ -14,12 +14,12 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v9`
 <!-- gen-workflow:end -->
-**Argo workflow:** `guparpit-agentic-debt-v14-xhn26`
+**Argo workflow:** not submitted
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
-**Trainer config deltas vs base:** `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `prefetch_rollout_data` true (from r56); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
-**Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v14`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
-**Outcome:** Running. Resubmit of v13 (`r56-ns`), whose trainer job the training-operator deleted 8 s after Kueue admitted it on 2026-10-05 14:33Z; the owner wants both arms.
+**Trainer config deltas vs base:** `rollout_function_path` `generate_rollout` -> `NatsRolloutFn`; `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `prefetch_rollout_data` true (from r56); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
+**Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v16`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
+**Outcome:** Prepared. Resubmit of v14 (r56-ns) with `rollout_function_path: ...NatsRolloutFn`: the legacy `generate_rollout` path drops the engine weight version, and `max_weight_staleness` then stops the run at its first rollout (v12, 2026-10-05 15:01Z).
 
 The owner's order of 2026-10-05: set the staleness cap to 8, log the count and
 the reward of the dropped groups, and run it with and without the prefetch, as
@@ -96,9 +96,5 @@ v12 against v13 for the prefetch.
 
 | Time (UTC) | Event |
 | --- | --- |
-| 2026-10-05 14:33 | v13 (`guparpit-agentic-debt-v13-xhn26`), the first submit of this arm, lost its trainer PyTorchJob 8 s after Kueue admission: the scheduler reported the workers `Unschedulable` (0/510 nodes: 374 did not match the node affinity, 135 tainted), Kueue patched 10 worker pods to `phase=Failed`, and the training-operator (restartPolicy `Never`, ttl 0) marked the job failed and deleted it. v12 had been admitted on the same queue 10 s earlier. Same signature as the auctioneer trainer of 2026-10-04 18:23Z (its worker-4 was also patched to `Failed` by Kueue). |
-| 14:49 | Seed copied fresh from r54 `iter_0000089` into `guparpit-agentic-debt-v14` (`metrics-1001/ckcopy-v14.sh`): 135 objects match; sidecar `{"rollout_id": 89}` without `wandb_run_id`; data state 89; tracker 89 written last. |
-| 14:50 | In-image parse (`fullparse10.py`, `CFG=/work/v14.yaml`; `parse-v14.out`): exit 0, 271 argv tokens; `prefetch_rollout_data True`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `arena_output_queue_groups 64`, save dir v14. |
-| 14:51:13 | Submit `guparpit-agentic-debt-v14-7s5km`. Exclusions refreshed at submit: 302 B200 nodes, 46 bad; 357 excluded (the r56 list of 311 plus 46). Queue `gpu.p6-b200-48xlarge` at submit: pending 0, admitted 14. |
-| 14:54:22 | Trainer PyTorchJob `guparpit-agentic-debt-v14-7s5km-trainer` created; Kueue admitted it within a minute (queue pending 0); 40 worker pods Running at 14:55 and still at 14:58, 3 min past admission. Argument dump: `max_weight_staleness 8`, `prefetch_rollout_data True`. |
-| 15:06 | v12, the same config without the prefetch, crashed at its first rollout (exit 1 at 15:01:32): the legacy `generate_rollout` rollout function drops the weight version that `max_weight_staleness` needs. v14 has the same defect and will stop at its first rollout. Its worker-0 log is followed into `ns/v14-follow.log` to capture the error text. Replacement: v16 (r56-ns) with `rollout_function_path: ...NatsRolloutFn`. |
+| 2026-10-05 15:01 | v12 (`guparpit-agentic-debt-v12-zvmdk`), the first submit of the r54-ns arm, stopped at its first rollout: worker-0 exit 1, job failed and deleted by the training-operator (ttl 0). `generate_rollout` raises when `max_weight_staleness` is set and no weight version arrives; only `NatsRolloutFn` (the upstream class seam, `RolloutFnTrainInput.weight_version`) passes it (ADR-0018; `examples/arena/RECONCILE.md` item 3 of the span checklist). v14, the r56-ns arm, carries the same defect. |
+| 15:10 | Seed copied fresh from r54 `iter_0000089` into `guparpit-agentic-debt-v16` (`metrics-1001/ckcopy-v16.sh`): 135 objects match; sidecar `{"rollout_id": 89}`; data state 89; tracker 89 last. |

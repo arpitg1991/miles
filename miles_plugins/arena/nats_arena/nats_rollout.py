@@ -2648,6 +2648,8 @@ def generate_rollout(
     examined = 0
     dropped = 0
     stale_dropped = 0
+    # Mean Harbor reward of each group the staleness cap drops (W&B: rollout/reward_old_age_dropped).
+    stale_dropped_rewards: list[float] = []
     lost_ref_groups = 0
     rescued = 0
     start_time = time.time()
@@ -2705,6 +2707,9 @@ def generate_rollout(
             staleness = group_staleness(group, weight_version)
             if max_staleness is not None and staleness is not None and staleness > max_staleness:
                 stale_dropped += 1
+                rewards = [s.reward for s in group if isinstance(s.reward, (int, float))]
+                if rewards:
+                    stale_dropped_rewards.append(sum(rewards) / len(rewards))
                 if replay_on:
                     reap_sample_refs(group)
                 continue
@@ -2788,6 +2793,11 @@ def generate_rollout(
     # The keys and the meaning of upstream DefaultDataBuffer.get_metrics.
     kept_staleness = [x for group in data if (x := group_staleness(group, weight_version)) is not None]
     staleness_metrics = {"rollout/fully_async/stale_groups_filtered": stale_dropped}
+    # Owner metrics (2026-10-05): the count every step, the mean reward of the
+    # dropped groups only when a group was dropped (no NaN in W&B).
+    staleness_metrics["rollout/num_old_age_dropped"] = stale_dropped
+    if stale_dropped_rewards:
+        staleness_metrics["rollout/reward_old_age_dropped"] = sum(stale_dropped_rewards) / len(stale_dropped_rewards)
     if kept_staleness:
         staleness_metrics["rollout/fully_async/avg_staleness"] = sum(kept_staleness) / len(kept_staleness)
         staleness_metrics["rollout/fully_async/max_staleness"] = max(kept_staleness)

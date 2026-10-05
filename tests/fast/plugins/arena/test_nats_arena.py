@@ -2028,7 +2028,7 @@ class TestFailedReasonTelemetry:
         assert len(rows) == (8 if mode == "all" else 4)
         assert ("dp_pad" in [(s.metadata or {}).get("mode") for s in rows]) == (mode == "all")
         # The legacy function path gets no engine weight version, so no staleness is known.
-        assert output.metrics == {"rollout/fully_async/stale_groups_filtered": 0}
+        assert output.metrics == {"rollout/fully_async/stale_groups_filtered": 0, "rollout/num_old_age_dropped": 0}
         # The plugin W&B dict does not log the keys.
         assert not [k for m in logged for k in m if k.startswith("rollout/weight_version/")]
 

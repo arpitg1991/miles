@@ -397,6 +397,8 @@ def test_stale_group_is_dropped_and_counted(monkeypatch, caplog):
     assert [g[0].group_index for g in output.samples] == [1]
     assert output.metrics == {
         "rollout/fully_async/stale_groups_filtered": 1,
+        "rollout/num_old_age_dropped": 1,
+        "rollout/reward_old_age_dropped": 1.0,
         "rollout/fully_async/avg_staleness": 0.0,
         "rollout/fully_async/max_staleness": 0,
     }
@@ -408,6 +410,7 @@ def test_default_keeps_every_group(monkeypatch):
     assert [g[0].group_index for g in output.samples] == [0, 1]
     assert output.metrics == {
         "rollout/fully_async/stale_groups_filtered": 0,
+        "rollout/num_old_age_dropped": 0,
         "rollout/fully_async/avg_staleness": 2.0,
         "rollout/fully_async/max_staleness": 4,
     }
@@ -416,7 +419,23 @@ def test_default_keeps_every_group(monkeypatch):
 def test_without_a_weight_version_no_staleness_is_known(monkeypatch):
     output = _run(monkeypatch, max_weight_staleness=None, weight_version=None, gbs=2)
     assert len(output.samples) == 2
-    assert output.metrics == {"rollout/fully_async/stale_groups_filtered": 0}
+    assert output.metrics == {"rollout/fully_async/stale_groups_filtered": 0, "rollout/num_old_age_dropped": 0}
+
+
+def test_dropped_group_rewards_are_averaged(monkeypatch):
+    """Two stale groups with rewards 0.25 and 0.75 give a mean of 0.5; the fresh group is kept."""
+    stale_a = _group(version=1, group_index=0)
+    stale_a[0].reward = 0.25
+    stale_b = _group(version=2, group_index=1)
+    stale_b[0].reward = 0.75
+    worker = _FakeWorker([stale_a, stale_b, _group(version=5, group_index=2)], "final")
+    worker.worker_thread = pytypes.SimpleNamespace(is_alive=lambda: True)
+    monkeypatch.setattr(nats_rollout, "get_global_worker", lambda args, ds: worker)
+    args = _rollout_args("final", gbs=1, max_weight_staleness=2)
+    output = generate_rollout(args, 0, data_source=pytypes.SimpleNamespace(), weight_version=5)
+    assert [g[0].group_index for g in output.samples] == [2]
+    assert output.metrics["rollout/num_old_age_dropped"] == 2
+    assert output.metrics["rollout/reward_old_age_dropped"] == 0.5
 
 
 def test_filter_without_a_weight_version_names_the_class(monkeypatch):

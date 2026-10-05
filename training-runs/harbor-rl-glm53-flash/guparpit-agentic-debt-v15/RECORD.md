@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v15 (r54-ns, resubmit of v12 with the class rollout seam) — r54 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
 
-**Status:** Prepared
+**Status:** Running
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-05
 **Family:** `harbor-rl-glm53-flash`
@@ -14,12 +14,12 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v7`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
+**Argo workflow:** `guparpit-agentic-debt-v15-cm6xh`
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `rollout_function_path` `generate_rollout` -> `NatsRolloutFn`; `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v15`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
-**Outcome:** Prepared. Resubmit of v12 (r54-ns) with `rollout_function_path: ...NatsRolloutFn`: the legacy `generate_rollout` path drops the engine weight version, and `max_weight_staleness` then stops the run at its first rollout (v12, 2026-10-05 15:01Z).
+**Outcome:** Running. Resubmit of v12 (r54-ns) with `rollout_function_path: ...NatsRolloutFn`: the legacy `generate_rollout` path drops the engine weight version, and `max_weight_staleness` then stops the run at its first rollout (v12, 2026-10-05 15:01Z).
 
 The owner's order of 2026-10-05: set the staleness cap to 8, log the count and
 the reward of the dropped groups, and run it with and without the prefetch, as
@@ -96,3 +96,6 @@ v12 against v13 for the prefetch.
 | --- | --- |
 | 2026-10-05 15:01 | v12 (`guparpit-agentic-debt-v12-zvmdk`), the first submit of the r54-ns arm, stopped at its first rollout: worker-0 exit 1, job failed and deleted by the training-operator (ttl 0). `generate_rollout` raises when `max_weight_staleness` is set and no weight version arrives; only `NatsRolloutFn` (the upstream class seam, `RolloutFnTrainInput.weight_version`) passes it (ADR-0018; `examples/arena/RECONCILE.md` item 3 of the span checklist). v14, the r56-ns arm, carries the same defect. |
 | 15:10 | Seed copied fresh from r54 `iter_0000089` into `guparpit-agentic-debt-v15` (`metrics-1001/ckcopy-v15.sh`): 135 objects match; sidecar `{"rollout_id": 89}`; data state 89; tracker 89 last. |
+| 15:13 | In-image parse (`fullparse10.py`, `CFG=/work/v15.yaml`; `parse-v15.out`): exit 0, 270 argv tokens; `rollout_function_path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `arena_output_queue_groups 64`, `prefetch_rollout_data False`, save dir v15. |
+| 15:14:38 | Submit `guparpit-agentic-debt-v15-cm6xh`. Exclusions refreshed at submit: 297 B200 nodes, 36 bad; 298 excluded (the r54 list of 262 plus 36). Queue at submit: pending 0, admitted 14 (v12's 40 nodes were free). |
+| 15:17:47 | Trainer PyTorchJob created. Kueue admitted it, then recorded one eviction and requeue ("Workload eviction triggered due to multiple TAS assigned node failures, including i-0891c74ead42e5512, i-08b015d4531ec4..."), then re-admitted it; at 15:18:59 `PodsReady=True`, job Running. This is the Kueue TAS behavior behind the v13 and auctioneer losses: there the first assignment failed, Kueue patched the pods to `Failed`, and the operator deleted the job before a requeue could happen. |

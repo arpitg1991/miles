@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v14 (r56-ns, resubmit of v13) — r56 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
 
-**Status:** Running
+**Status:** Crashed at the first rollout (config defect); replaced by v16
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-05
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `prefetch_rollout_data` true (from r56); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v14`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
-**Outcome:** Running. Resubmit of v13 (`r56-ns`), whose trainer job the training-operator deleted 8 s after Kueue admitted it on 2026-10-05 14:33Z; the owner wants both arms.
+**Outcome:** Crashed 2026-10-05 15:18Z at the first rollout, as v12 did. The followed log holds the error: `ValueError: --max-weight-staleness needs the weight version that trains the batch, and this call has none. Only --rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn passes it, after the first weight update.` (raised in `RolloutExecutor.get`). The job went Failed and was deleted (ttl 0); the workflow waits on `wait-trainer-nats`. Replaced by v16 (r56-ns) with `rollout_function_path: ...NatsRolloutFn`. Resubmit of v13 (`r56-ns`), whose trainer job the training-operator deleted 8 s after Kueue admitted it on 2026-10-05 14:33Z; the owner wants both arms.
 
 The owner's order of 2026-10-05: set the staleness cap to 8, log the count and
 the reward of the dropped groups, and run it with and without the prefetch, as
@@ -102,3 +102,4 @@ v12 against v13 for the prefetch.
 | 14:51:13 | Submit `guparpit-agentic-debt-v14-7s5km`. Exclusions refreshed at submit: 302 B200 nodes, 46 bad; 357 excluded (the r56 list of 311 plus 46). Queue `gpu.p6-b200-48xlarge` at submit: pending 0, admitted 14. |
 | 14:54:22 | Trainer PyTorchJob `guparpit-agentic-debt-v14-7s5km-trainer` created; Kueue admitted it within a minute (queue pending 0); 40 worker pods Running at 14:55 and still at 14:58, 3 min past admission. Argument dump: `max_weight_staleness 8`, `prefetch_rollout_data True`. |
 | 15:06 | v12, the same config without the prefetch, crashed at its first rollout (exit 1 at 15:01:32): the legacy `generate_rollout` rollout function drops the weight version that `max_weight_staleness` needs. v14 has the same defect and will stop at its first rollout. Its worker-0 log is followed into `ns/v14-follow.log` to capture the error text. Replacement: v16 (r56-ns) with `rollout_function_path: ...NatsRolloutFn`. |
+| 15:18 | Trainer PyTorchJob gone: worker-0 raised the `--max-weight-staleness needs the weight version` `ValueError` at the first `generate_rollout` call (`ns/v14-follow.log`, the live `kubectl logs -f` capture), the job failed and the operator deleted it. Confirms the v12 diagnosis. |

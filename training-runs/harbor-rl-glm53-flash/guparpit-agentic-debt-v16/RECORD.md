@@ -14,7 +14,7 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v9`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
+**Argo workflow:** `guparpit-agentic-debt-v16-szq4x`
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `rollout_function_path` `generate_rollout` -> `NatsRolloutFn`; `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `prefetch_rollout_data` true (from r56); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
@@ -98,3 +98,6 @@ v12 against v13 for the prefetch.
 | --- | --- |
 | 2026-10-05 15:01 | v12 (`guparpit-agentic-debt-v12-zvmdk`), the first submit of the r54-ns arm, stopped at its first rollout: worker-0 exit 1, job failed and deleted by the training-operator (ttl 0). `generate_rollout` raises when `max_weight_staleness` is set and no weight version arrives; only `NatsRolloutFn` (the upstream class seam, `RolloutFnTrainInput.weight_version`) passes it (ADR-0018; `examples/arena/RECONCILE.md` item 3 of the span checklist). v14, the r56-ns arm, carries the same defect. |
 | 15:10 | Seed copied fresh from r54 `iter_0000089` into `guparpit-agentic-debt-v16` (`metrics-1001/ckcopy-v16.sh`): 135 objects match; sidecar `{"rollout_id": 89}`; data state 89; tracker 89 last. |
+| 15:13 | In-image parse (`fullparse10.py`, `CFG=/work/v16.yaml`; `parse-v16.out`): exit 0, 271 argv tokens; `rollout_function_path ...NatsRolloutFn`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `arena_output_queue_groups 64`, `prefetch_rollout_data True`, save dir v16. |
+| 15:18 | v14 (`guparpit-agentic-debt-v14-7s5km`), the second submit of this arm, stopped at its first rollout with the `--max-weight-staleness needs the weight version` `ValueError` (captured live in `ns/v14-follow.log`), as v12 did. |
+| 15:19:39 | Submit `guparpit-agentic-debt-v16-szq4x`, after v15 was admitted and v14's nodes were free. Exclusions refreshed at submit: 304 B200 nodes, 49 bad; 360 excluded (the r56 list of 311 plus 49). Queue at submit: pending 0, admitted 14. |

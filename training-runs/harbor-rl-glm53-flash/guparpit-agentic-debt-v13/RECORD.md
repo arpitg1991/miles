@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v13 (r56-ns) — r56 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
 
-**Status:** Running
+**Status:** Dead at start (trainer job deleted by the training-operator); the workflow waits for a trainer that will not come
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-05
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `prefetch_rollout_data` true (from r56); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v13`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
-**Outcome:** Running
+**Outcome:** Never trained. The trainer PyTorchJob was created 14:28:59Z, admitted by Kueue 14:32:48 to 14:32:58Z, and deleted by `kubeflow-system:training-operator` at 14:33:06Z, 8 s after admission, as the auctioneer trainer of 2026-10-04 18:23Z was. Not resubmitted (owner rule: no hand-recreate, no silent resubmit). The owner decides the resubmit.
 
 The owner's order of 2026-10-05: set the staleness cap to 8, log the count and
 the reward of the dropped groups, and run it with and without the prefetch, as
@@ -101,3 +101,5 @@ v12 against v13 for the prefetch.
 | 13:59 to 14:19 | T1 parity on the image (`recon-t1-new-20261005c`, 1 node, forward `flash_mla`, r47 `iter_0000059` through `guparpit-agentic-debt-v2`; harness = the fork T1 harness of 2026-10-02, `recon2/t1-ns/`): load 903 s, `dsa_forward_backend_modules {'flash_mla': 11}`, rc 0. Compare against the r17 reference run `20261001a-ref`: 37,534 of 37,534 gathered tensors bitwise equal; log-prob mean 0.0499 (limit 0.0990), p99 0.560 (1.140), logits relative L2 0.230 (0.459): PASS (`recon2/t1-ns/out/compare-20261005c.json`). Job and ConfigMap deleted after the run. |
 | 14:04 | Seed copied from r54 `iter_0000089` (`metrics-1001/ckcopy-v13.sh`): 135 objects match by name and size; sidecar `{"rollout_id": 89}`; data state `arena_data_source_state_89.pt`; tracker 89 written last. Note: the names v10 and v11 were taken by `guparpit-agentic-debt-v10-9j466` (another session of the owner, created 06:22Z) and its directory; a first seed copy into the v10 directory was reverted at 14:01Z (iter_0000089 and state 89 removed, tracker restored to 79, before that run saved 89), so these runs are v12 and v13. |
 | 14:25:51 | Submit `guparpit-agentic-debt-v13-xhn26`. Node exclusions refreshed at submit: 304 B200 nodes, 49 bad (4 NotReady, 49 with a taint other than the GPU and EFA taints); 360 (the r56 list of 311 plus 49 bad) excluded. Trainer image by digest, gym image `gym-glm53-wvspans-20261001a` by digest, `prompt-data-list` unchanged from the base. |
+| 14:28:59 | Trainer PyTorchJob `guparpit-agentic-debt-v13-xhn26-trainer` created by the deployer. |
+| 14:32:48 to 14:33:06 | Kueue admitted the job (three patches at 14:32:48 to 14:32:58); at 14:33:06 the training-operator deleted the PyTorchJob (EKS audit log, `delete pytorchjobs` by `kubeflow-system:training-operator`). Same signature as `guparpit-auctioneer-v1-gzq6l` on 2026-10-04: the deletion follows the Kueue admission by seconds, while the pods schedule. The workflow stays on `wait-trainer-nats` with one NATS pod and no GPU. Not resubmitted. |

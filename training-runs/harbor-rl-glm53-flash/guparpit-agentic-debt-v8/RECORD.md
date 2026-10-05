@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v8 (r55) — the ablation of r53: r51 with only the length bonus off
 
-**Status:** Running
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-04
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `arena_length_reward_coef` 0.10 -> 0.0 only; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v8`, seeded from r51 `iter_0000069` (a fresh copy)
-**Outcome:** Running
+**Outcome:** Retired 2026-10-05 14:30Z on the owner's word, at rollout 98, last save `iter_0000089`. Replaced by v12 and v13. Stopped with `spec.shutdown: Stop`; the onExit cleanup ran.
 
 ## Goal
 
@@ -55,3 +55,4 @@ Compare at the same rollout ids with r51 and r53.
 | 2026-10-04 17:57 | Seed copied from r51 `iter_0000069` (a fresh copy, separate from r53's): 135 objects match; sidecar `{"rollout_id": 69}`; data state 69; tracker 69. |
 | 18:00 | First submit `guparpit-agentic-debt-v8-5l649` went out with an old exclusion list that held none of the 47 bad nodes. Stopped before the trainer existed; cleanup ran. |
 | 18:04:47 | Submit `guparpit-agentic-debt-v8-9zwbg` with 255 nodes excluded. In-image parse: `arena_length_reward_coef 0.0`, `calculate_per_token_loss False`, `grpo_std_normalization True`, `arena_output_queue_groups 64`, EP 8. |
+| 2026-10-05 14:30 | Retired on the owner's word together with r53, r54, r55 and r56 (r55 = this run), at rollout 98, last save `iter_0000089`. Replaced by v12 and v13. Stopped with `spec.shutdown: Stop`. |

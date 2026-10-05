@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v6 (r53) — r51 without the length bonus, with token-level loss and no spread division
 
-**Status:** Running
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-04
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `arena_length_reward_coef` 0.10 -> 0.0; `calculate_per_token_loss` true; `disable_grpo_std_normalization` true; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v6`, seeded from r51 `iter_0000069` (2026-10-02)
-**Outcome:** Running
+**Outcome:** Retired 2026-10-05 14:30Z on the owner's word, at rollout 116 (last log line seen), last save `iter_0000109`. Replaced by v12 (`r54-ns`) and v13 (`r56-ns`), which start from r54 `iter_0000089`. Stopped with `spec.shutdown: Stop`; the onExit cleanup ran.
 
 Starts from r51's `iter_0000069`, so rollouts 60 to 69 are shared with r51. The sidecar holds `{"rollout_id": 69}` and no `wandb_run_id`, so this run opens its own W&B run. Image, layout (EP8), gym, and the output queue cap (64 groups) are r51's. Control: r51 `guparpit-agentic-debt-v4-8l6jh`.
 
@@ -62,3 +62,4 @@ If r53 drops the same way, the bonus is cleared and the next step is the traject
 | --- | --- |
 | 2026-10-04 00:27 | Seed copied: 64 shards, `.metadata`, `metadata.json`, `debug_events/` (69 files), sidecar `{"rollout_id": 69}`, `rollout/arena_data_source_state_69.pt`, `latest_checkpointed_iteration.txt` 69. 135 objects match r51 by name and size. |
 | 00:28:23 | Workflow `guparpit-agentic-debt-v6-w4889` created. 64 B200 nodes excluded as NotReady or tainted, 208 excluded in all. In-image parse of the argv: `calculate_per_token_loss True`, `grpo_std_normalization False`, `arena_length_reward_coef 0.0`, `arena_output_queue_groups 64`, EP 8, triton MoE runner. |
+| 2026-10-05 14:30 | Retired on the owner's word together with r53, r54, r55 and r56 (r53 = this run), at rollout 116 (last log line seen), last save `iter_0000109`. Replaced by v12 (`r54-ns`) and v13 (`r56-ns`), which start from r54 `iter_0000089`. Stopped with `spec.shutdown: Stop`. |

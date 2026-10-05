@@ -1,25 +1,25 @@
-# Run record: guparpit-agentic-debt-v15 (r54-ns, resubmit of v12 with the class rollout seam) — r54 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
+# Run record: guparpit-agentic-debt-v18 (r56-ns, resubmit of v14 with the class rollout seam, resubmit of v13) — r56 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
 
-**Status:** Crashed at the first rollout (code defect); replaced by v17
+**Status:** Prepared
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-05
 **Family:** `harbor-rl-glm53-flash`
-**Argo generateName:** `guparpit-agentic-debt-v15-`
-**Experiment name:** `guparpit-agentic-debt-v15`
-**W&B project:** `agentic-debt` (group `guparpit-agentic-debt-v15`)
+**Argo generateName:** `guparpit-agentic-debt-v18-`
+**Experiment name:** `guparpit-agentic-debt-v18`
+**W&B project:** `agentic-debt` (group `guparpit-agentic-debt-v18`)
 **Dataset:** `lakefs://arena-inspect/327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480/internal/agentic-debt-r3/agentic-debt-766/manifest.jsonl` (gym `agentic-debt`)
 **Manifest commit:** `327e057c2db03bb4115be89dced633f75fe36dbf8679b4bf29f43c548fbb7480`
 **Gym image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-wvspans-20261001a@sha256:e29ba91a3392fd250e78f551fca6f33061520a2b456134693d419e1bf5c9eab9`
-**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-ns-20261005a@sha256:fc64f05a1b485a63e6e03858c54d6fa5ddf93a09b78ed716556d9c69ee053a4f`
+**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-ns-20261005b` (digest recorded at submit)
 **Template:** `guparpit-miles-deployer-v10`
-**Base:** `guparpit-agentic-debt-v7`
+**Base:** `guparpit-agentic-debt-v9`
 <!-- gen-workflow:end -->
-**Argo workflow:** `guparpit-agentic-debt-v15-cm6xh`
+**Argo workflow:** not submitted
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
-**Trainer config deltas vs base:** `rollout_function_path` `generate_rollout` -> `NatsRolloutFn`; `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
-**Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v15`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
-**Outcome:** Crashed 2026-10-05 15:46Z at the first rollout: `TypeError: '>' not supported between instances of 'int' and 'NoneType'` in `_train_weight_version` (`rollout_id > args.start_rollout_id`; the field is None inside the RolloutExecutor actor). The job failed and was deleted (ttl 0); the error is in `ns/v15-follow.log`. Replaced by v17 on the ns-b image with the fix. Resubmit of v12 (r54-ns) with `rollout_function_path: ...NatsRolloutFn`: the legacy `generate_rollout` path drops the engine weight version, and `max_weight_staleness` then stops the run at its first rollout (v12, 2026-10-05 15:01Z).
+**Trainer config deltas vs base:** `rollout_function_path` `generate_rollout` -> `NatsRolloutFn`; `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `prefetch_rollout_data` true (from r56); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
+**Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v18`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
+**Outcome:** Prepared. Resubmit of v16 (r56-ns) on the ns-b trainer image, which fixes `NatsRolloutFn`: it read `args.start_rollout_id`, None inside the RolloutExecutor actor, and v15 and v16 stopped at their first rollout with `TypeError: '>' not supported between instances of 'int' and 'NoneType'`.
 
 The owner's order of 2026-10-05: set the staleness cap to 8, log the count and
 the reward of the dropped groups, and run it with and without the prefetch, as
@@ -36,10 +36,11 @@ waited about 115 s (5%). Multiplier 8 puts 256 groups in flight (8 batches of
 version lags the version that trains the batch by more than 8 updates, so the
 larger in-flight pool cannot feed the trainer arbitrarily old data. Two new
 W&B metrics show what the cap removes.
+r56-ns also keeps r56's `prefetch_rollout_data: true`, so the pair v12 against v13 repeats the prefetch comparison of r54 against r56 on the new stack.
 
 ## Trainer stack
 
-Branch `arpit-ns-20261005` (`19dee1af1a`), image `miles-glm53-ns-20261005a`
+Branch `arpit-ns-20261005` (the start-rollout fix on top of `19dee1af1a`), image `miles-glm53-ns-20261005b`
 (fork `examples/arena/Dockerfile` on `radixark/miles:miles-base-d7f1a42-20261001a`;
 pushed to `arena-github/miles`, the one repository the `ecr-dev` role can still
 push to since 2026-10-05):
@@ -89,14 +90,10 @@ v12 against v13 for the prefetch.
 | Reward | `rollout/group_metrics/reward.mean`, batch `avg_reward` | within noise of r54 at matched rollouts (0.63 to 0.67 per 5-rollout bin) |
 | Spans | no `WeightVersionSpansError`; `rollout/weight_version/mixed_version_ratio` > 0 | from the first rollout |
 | Throughput | `perf/actor_train_tok_per_s`, `perf/step_time` | tok/s equal to r54 (about 43K); step time lower by the removed wait |
+| Prefetch (v13 only) | `perf/data_preprocess_time` and `[r3-timing] phase=fetch` on trainer-bound steps, v13 against v12 at matched rollouts | v13 lower (r56: 19 s against r54's 53 s mean) |
 
 ## Launch
 
 | Time (UTC) | Event |
 | --- | --- |
-| 2026-10-05 15:01 | v12 (`guparpit-agentic-debt-v12-zvmdk`), the first submit of the r54-ns arm, stopped at its first rollout: worker-0 exit 1, job failed and deleted by the training-operator (ttl 0). `generate_rollout` raises when `max_weight_staleness` is set and no weight version arrives; only `NatsRolloutFn` (the upstream class seam, `RolloutFnTrainInput.weight_version`) passes it (ADR-0018; `examples/arena/RECONCILE.md` item 3 of the span checklist). v14, the r56-ns arm, carries the same defect. |
-| 15:10 | Seed copied fresh from r54 `iter_0000089` into `guparpit-agentic-debt-v15` (`metrics-1001/ckcopy-v15.sh`): 135 objects match; sidecar `{"rollout_id": 89}`; data state 89; tracker 89 last. |
-| 15:13 | In-image parse (`fullparse10.py`, `CFG=/work/v15.yaml`; `parse-v15.out`): exit 0, 270 argv tokens; `rollout_function_path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `arena_output_queue_groups 64`, `prefetch_rollout_data False`, save dir v15. |
-| 15:14:38 | Submit `guparpit-agentic-debt-v15-cm6xh`. Exclusions refreshed at submit: 297 B200 nodes, 36 bad; 298 excluded (the r54 list of 262 plus 36). Queue at submit: pending 0, admitted 14 (v12's 40 nodes were free). |
-| 15:17:47 | Trainer PyTorchJob created. Kueue admitted it, then recorded one eviction and requeue ("Workload eviction triggered due to multiple TAS assigned node failures, including i-0891c74ead42e5512, i-08b015d4531ec4..."), then re-admitted it; at 15:18:59 `PodsReady=True`, job Running. This is the Kueue TAS behavior behind the v13 and auctioneer losses: there the first assignment failed, Kueue patched the pods to `Failed`, and the operator deleted the job before a requeue could happen. |
-| 15:46 | Trainer gone: `RolloutExecutor.get` raised `TypeError` in `_train_weight_version` (`args.start_rollout_id` is None in the executor actor; the driver sets it on its own copy). Captured live in `ns/v15-follow.log`. Fix: the class takes the start rollout id from the executor's `load(start - 1)`; image `miles-glm53-ns-20261005b`; resubmit as v17. |
+| 2026-10-05 15:4x | v16 (`guparpit-agentic-debt-v16-szq4x`) stopped at its first rollout: `_train_weight_version` compared the rollout id with `args.start_rollout_id`, which the driver sets on its own copy of `args` after the trainer loads (`miles/ray/placement_group.py`) and which stays None in the RolloutExecutor actor. The fix takes the start from the executor's `load(start - 1)` call, with the first call's rollout id as the fallback; regression test added. `miles/` is unchanged since the T1 image `20261005a`, so the T1 result stands for this image. |

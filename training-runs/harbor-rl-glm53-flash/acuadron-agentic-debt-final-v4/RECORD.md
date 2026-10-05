@@ -1,0 +1,33 @@
+# Run record: acuadron-agentic-debt-final-v4 — final-v3 recipe, fresh, on agentic-final-v2 (113 chains, fixed−N·broken reward), lr 1e-5
+
+**Status:** Running
+<!-- gen-workflow:begin -->
+**Date:** 2026-10-05
+**Family:** `harbor-rl-glm53-flash`
+**Argo generateName:** `acuadron-agentic-debt-final-v4-`
+**Experiment name:** `acuadron-agentic-debt-final-v4`
+**W&B project:** `agentic-debt` (group `acuadron-agentic-debt-final-v4`)
+**Dataset:** `lakefs://arena-inspect/c519f32c424d17823cf3f375fd873590942dc2a5ae78f1033a8cfe9ac412e21f/internal/agentic-debt-r3/agentic-final-v2/manifest.jsonl` (gym `agentic-debt`)
+**Manifest commit:** `c519f32c424d17823cf3f375fd873590942dc2a5ae78f1033a8cfe9ac412e21f`
+**Gym image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adr72-20260927a`
+**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:miles-glm53-r19-20261003a`
+**Template:** `guparpit-miles-deployer-v10`
+**Base:** `acuadron-agentic-debt-final-v3`
+<!-- gen-workflow:end -->
+**Argo workflow:** `acuadron-agentic-debt-final-v4-x29f2`
+**W&B run:** (set at launch)
+**Task pin:** `c2ce399f5749` (every manifest row)
+**Trainer config deltas vs base:** `prompt-data-list` agentic-debt-final@0c328c7a -> agentic-final-v2@c519f32c424d; `lr` 1.5e-6 -> 1e-5; `experiment_name`/`project_name`/`arena_sample_summary_dir` -> v4. `replicas` 48 -> 40 (16 actor + 24 engines; kueue headroom next to the running final-v3), `arena_inflight_multiplier` 4 -> 3. Workflow: `experiment-name`, `replicas` 40 (excluded-nodes stays at the 101 of v3 resume 2).
+**Checkpoints:** `/mnt/scratch-s3files-rw/acuadron/checkpoints/slime_experiments/acuadron-agentic-debt-final-v4` (fresh; starts from `ref_load`)
+**Outcome:** (pending)
+
+## Goal
+
+Does the policy move at lr 1e-5 (train/ppo_kl 1e-4..1e-3, bf16 weights changing within ~10 steps) and does the
+fixed−N·broken reward trend up on agentic-final-v2 over 100+ steps without resumes?
+
+## Setup
+
+final-v3 (Arpit r19 image, EP8, DSA-QP, GBS 512 / 64 groups x 8, 16 actor + 32 engine nodes, length reward off) with
+the dataset and lr changed. agentic-final-v2 differs from agentic-debt-final: baseline is the agent's own tree, untouched
+scores 0 (not 1−N), regressions cost N x fraction broken, debt carries forward, tasks declare [agent] timeout_sec 4800.

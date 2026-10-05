@@ -1,6 +1,6 @@
 # Run record: guparpit-auctioneer-v1 — auctioneer caponly-1034 (the r44 gym side) on the r52/r53 trainer stack
 
-**Status:** Running
+**Status:** Stopped (never trained)
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-04
 **Family:** `harbor-rl-glm53-flash`
@@ -20,7 +20,7 @@
 **Image digests:** gym `sha256:57f0ed616892c50f727247a7b6eedf972bd35b98e70bd0ab4283f570554cdd0d` (pushed 2026-09-27 04:44Z), trainer `sha256:7ae37cd518c89834738aad94153b7df4cb9b7073354b0b4312319b3d39745ce3` (pushed 2026-10-02 19:17Z; pinned in `workflow.yaml`). Both read from ECR `arena-slime-dev` (registry 427267593057, ap-south-1, `describe-images`) on 2026-10-04; the local us-east-1 copy of the trainer tag has the same digest
 **Trainer config deltas vs base:** against `r44/miles-config.yaml` (resume 1): `expert_model_parallel_size` 16 -> 8; `glm5_next_kda_tp` unset -> `true`; `skip_actor_forward_only` unset -> `true`; `miles_dsa_sparse_attention_forward_backend` unset (`tilelang`) -> `flash_mla`; `sglang_moe_runner_backend` unset (`auto`) -> `triton`; `calculate_per_token_loss` unset -> `true`; `disable_grpo_std_normalization` unset -> `true`; `arena_length_reward_coef` `0` -> `0.0` (same value); `rollout_batch_size` 64 -> 32 (Setup, "Batch shape"); `disable_wandb_random_suffix` unset -> `true`; `wandb_project` `rl-glm53f-auct-cap` -> `auctioneer`; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run. Unchanged: `prompt-data-list`, `replicas` 16, `num_trainers` 8, TP 8 with `sequence_parallel`, PP 4 with the 11/11/11/12 split, `use_rollout_routing_replay`, `use_tis`, `lr` 1.5e-6, `save_interval` 10, `no_load_optim`, `global_batch_size` 256, `n_samples_per_prompt` 8, `arena_inflight_multiplier` 4, `rollout_max_response_len` 16384, window 131072, radix cache and overlap schedule on, `num_rollout` 300. Workflow parameters against `r44/workflow-resume1.yaml`: `trainer-image` `miles-glm53-r15-20260927a` -> `miles-glm53-recon-20261002-flashmla-evfix@sha256:7ae37cd5…`; `excluded-nodes` 83 -> 262 ids; the other ten parameters are equal.
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-auctioneer-v1` (S3 `s3://arena-scratch-prod-bom-ap-south-1/guparpit/checkpoints/slime_experiments/guparpit-auctioneer-v1/`). The prefix does not exist on 2026-10-04 (read-only `s3 ls`), so the trainer loads `ref_load` (the base DCP) and rollout ids start at 0. The `debug`, `routing`, and `logs` prefixes of this name are empty too.
-**Outcome:** Running
+**Outcome:** Stopped 2026-10-05 05:14Z on the owner's word. The trainer PyTorchJob never ran (see Launch). Resubmit on the default recipe is pending.
 
 ## Goal
 
@@ -135,6 +135,9 @@ Compare with r44 at the same rollout ids (`82i3g7lv`, W&B project
 | Time (UTC) | Event |
 | --- | --- |
 | 2026-10-04 18:19 | Workflow `guparpit-auctioneer-v1-gzq6l` created with 262 nodes excluded (every NotReady or tainted B200 node at launch). Fresh start from the base DCP; in-image parse confirmed the flags (see Parse results). |
+| 2026-10-04 18:23:02 | Trainer PyTorchJob `guparpit-auctioneer-v1-gzq6l-trainer` created; Kueue admitted it at 18:23:05 and the operator created 16 worker pods. |
+| 18:23:15 | The training-operator deleted the PyTorchJob 12 s after creation, while the pods were still scheduling (EKS audit log: `delete pytorchjobs` by `kubeflow-system:training-operator`, then the garbage collector deleted the pods). No pod reached `Failed` before the delete, and no `PyTorchJobFailed` event exists. `runPolicy` was `ttlSecondsAfterFinished: 0`, no `activeDeadlineSeconds`, `restartPolicy: Never`. The operator logs are closed to `guparpit` (RBAC), so the code path is unknown. r54 and r55, submitted 15 min earlier on the same template, were not affected. |
+| 2026-10-05 05:14 | The workflow had waited 11 h on `wait-trainer-nats` with one NATS pod and no GPU. Stopped with `spec.shutdown: Stop` (onExit cleanup ran). Audit queries: `/workplace/guparpit/kdfast/scratch/recon2/audit.sh`. |
 
 | UTC | Event |
 | --- | --- |

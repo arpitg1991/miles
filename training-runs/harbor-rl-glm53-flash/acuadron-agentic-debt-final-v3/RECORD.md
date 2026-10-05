@@ -67,3 +67,15 @@ from AMP `container_memory_working_set_bytes{pod=...}` (the pods were deleted).
 Last checkpoint `iter_0000019` (11:59Z). Resume: `workflow-resume1.yaml` = the original workflow with
 both nodes appended to `excluded-nodes` (98 -> 100), same `experiment-name`, so miles loads
 `iter_0000019` and continues at rollout 20. Argo workflow: `acuadron-agentic-debt-final-v3-chdr7` (a first submission, lvhn9, failed spec validation: excluded-nodes must stay a JSON list).
+
+## Resume 2 (2026-10-05)
+
+`acuadron-agentic-debt-final-v3-chdr7` (resume 1) ran 2026-10-04 18:49-21:53Z: rollouts 20-23, steps 20-22
+trained, then `torch.AcceleratorError: CUDA error: uncorrectable NVLink error` on actor node
+`i-069f5cce45e61cccb` (`trainer-worker-34`, ip 10.100.59.50) at 21:53:31Z -> NCCL watchdog DistBackendError
+-> Ray job exit 1. No new checkpoint (save_interval 10; next save was iter 29), so steps 20-22 are lost.
+The finalize notifier reported "Training complete ... Reached step 0, 0 checkpoint(s)": it reads the Argo
+phase (Succeeded = cleanup ran) and greps a rotated pod log; the trainer exit code was 1.
+Third NVLink fault on a third node in 36 h; all three nodes left the cluster afterwards.
+Resume: `workflow-resume2.yaml` = resume 1 + `i-069f5cce45e61cccb` in `excluded-nodes` (100 -> 101), same
+`experiment-name`, loads `iter_0000019`, continues at rollout 20. Argo workflow: `acuadron-agentic-debt-final-v3-gfqwf`.

@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v18 (r56-ns, resubmit of v14 with the class rollout seam, resubmit of v13) — r56 at inflight multiplier 8 with a staleness cap of 8 on the ns trainer stack
 
-**Status:** Running
+**Status:** Retired 2026-10-06 07:48Z on the owner's word; replaced by `guparpit-agentic-debt-v22` (the same run at inflight multiplier 12)
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-05
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `rollout_function_path` `generate_rollout` -> `NatsRolloutFn`; `arena_inflight_multiplier` 4 -> 8; `max_weight_staleness` 8 (new key); `arena_output_queue_groups` 64 (new key); `prefetch_rollout_data` true (from r56); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v18`, seeded from r54 (`guparpit-agentic-debt-v7`), `iter_0000089` (its latest save at copy time, 2026-10-05 14:02Z; sidecar `{"rollout_id": 89}` without `wandb_run_id`, data state 89, tracker 89, 135 objects match)
-**Outcome:** Running. Resubmit of v16 (r56-ns) on the ns-b trainer image, which fixes `NatsRolloutFn`: it read `args.start_rollout_id`, None inside the RolloutExecutor actor, and v15 and v16 stopped at their first rollout with `TypeError: '>' not supported between instances of 'int' and 'NoneType'`.
+**Outcome:** Retired 2026-10-06 07:48Z (Argo `spec.shutdown: Stop`, cleanup ran). Last rollout 117, last save `iter_0000109` (the seed of `guparpit-agentic-debt-v22`). Gate summary: multiplier 8 removed the trainer idle (waits 40 to 100 s, rollouts 91 to 99) until the staleness cap engaged at rollout 100 (data age reached 8); from then on 13 of 15 steps over 300 s, mean 772 s, 17 to 18% of finished groups dropped (reward of the dropped groups 0.72 to 0.93), batch reward in band (0.61 to 0.66 per 5-rollout bin), throughput 43K tokens per second, no span errors. Engine-side evidence (decode lines): running-req p50 36 per engine, KV usage p50 0.58, queue-req 0, so the engines had headroom; hence multiplier 12 in `guparpit-agentic-debt-v22`.
 
 The owner's order of 2026-10-05: set the staleness cap to 8, log the count and
 the reward of the dropped groups, and run it with and without the prefetch, as
@@ -102,3 +102,4 @@ v12 against v13 for the prefetch.
 | 16:02:52 | Submit `guparpit-agentic-debt-v18-dmndz`, after v17's 40 trainer pods were Running. Exclusions refreshed at submit: 304 B200 nodes, 34 bad; 345 excluded. Queue at submit: pending 0, admitted 14. |
 | 16:06:00 | Trainer PyTorchJob `guparpit-agentic-debt-v18-dmndz-trainer` created. Kueue admitted it within a minute; 40 Running at 16:07 and at 16:11. Argument dump: `rollout_function_path ...NatsRolloutFn`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `prefetch_rollout_data True`. |
 | 16:57 | Past the point where v12 to v16 died: the first `generate_rollout` call runs from 16:30 (`Waiting for results`), gym up; 1 of 32 groups after 27 min, no error. Live log capture continues in `ns/v18-follow.log`. |
+| 2026-10-06 07:48 | Retired on the owner's word (`spec.shutdown: Stop`), after the trainer PyTorchJob of `guparpit-agentic-debt-v22` existed (queued for capacity). Last rollout 117 (batch reward 0.636); last save 109. |

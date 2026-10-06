@@ -48,6 +48,10 @@ F_k 6/10/11/14 (debt carries), P_k 12, chain 0.0; oracle 1.0 at every step, chai
 |---|---|
 | 2026-10-06 09:40 | final-v5 stopped at step 14 (kueue 2,136 + 256 of 2,424 GPUs in use; 48 more nodes did not fit). |
 | 2026-10-06 09:44 | `kubectl create -f workflow.yaml` -> `acuadron-agentic-debt-final-v6-t66h9`. |
+| 2026-10-06 09:50 | 233 prompts loaded from the pinned manifest; engines load 120 shards; NATS connected 10:04:41 (concurrency 64, n 8, multiplier 4); 288/288 gyms ready 10:23. |
+| 2026-10-06 10:09-10:16 | Startup thundering herd on lakeFS: 34 of the first 256 groups dropped `reason=other` (`lakeFS download failed`, 5 retries exhausted) while 288 gyms fetched tasks at once. No repeat seen after 10:16. |
+| 2026-10-06 10:35-10:52 | dind OOMKilled (64Gi limit) on 2 gym pods and 3 restarts on a third: every trial on those pods lost its `main` container -> collect hook `service "main" is not running` -> no handoff -> `no_reward` (15 trajectories in rollout 0: 7 `no verifier reward`, 5 at segment-02, 3 at segment-03). Not a payload fault; verifier containers declare 16 GiB each, 8 per pod. |
+| 2026-10-06 10:57 | Rollout 0 complete: 64 groups, 512 attempts, avg_reward 0.779 (kept groups), raw_reward 0.825, response len 16,197, 3,116 s (final-v5 rollout 0: 3,090 s). Zero-variance drops logged: 4 all-1.0, 6 all-0.0. `train_wait` 3,514 s, `data_preprocess` 4.4 s; step 0 (cold JIT) started. Published trials carry `prestep/` and `handoff/`, `baseline-plan` mode=full. |
 | 2026-10-06 09:49 | 48/48 trainer pods Running on 48 distinct nodes, none on the exclusion list; digest `437bf865…`; argv `--glm5-next-dsa-qp --glm5-next-kda-tp --prefetch-rollout-data --expert-model-parallel-size 8 --decoder-first-pipeline-num-layers 12 --decoder-last-pipeline-num-layers 11 --lr 1e-05 --global-batch-size 512 --rollout-batch-size 64 --n-samples-per-prompt 8 --arena-inflight-multiplier 4`. W&B `jzfxq3v2`. |
 
 ## Results
@@ -56,7 +60,8 @@ F_k 6/10/11/14 (debt carries), P_k 12, chain 0.0; oracle 1.0 at every step, chai
 
 ## Issues
 
-(none yet)
+- dind OOM (template v10: dind memory 64Gi, 8 trials per pod, verifier `memory_mb` 16384 each) kills in-flight trials; ~3 % of rollout-0 attempts. Mitigation needs an owned template variant (dind 128Gi, as `acuadron-miles-deployer-v3` had) and a relaunch or the NATS/gym restart dance; not applied.
+- lakeFS startup herd: one-time, 34 groups.
 
 ## Follow-ups
 

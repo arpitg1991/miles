@@ -116,3 +116,11 @@ engines log it (`accept len` in the `Decode batch` lines).
 
 `log: step ms` is not comparable across jobs a-c: it is a median over every decode line of the server log,
 and job c adds the temperature-1 phase to the mix. Use the bench columns.
+
+### Live validation — `acuadron-agentic-debt-engine-ab-v1` (24 nodes, 2026-10-06)
+
+The `combo-nextn3` flags in the full loop (`training-runs/.../acuadron-agentic-debt-engine-ab-v1/RECORD.md`):
+engines serve, weight sync works with the speculative draft, R3 payloads under speculation pass the trainer's
+strict check, log-prob gap 0.0198 / 0.0214 at steps 0 / 1 (final-v5 with tilelang engines: 0.0257 / 0.0270).
+On agentic text the accept length is 2.69 of 4 (not the bench's 3.93), and the decode throughput at 40-50
+running requests is 2,204 tok/s against final-v5's 1,548 (**+42%**); rollout 0 per engine -25% wall time.

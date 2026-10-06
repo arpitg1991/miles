@@ -57,6 +57,16 @@ ARMS = {
                                         "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "3"]),
     "nextn3": ("tilelang", "tilelang", ["--speculative-algorithm", "NEXTN", "--speculative-num-steps", "3",
                                         "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "4"]),
+    # combinations of the winners of 20261006a/b
+    "combo": ("trtllm", "trtllm", ["--moe-runner-backend", "flashinfer_cutlass", "--enable-flashinfer-allreduce-fusion"]),
+    "combo-ncds2": ("trtllm", "trtllm", ["--moe-runner-backend", "flashinfer_cutlass", "--enable-flashinfer-allreduce-fusion",
+                                         "--num-continuous-decode-steps", "2"]),
+    "combo-nextn2": ("trtllm", "trtllm", ["--moe-runner-backend", "flashinfer_cutlass", "--enable-flashinfer-allreduce-fusion",
+                                          "--speculative-algorithm", "NEXTN", "--speculative-num-steps", "2",
+                                          "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "3"]),
+    "combo-nextn3": ("trtllm", "trtllm", ["--moe-runner-backend", "flashinfer_cutlass", "--enable-flashinfer-allreduce-fusion",
+                                          "--speculative-algorithm", "NEXTN", "--speculative-num-steps", "3",
+                                          "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "4"]),
 }
 
 # The live engine arguments that matter for the kernels and the memory layout (sglang_engine.py
@@ -135,6 +145,28 @@ def build_prompts(tokenizer) -> list[dict]:
             break
         prompts.append({"tokens": n, "text": tokenizer.decode(ids[:n])})
     return prompts
+
+
+def build_custom_dataset(tokenizer, path: Path, n: int, prompt_tokens: int, output_tokens: int, seed: int = 1) -> None:
+    """``n`` conversations of real, non-repeated code: windows of ``prompt_tokens`` tokens from the image's
+    Python sources at distinct offsets, each with a ``output_tokens``-token completion (its length sets the
+    output length under bench_serving's ignore_eos)."""
+    import random
+
+    files = sorted(Path("/root/miles/miles").rglob("*.py"))
+    text = "\n".join(f.read_text(errors="replace") for f in files)
+    ids = tokenizer(text, add_special_tokens=False)["input_ids"]
+    rng = random.Random(seed)
+    span = prompt_tokens + output_tokens
+    assert len(ids) > span * 2, f"only {len(ids)} tokens of source text"
+    starts = sorted(rng.sample(range(0, len(ids) - span), n))
+    with path.open("w") as f:
+        for st in starts:
+            f.write(json.dumps({"conversations": [
+                {"content": tokenizer.decode(ids[st : st + prompt_tokens])},
+                {"content": tokenizer.decode(ids[st + prompt_tokens : st + span])},
+            ]}) + "\n")
+    log(f"custom dataset: {n} prompts of {prompt_tokens} tokens from {len(ids)} tokens of source text -> {path}")
 
 
 def routed_experts_of(resp: dict, prompt_tokens: int, n_out: int):
@@ -235,18 +267,23 @@ def compare_greedy(base: list[dict], other: list[dict]) -> list[dict]:
     return rows
 
 
-def run_bench(out: Path, concurrency: int, num_prompts: int) -> dict | None:
-    f = out / f"bench-c{concurrency}.jsonl"
+def run_bench(out: Path, concurrency: int, num_prompts: int, dataset: Path | None = None, temperature: float = 0.0) -> dict | None:
+    tag = f"c{concurrency}" if dataset is None else f"real-c{concurrency}"
+    f = out / f"bench-{tag}.jsonl"
     cmd = [
         sys.executable, "-m", "sglang.bench_serving", "--backend", "sglang", "--host", "127.0.0.1", "--port", str(PORT),
-        "--model", MODEL, "--dataset-name", "random", "--random-input-len", "27000", "--random-output-len", "2048",
-        "--random-range-ratio", "1.0", "--num-prompts", str(num_prompts), "--max-concurrency", str(concurrency),
+        "--model", MODEL, "--num-prompts", str(num_prompts), "--max-concurrency", str(concurrency),
         "--request-rate", "inf", "--seed", "1", "--disable-tqdm", "--output-file", str(f),
+        "--extra-request-body", json.dumps({"temperature": temperature}),
     ]
+    if dataset is None:
+        cmd += ["--dataset-name", "random", "--random-input-len", "27000", "--random-output-len", "2048", "--random-range-ratio", "1.0"]
+    else:
+        cmd += ["--dataset-name", "custom", "--dataset-path", str(dataset), "--sharegpt-output-len", "2048"]
     t0 = time.time()
-    with open(out / f"bench-c{concurrency}.log", "w") as lf:
+    with open(out / f"bench-{tag}.log", "w") as lf:
         rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, timeout=3600, check=False).returncode
-    log(f"bench c{concurrency}: rc={rc} in {time.time() - t0:.0f} s")
+    log(f"bench {tag}: rc={rc} in {time.time() - t0:.0f} s")
     if not f.exists():
         return None
     lines = [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
@@ -260,6 +297,7 @@ def parse_decode_log(server_log: Path) -> dict:
         if m:
             rows.append((int(m.group(1)), float(m.group(2))))
     accept = [float(x) for x in re.findall(r"accept len: ([0-9.]+)", server_log.read_text(errors="replace"))]
+    accept_tail = accept[-300:]
     mid = [tps for n, tps in rows if 40 <= n <= 50 and tps > 0]
     hi = [tps for n, tps in rows if 80 <= n <= 92 and tps > 0]
     step = lambda xs, n: (n / statistics.median(xs) * 1000) if xs else None  # noqa: E731
@@ -270,6 +308,7 @@ def parse_decode_log(server_log: Path) -> dict:
         "tps_bs80_92_median": statistics.median(hi) if hi else None,
         "step_ms_bs90": step(hi, 90),
         "accept_len_median": statistics.median(accept) if accept else None,
+        "accept_len_tail_median": statistics.median(accept_tail) if accept_tail else None,
     }
 
 
@@ -279,6 +318,8 @@ def main() -> int:
     ap.add_argument("--arms", nargs="*", default=list(ARMS))
     ap.add_argument("--concurrency", nargs="*", type=int, default=[45, 90])
     ap.add_argument("--health-timeout", type=float, default=1800)
+    ap.add_argument("--real-concurrency", nargs="*", type=int, default=[45],
+                    help="also run bench_serving on real code prompts at temperature 1 at these concurrencies")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -288,6 +329,10 @@ def main() -> int:
     tokenizer = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
     prompts = build_prompts(tokenizer)
     log(f"greedy prompts: {[p['tokens'] for p in prompts]} tokens")
+    dataset = None
+    if args.real_concurrency:
+        dataset = out / "custom-code-27k.jsonl"
+        build_custom_dataset(tokenizer, dataset, n=max(args.real_concurrency), prompt_tokens=27000, output_tokens=2048)
 
     summary = {}
     base_greedy = None
@@ -316,16 +361,16 @@ def main() -> int:
                     res["greedy_vs_first"] = compare_greedy(base_greedy, greedy)
                 res["greedy_seconds"] = [g["seconds"] for g in greedy]
                 res["routing_sanity"] = [g.get("routing_sanity") for g in greedy]
+                keys = ("completed", "duration", "output_throughput", "total_throughput", "mean_ttft_ms",
+                        "median_tpot_ms", "p90_tpot_ms", "mean_e2e_latency_ms", "total_output_tokens")
                 for c in args.concurrency:
                     r = run_bench(d, c, c)
                     if r:
-                        res[f"bench_c{c}"] = {
-                            k: r.get(k)
-                            for k in (
-                                "completed", "duration", "output_throughput", "total_throughput", "mean_ttft_ms",
-                                "median_tpot_ms", "p90_tpot_ms", "p99_tpot_ms", "mean_e2e_latency_ms",
-                            )
-                        }
+                        res[f"bench_c{c}"] = {k: r.get(k) for k in keys}
+                for c in args.real_concurrency if dataset is not None else []:
+                    r = run_bench(d, c, c, dataset=dataset, temperature=1.0)
+                    if r:
+                        res[f"bench_real_c{c}"] = {k: r.get(k) for k in keys}
         except Exception as e:  # noqa: BLE001 - record the failure and go on to the next arm
             res["error"] = repr(e)
             log(f"arm {arm}: FAILED {e!r}")
@@ -341,18 +386,21 @@ def main() -> int:
 def write_summary(out: Path, summary: dict, arms: list[str]) -> None:
     fmt = lambda v, p=1: "-" if v is None else (f"{v:.{p}f}" if isinstance(v, float) else str(v))  # noqa: E731
     lines = ["# SGLang DSA backend benchmark (GLM-5.3-Flash, TP8 EP8, one B200 node)", ""]
-    lines.append("| arm | prefill / decode | startup s | c45: median TPOT ms | c45: out tok/s | c45: mean TTFT s | c90: median TPOT ms | c90: out tok/s | log: step ms @bs45 | error |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("| arm | prefill / decode | startup s | c45: median TPOT ms | c45: out tok/s | c45: mean TTFT s | c90: median TPOT ms | c90: out tok/s | real T=1 c45: TPOT ms | real c45: out tok/s | real accept len | log: step ms @bs45 | error |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for arm in arms:
         r = summary.get(arm)
         if not r:
             continue
         b45, b90, dl = r.get("bench_c45") or {}, r.get("bench_c90") or {}, r.get("decode_log") or {}
+        rb = r.get("bench_real_c45") or {}
         extra = " " + " ".join(r["extra"]) if r.get("extra") else ""
         lines.append(
             f"| {arm} | {r['prefill']} / {r['decode']}{extra} | {fmt(r.get('startup_s'))} | {fmt(b45.get('median_tpot_ms'))} | "
             f"{fmt(b45.get('output_throughput'), 0)} | {fmt((b45.get('mean_ttft_ms') or 0) / 1000 if b45 else None)} | "
-            f"{fmt(b90.get('median_tpot_ms'))} | {fmt(b90.get('output_throughput'), 0)} | {fmt(dl.get('step_ms_bs45'))} | {r.get('error', '')} |"
+            f"{fmt(b90.get('median_tpot_ms'))} | {fmt(b90.get('output_throughput'), 0)} | "
+            f"{fmt(rb.get('median_tpot_ms'))} | {fmt(rb.get('output_throughput'), 0)} | {fmt(dl.get('accept_len_tail_median'), 2)} | "
+            f"{fmt(dl.get('step_ms_bs45'))} | {r.get('error', '')} |"
         )
     lines += ["", "## Greedy numerics vs the first arm (temperature 0, 160 new tokens)", ""]
     lines.append("| arm | prompt tokens | equal leading tokens | max abs dlogprob on prefix | mean abs dlogprob | expert-set match |")

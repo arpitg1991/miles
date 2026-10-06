@@ -16,7 +16,8 @@ segment; the segments share one ``rollout_id`` and one reward (ADR-0011).
 or through a ``token_arrays_ref`` file that the trainer reads when it
 converts the result (ADR-0014).
 
-Wired in via ``--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.generate_rollout``.
+Wired in via ``--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.generate_rollout``,
+or ``...nats_rollout.NatsRolloutFn`` (the class seam), which ``--max-weight-staleness`` needs (ADR-0019).
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ from typing import Any
 
 import numpy as np
 
+from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnInput, RolloutFnTrainOutput
+from miles.rollout.fully_async_data_buffer import group_oldest_weight_version
 from miles.utils.types import Sample
 
 from miles_plugins.arena.nats_arena.message_format import (
@@ -69,7 +72,7 @@ RolloutTimingTracker = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["generate_rollout"]
+__all__ = ["NatsRolloutFn", "generate_rollout"]
 
 
 # ---------------------------------------------------------------------------
@@ -2373,7 +2376,40 @@ def _write_sample_summary(args: Any, rollout_id: int, samples: list[Sample]) -> 
         logger.warning("arena sample summary for rollout %d failed: %s", rollout_id, exc)
 
 
-def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = False):
+def _group_staleness(group: list[Sample], weight_version: int | None) -> int | None:
+    """Versions between the oldest weight version of ``group`` and ``weight_version``; None if either is unknown.
+
+    The upstream fully-async ``DataBuffer._staleness`` rule. Every sample of the group counts, and a sample
+    without a numeric version (a failed-slot pad) counts as unknown.
+    """
+    oldest = group_oldest_weight_version(group)
+    if oldest is None or weight_version is None:
+        return None
+    return weight_version - oldest
+
+
+def _staleness_metrics(stale_dropped: int, stale_dropped_rewards: list[float], kept: list[int]) -> dict[str, float]:
+    """The staleness keys of upstream ``DataBuffer.get_metrics`` and the two owner keys of arpit-ns-20261005.
+
+    ``stale_groups_filtered`` and ``num_old_age_dropped`` count the dropped groups every rollout;
+    ``reward_old_age_dropped`` is present only when a group was dropped (no NaN in W&B); the
+    ``avg``/``max`` staleness keys cover the kept groups with a known staleness.
+    """
+    metrics: dict[str, float] = {
+        "rollout/fully_async/stale_groups_filtered": stale_dropped,
+        "rollout/num_old_age_dropped": stale_dropped,
+    }
+    if stale_dropped_rewards:
+        metrics["rollout/reward_old_age_dropped"] = sum(stale_dropped_rewards) / len(stale_dropped_rewards)
+    if kept:
+        metrics["rollout/fully_async/avg_staleness"] = sum(kept) / len(kept)
+        metrics["rollout/fully_async/max_staleness"] = max(kept)
+    return metrics
+
+
+def generate_rollout(
+    args, rollout_id: int, data_source, evaluation: bool = False, weight_version: int | None = None
+):
     """NATS rollout function entry point.
 
     Uses a global background worker that continuously publishes tasks to
@@ -2384,11 +2420,24 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     The background worker publishes up to rollout_batch_size prompts
     in-flight to keep gym workers saturated. This decouples collection
     throughput from training step consumption.
+
+    ``weight_version`` is the weight version that trains the batch. Only
+    ``NatsRolloutFn`` passes it (``_train_weight_version``). The upstream
+    consume-time staleness filter then applies, as in the fully-async
+    ``DataBuffer.get``: with ``--max-weight-staleness``, a group whose oldest
+    weight version is more than that many versions behind is dropped
+    (port of arpit-ns-20261005 9775f958, c830cff7, 19dee1af; ADR-0019).
     """
     if evaluation:
         raise NotImplementedError("Evaluation mode not yet supported for NATS rollout")
 
     assert args.rollout_global_dataset
+    max_staleness = getattr(args, "max_weight_staleness", None)
+    if max_staleness is not None and weight_version is None:
+        raise ValueError(
+            "--max-weight-staleness needs the weight version that trains the batch, and this call has none. Only "
+            "--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn passes it."
+        )
 
     worker = get_global_worker(args, data_source)
     # The thread can die with a full queue; the wait loop below never runs then.
@@ -2432,6 +2481,9 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
     all_data: list[list[Sample]] = []
     examined = 0
     dropped = 0
+    stale_dropped = 0
+    # Mean reward of each group the staleness cap drops, one value per episode (W&B: rollout/reward_old_age_dropped).
+    stale_dropped_rewards: list[float] = []
     lost_ref_groups = 0
     rescued = 0
     start_time = time.time()
@@ -2479,6 +2531,22 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                         # A dropped group never decodes; delete its blobs.
                         reap_sample_refs(group)
                     continue
+
+            # Consume-time staleness, as upstream fully-async DataBuffer.get: the
+            # oldest weight version of the group against the version that trains
+            # the batch.
+            # ponytail: a stale group is always dropped, so
+            # --async-unused-samples-handler retry has no effect here. Upgrade
+            # path: give the prompt back to the data source for a new publish.
+            staleness = _group_staleness(group, weight_version)
+            if max_staleness is not None and staleness is not None and staleness > max_staleness:
+                stale_dropped += 1
+                rewards = [e.reward for e in _episode_representatives([group]) if isinstance(e.reward, (int, float))]
+                if rewards:
+                    stale_dropped_rewards.append(sum(rewards) / len(rewards))
+                if replay_on:
+                    reap_sample_refs(group)
+                continue
 
             if replay_on:
                 # Drain-time decode (ADR-0012): the group is about to join the
@@ -2554,6 +2622,23 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
             "length-reward rescued=%d%s",
             len(data), target_groups, dropped, examined, max_examined, rescued,
             " [HIT CAP — accepted unfiltered tail]" if examined >= max_examined and len(data) < target_groups else "",
+        )
+
+    staleness_metrics = _staleness_metrics(
+        stale_dropped,
+        stale_dropped_rewards,
+        [x for group in data if (x := _group_staleness(group, weight_version)) is not None],
+    )
+    if weight_version is not None:
+        logger.info(
+            "Weight staleness: dropped=%d stale groups (max_weight_staleness=%s), kept=%d groups, "
+            "avg=%s max=%s at weight_version=%s",
+            stale_dropped,
+            max_staleness,
+            len(data),
+            staleness_metrics.get("rollout/fully_async/avg_staleness"),
+            staleness_metrics.get("rollout/fully_async/max_staleness"),
+            weight_version,
         )
 
     # --arena-train-segments all: every sample carries a rollout_id, so miles
@@ -2714,6 +2799,8 @@ def generate_rollout(args, rollout_id: int, data_source, evaluation: bool = Fals
                 "rollout/dyn_sampling_drop_frac": (
                     dropped / examined if examined > 0 else 0.0
                 ),
+                # staleness cap (--max-weight-staleness, NatsRolloutFn)
+                **staleness_metrics,
             }
 
             # Aggregate gym-side group_metrics (num_turns, completion_length,
@@ -2929,5 +3016,59 @@ def _add_arena_arguments(parser):
 
 
 generate_rollout.add_arguments = _add_arena_arguments
+
+
+def _train_weight_version(args, rollout_id: int, engine_version: int | None, start_rollout_id: int) -> int | None:
+    """Return the weight version that trains rollout ``rollout_id``.
+
+    ``RolloutFnTrainInput.weight_version`` is the engine version when the drain
+    starts. ``train_async_arena`` starts the drain of rollout ``r`` before it
+    trains rollout ``r - 1``, waits for that drain, and then, when ``r`` is a
+    multiple of ``--update-weights-interval``, updates the weights before it
+    trains rollout ``r``. That batch thus trains one version after the engine
+    version. The first rollout of a process drains after the initial update
+    and trains with no update between.
+    """
+    if engine_version is None:
+        return None
+    update_before_train = rollout_id > start_rollout_id and rollout_id % args.update_weights_interval == 0
+    return engine_version + 1 if update_before_train else engine_version
+
+
+class NatsRolloutFn:
+    """``generate_rollout`` behind the class seam, which passes the engine weight version.
+
+    ``LegacyRolloutFnAdapter`` drops ``RolloutFnTrainInput.weight_version``, so
+    ``--max-weight-staleness`` needs
+    ``--rollout-function-path miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn``.
+    The class gives ``generate_rollout`` the version that trains the batch
+    (``_train_weight_version``). Without the flag it behaves as the function.
+    """
+
+    add_arguments = staticmethod(_add_arena_arguments)
+
+    def __init__(self, input: RolloutFnConstructorInput) -> None:
+        self.args = input.args
+        self.data_source = input.data_source
+        # The first rollout id this process trains. The RolloutManager keeps its own copy of args, where
+        # start_rollout_id stays None unless the command line sets it (the driver sets it on its copy after
+        # the trainer loads), so the first call names it otherwise: the driver drains the start rollout first.
+        # ponytail: a RolloutManager restart mid-run takes its first call as the start, so that one batch is
+        # measured one version low. Upgrade path: pass the start rollout id through RolloutManager.load.
+        self._start_rollout_id: int | None = None
+
+    def __call__(self, input: RolloutFnInput) -> RolloutFnTrainOutput:
+        if self._start_rollout_id is None:
+            start = getattr(self.args, "start_rollout_id", None)
+            self._start_rollout_id = input.rollout_id if start is None else start
+        weight_version = (
+            None
+            if input.evaluation
+            else _train_weight_version(self.args, input.rollout_id, input.weight_version, self._start_rollout_id)
+        )
+        samples = generate_rollout(
+            self.args, input.rollout_id, self.data_source, evaluation=input.evaluation, weight_version=weight_version
+        )
+        return RolloutFnTrainOutput(samples=samples)
 
 atexit.register(stop_global_worker)

@@ -44,3 +44,5 @@ run records and studies), not here.
 | [0015](0015-task-message-carries-output-cap-window-and-sampling.md) | The task message carries the output cap, the window, and the sampling values; the gym keeps no env copy (amends ADR-0002; reverses the r8 rejections R2 and R3) |
 | [0016](0016-shard-kda-across-tensor-parallel-ranks.md) | Shard the GLM-5.3 KDA layers across the tensor-parallel ranks; first port released (r17, r47), upstream shared layer is the successor (pairs with the radixark #3609 stack) |
 | [0017](0017-training-runs-record-convention.md) | Training runs get one record per run and one record per study under `training-runs/`; `gen-workflow.py` writes the header and fails without a dataset; the family `RUNLOG.md` is closed |
+| [0018](0018-query-parallel-dsa-sparse-attention.md) | Query-parallel DSA sparse attention for GLM-5.3-Flash training behind `--glm5-next-dsa-qp` (3.2x train step; accepted 2026-10-03) |
+| [0019](0019-weight-staleness-cap-on-the-nats-path.md) | Consume-time `--max-weight-staleness` cap on the NATS drain through the `NatsRolloutFn` class seam (port of arpit-ns-20261005; accepted 2026-10-06) |

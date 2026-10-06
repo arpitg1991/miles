@@ -1,6 +1,6 @@
 # Run record: acuadron-agentic-debt-final-v5 — final-v3 recipe on the r20 trainer (dsa-qp + the R3 data path of arpit-r3-datapath)
 
-**Status:** Running
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-06
 **Family:** `harbor-rl-glm53-flash`
@@ -16,7 +16,7 @@
 **Argo workflow:** `acuadron-agentic-debt-final-v5-nbz8w` (submitted 2026-10-06 00:35 UTC)
 **Trainer config deltas vs base:** `prefetch_rollout_data: true` (new key); run names -> v5. Workflow: `trainer-image` r19 -> r20, `excluded-nodes` = the final-v4 list (final-v3's 98 + the 3 NVLink-fault nodes), `replicas` 48 (16 actor + 32 engines) as in v3.
 **Checkpoints:** `/mnt/scratch-s3files-rw/acuadron/checkpoints/slime_experiments/acuadron-agentic-debt-final-v5` (fresh; starts from `ref_load`)
-**Outcome:** Running. Steps 0-2 measured (2026-10-06 03:20 UTC): the data path is gone from the step (`data_preprocess` 177 s -> 2.8 s, `train_wait` 249 -> 29 s at step 2 vs final-v3), the per-token train rate is unchanged (34.4 vs 33.6 us/token/rank at step 2), numerics in the final-v3 range. Step 2: 679 s vs 941 s (-28%).
+**Outcome:** Stopped 2026-10-06 09:40 UTC at step 14 (last `iter_0000009`, saved 06:45 UTC in 90 s) to free the 48 nodes for final-v6 (the same trainer on the republished live-baseline `agentic-debt-final`). Goal met at steps 0-2. Resumable under the same experiment name. Steps 0-2 measured (2026-10-06 03:20 UTC): the data path is gone from the step (`data_preprocess` 177 s -> 2.8 s, `train_wait` 249 -> 29 s at step 2 vs final-v3), the per-token train rate is unchanged (34.4 vs 33.6 us/token/rank at step 2), numerics in the final-v3 range. Step 2: 679 s vs 941 s (-28%).
 
 ## Goal
 
@@ -74,3 +74,6 @@ same object, so the trainer numerics do not change; the log-prob gap moves with 
 With the data path gone the loop is rollout-bound at `arena_inflight_multiplier` 4: step 3 waited for
 rollout 3 (1,381 s between rollouts against a 650 s train step). Supply (multiplier, engine share) is the
 next lever, not the trainer.
+
+| 2026-10-06 09:36 | Step 14 done; rollout 14: 64 groups, avg_reward 0.650, 2,051 s (queue 2): rollout-bound at multiplier 4. |
+| 2026-10-06 09:40 | `argo stop` for final-v6 capacity (kueue: 2,136 + 256 of 2,424 B200 GPUs in use; 48 more nodes did not fit). Last checkpoint `iter_0000009`. |

@@ -43,6 +43,7 @@ def test_megatron_offload_uses_torch_memory_saver_preload_resolver(monkeypatch):
         train_env_vars={},
         update_weight_transfer_mode="broadcast",
         use_fault_tolerance=False,
+        prefetch_rollout_data=False,
     )
 
     actors = actor_factory.allocate_gpus_for_actor(

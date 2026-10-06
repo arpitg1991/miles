@@ -634,6 +634,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=1,
                 help="Number of Mooncake memory replicas for each stored object.",
             )
+            parser.add_argument(
+                "--prefetch-rollout-data",
+                action="store_true",
+                default=False,
+                help=(
+                    "While a train step runs, pull each train rank's shard of the next rollout to its node and "
+                    "hold it, so that the next step does not wait for the transfer. Each node then holds two "
+                    "shards. Ray object store backend only."
+                ),
+            )
 
             # sampling
             parser.add_argument(
@@ -3557,8 +3567,19 @@ def miles_validate_args(args):
     if args.enable_mtp_training:
         assert args.mtp_num_layers, "mtp_num_layers must be set when enable_mtp_training is set"
 
+    if args.prefetch_rollout_data:
+        # The prefetch pulls a Ray object to the node (ray.wait fetch_local); Mooncake has no such pull.
+        assert (
+            args.object_store_backend == "ray"
+        ), f"--prefetch-rollout-data needs --object-store-backend ray, got {args.object_store_backend}"
+
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
+        # The trainer shards carry expert ids 0..num_experts-1 as int16 (train_data_conversion.py).
+        num_experts = getattr(args, "num_experts", None)
+        assert (
+            num_experts is None or num_experts <= 2**15
+        ), f"--use-rollout-routing-replay carries expert ids as int16, but --num-experts is {num_experts}"
 
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}

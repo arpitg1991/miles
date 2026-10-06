@@ -8,6 +8,7 @@ from types import TracebackType
 from typing import Any
 
 import ray
+from ray.experimental import get_object_locations
 
 from miles.utils.ray_utils import Box
 
@@ -39,6 +40,15 @@ class ObjectStoreBackend(Enum):
 class ValueSpec:
     codec: str
     dtype: str | None = None
+
+
+@dataclass(frozen=True)
+class StoreObjectInfo:
+    """Where a stored object is, for the data-path log lines (miles/utils/r3_log.py)."""
+
+    key: str  # the object id in hex, "-" if the backend has none
+    size: int  # stored bytes, -1 if the backend does not say
+    local: int  # 1 if this node holds a copy, 0 if it does not, -1 if the backend does not say
 
 
 class ObjectStoreGetResult:
@@ -109,6 +119,13 @@ class BaseObjectStore(ABC):
     def remove(self, ref: StoreObjectRef) -> None:
         raise NotImplementedError
 
+    def locate(self, ref: StoreObjectRef) -> StoreObjectInfo:
+        return StoreObjectInfo(key="-", size=-1, local=-1)
+
+    def pull(self, ref: StoreObjectRef) -> None:
+        """Block until this node holds a copy of the object (--prefetch-rollout-data)."""
+        raise NotImplementedError(f"{type(self).__name__} cannot pull an object to this node")
+
 
 # ============================ ray backend ==========================
 
@@ -122,6 +139,20 @@ class RayObjectStore(BaseObjectStore):
 
     def remove(self, ref: StoreObjectRef) -> None:
         pass
+
+    def locate(self, ref: StoreObjectRef) -> StoreObjectInfo:
+        # Not get_local_object_locations: a train rank only borrows the ref, and only the owner knows the copies.
+        (location,) = get_object_locations([ref.inner]).values()
+        size = location.get("object_size")
+        return StoreObjectInfo(
+            key=ref.inner.hex(),
+            size=-1 if size is None else size,
+            local=int(ray.get_runtime_context().get_node_id() in location["node_ids"]),
+        )
+
+    def pull(self, ref: StoreObjectRef) -> None:
+        # A finished wait does not pin the local copy, so the caller gets the object right after.
+        ray.wait([ref.inner], num_returns=1, timeout=None, fetch_local=True)
 
 
 def _release_noop(value: Any) -> None:

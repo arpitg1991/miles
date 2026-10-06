@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Protocol
 
 import torch
@@ -59,6 +60,14 @@ def fill_replay_data(
     tp_rank = parallel_state.tp.rank
     tp_size = parallel_state.tp.size
     qkv_format = args.qkv_format
+    # sequence_parallel is Megatron-only; FSDP has tp_size == 1 so the slice is a no-op there.
+    sequence_parallel = getattr(args, "sequence_parallel", False) and if_sp_region
+
+    def sp_rows(seqlen: int) -> slice:
+        if not sequence_parallel:
+            return slice(0, seqlen)
+        assert seqlen % tp_size == 0
+        return slice(seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1))
 
     def pad_func(data, pad):
         _, num_layers, topk = data.shape
@@ -78,14 +87,13 @@ def fill_replay_data(
         for a, b in zip(replay_data, tokens, strict=False):
             assert a.shape[0] == b.shape[0] - 1, f"{a.shape}, {b.shape}"
 
-        # Pad replay data to align with the token batch's final token. The padded token is masked from loss.
-        # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
-        replay_data = [pad_func(r, 1) for r in replay_data]
         # TODO: maybe extract a common process function for here and get_batch?
-
         cp_size = parallel_state.cp.size
         cp_rank = parallel_state.cp.rank
         if qkv_format == "bshd":
+            # Pad replay data to align with the token batch's final token. The padded token is masked from loss.
+            # TODO: fuse this padding with the following slice_with_cp to reduce memory copy.
+            replay_data = [pad_func(r, 1) for r in replay_data]
             max_seqlen = batch["max_seq_lens"][0]
             if args.allgather_cp and cp_size > 1:
                 assert max_seqlen % cp_size == 0, f"max_seqlen {max_seqlen} must be divisible by cp_size {cp_size}"
@@ -97,34 +105,17 @@ def fill_replay_data(
             replay_data = torch.stack(replay_data, dim=0)
             batch_size, seqlen, num_layers, topk = replay_data.shape
             replay_data = replay_data.reshape(batch_size * seqlen, num_layers, topk)
+            replay_data = replay_data[sp_rows(replay_data.size(0))]
         else:
-            pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
-            if args.allgather_cp and cp_size > 1:
-                replay_data = torch.cat(replay_data, dim=0)
-                global_pad_size = cp_size * pad_size
-                pad = (global_pad_size - replay_data.size(0) % global_pad_size) % global_pad_size
-                if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
-                replay_data = replay_data.chunk(cp_size, dim=0)[cp_rank]
-            else:
-                replay_data = [slice_with_cp(r, pad_func, qkv_format) for r in replay_data]
-                if indices_are_token_positions:
-                    # map indices to thd format
-                    offset = 0
-                    for i, r in enumerate(replay_data):
-                        replay_data[i] = torch.where(r != -1, r + offset, r)
-                        offset += r.shape[0]
-                replay_data = torch.cat(replay_data, dim=0)
-                pad = (pad_size - replay_data.size(0) % pad_size) % pad_size
-                if pad != 0:
-                    replay_data = pad_func(replay_data, pad)
-
-        # sequence_parallel is Megatron-only; FSDP has tp_size == 1 so the slice is a no-op there.
-        if getattr(args, "sequence_parallel", False) and if_sp_region:
-            seqlen = replay_data.size(0)
-            assert seqlen % tp_size == 0
-            start, end = seqlen // tp_size * tp_rank, seqlen // tp_size * (tp_rank + 1)
-            replay_data = replay_data[start:end]
+            replay_data = _thd_local_rows(
+                replay_data,
+                pad_size=parallel_state.tp.size * args.data_pad_size_multiplier,
+                cp_size=cp_size,
+                cp_rank=cp_rank,
+                allgather_cp=args.allgather_cp,
+                sp_rows=sp_rows,
+                indices_are_token_positions=indices_are_token_positions,
+            )
 
         register_replay_list_func(replay_list, replay_data, models=models)
 
@@ -132,3 +123,74 @@ def fill_replay_data(
 
     for iterator in data_iterator:
         iterator.reset()
+
+
+def _thd_local_rows(
+    replay_data: list[torch.Tensor],
+    *,
+    pad_size: int,
+    cp_size: int,
+    cp_rank: int,
+    allgather_cp: bool,
+    sp_rows: Callable[[int], slice],
+    indices_are_token_positions: bool,
+) -> torch.Tensor:
+    """This rank's rows of the packed ``thd`` replay sequence, copied once.
+
+    The packed sequence is each sample plus one -1 row (the loss-masked last
+    token), in the local CP layout, then -1 rows up to the pad multiple.
+    ``sp_rows`` keeps this rank's sequence-parallel part of the local rows.
+    Building the whole sequence first copies every row three times, and a
+    rank keeps only about 1/tp of the rows, so this walk copies only the kept
+    rows.
+
+    Port of the row-range fill in slime
+    ``prepare_routed_experts_for_routing_replay``
+    (``slime/backends/megatron_utils/cp_utils.py`` at 8088a4b, from THUDM/slime
+    PRs #2175 and #2410, Apache-2.0). Changes: -1 pad rows, not slime's expert
+    pattern, so that the replay tensors stay the same; and the token-position
+    offset of the indexer replay.
+    """
+    allgather = allgather_cp and cp_size > 1
+    # Per sample: (routing, chunks). A chunk is a row range of the sample plus its -1 row, in local order.
+    # Zigzag CP pads each sample with -1 rows to 2 * cp_size chunks; rows at or past len(routing) are -1.
+    samples = []
+    for routing in replay_data:
+        token_len = routing.size(0) + 1
+        if allgather or cp_size == 1:
+            chunks = [(0, token_len)]
+        else:
+            chunk = (token_len + 2 * cp_size - 1) // (2 * cp_size)
+            chunks = [
+                (chunk * cp_rank, chunk * (cp_rank + 1)),
+                (chunk * (2 * cp_size - cp_rank - 1), chunk * (2 * cp_size - cp_rank)),
+            ]
+        samples.append((routing, chunks))
+    total = sum(end - start for _, chunks in samples for start, end in chunks)
+    multiple = pad_size * cp_size if allgather else pad_size
+    padded = total + (multiple - total % multiple) % multiple
+    # All-gather CP pads the whole packed sequence, then this CP rank keeps one of cp_size equal parts.
+    local = padded // cp_size if allgather else padded
+    base = local * cp_rank if allgather else 0
+    rows = sp_rows(local)
+    start, end = base + rows.start, base + rows.stop
+
+    out = replay_data[0].new_empty((end - start, *replay_data[0].shape[1:]))
+    pos = 0  # row of the packed sequence where the current chunk starts
+    for routing, chunks in samples:
+        # The indexer replays token positions: rebase them onto the sample start in the packed sequence. The
+        # all-gather CP path has never rebased them, so it does not here, and its replay tensors stay the same.
+        offset = pos if indices_are_token_positions and not allgather else None
+        for chunk_start, chunk_end in chunks:
+            lo, hi = max(pos, start), min(pos + chunk_end - chunk_start, end)
+            if lo < hi:
+                src = chunk_start + lo - pos
+                real = max(0, min(hi - lo, routing.size(0) - src))
+                piece = routing[src : src + real]
+                if offset is not None:
+                    piece = torch.where(piece != -1, piece + offset, piece)
+                out[lo - start : lo - start + real] = piece
+                out[lo - start + real : hi - start] = -1
+            pos += chunk_end - chunk_start
+    out[max(total, start) - start :] = -1
+    return out

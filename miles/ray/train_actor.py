@@ -162,6 +162,18 @@ class TrainRayActor(RayActor):
     def train(self, rollout_id, rollout_data_ref, external_data=None):
         raise NotImplementedError
 
+    def prefetch_rollout_data(self, rollout_id: int, rollout_data_ref) -> None:
+        """--prefetch-rollout-data: pull this rank's shard of rollout ``rollout_id`` while train() runs.
+
+        It runs in the ROLLOUT_PREFETCH_GROUP concurrency group (actor_factory.py), not after train().
+        """
+        from miles.backends.training_utils.parallel import get_parallel_state
+        from miles.utils.data import prefetch_rollout_data
+
+        prefetch_rollout_data(
+            self.args, rollout_data_ref, rollout_id=rollout_id, dp_rank=get_parallel_state().effective_dp.rank
+        )
+
     @abc.abstractmethod
     def save_model(self, rollout_id, force_sync=False):
         raise NotImplementedError

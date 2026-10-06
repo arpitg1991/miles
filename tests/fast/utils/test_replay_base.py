@@ -2,6 +2,7 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
+import pytest
 import torch
 
 from miles.utils.replay_base import BaseReplayManager
@@ -51,3 +52,19 @@ def test_get_topk_fn_preserves_partial_padding():
     topk_fn = manager.get_topk_fn(_topk, return_probs=False)
 
     torch.testing.assert_close(topk_fn(scores, 3), replayed_top_indices)
+
+
+@pytest.mark.parametrize(
+    ("replay_dtype", "expected_dtype"),
+    [(torch.int16, torch.int32), (torch.int32, torch.int32), (torch.int64, torch.int64)],
+)
+def test_get_topk_fn_gathers_with_int16_replay(replay_dtype, expected_dtype):
+    # rollout routing arrives as int16, but torch gather takes only int32 or int64 indices
+    scores = torch.arange(10, dtype=torch.float32).reshape(2, 5)
+    manager = _make_replay_manager(torch.tensor([[3, 1], [-1, -1]], dtype=replay_dtype))
+
+    topk_fn = manager.get_topk_fn(lambda s, k: torch.topk(s, k, dim=1), return_probs=True)
+    probs, top_indices = topk_fn(scores, 2)
+
+    torch.testing.assert_close(top_indices, torch.tensor([[3, 1], [0, 1]], dtype=expected_dtype))
+    torch.testing.assert_close(probs, torch.tensor([[3.0, 1.0], [5.0, 6.0]]))

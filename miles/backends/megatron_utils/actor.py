@@ -26,6 +26,7 @@ from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.processing_utils import load_tokenizer
+from miles.utils.r3_log import log_r3_mem, log_replay_digest, r3_timing, train_rank
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
@@ -447,11 +448,12 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.offload_train and self._asleep:
             self.wake_up()
         _reset_peak_memory()
+        log_r3_mem(logger, rollout=rollout_id, at="start")
 
         with ExitStack() as stack:
             with timer("data_preprocess"):
                 rollout_data, store_get_result = get_rollout_data(
-                    self.args, rollout_data_ref, witness_info=witness_info
+                    self.args, rollout_data_ref, witness_info=witness_info, rollout_id=rollout_id
                 )
                 stack.enter_context(store_get_result)
                 if self.args.debug_rollout_only:
@@ -470,6 +472,8 @@ class MegatronTrainRayActor(TrainRayActor):
                     attempt=attempt,
                 )
 
+            # Before the shard is released; with --prefetch-rollout-data the next shard is held too.
+            log_r3_mem(logger, rollout=rollout_id, at="end")
             return result
 
     @with_logs
@@ -531,20 +535,29 @@ class MegatronTrainRayActor(TrainRayActor):
             assert num_optimizer_steps == 1, f"{option} requires 1 optimizer step, got {num_optimizer_steps}"
             assert rollout_data.get("log_probs") is None, f"{option} requires rollout data without actor log probs"
 
-        for m in all_replay_managers:
-            if self._use_rollout_replay(m):
-                fill_replay_data(
-                    args=self.args,
-                    models=self.model,
-                    data_iterator=data_iterator,
-                    num_microbatches=num_microbatches,
-                    rollout_data=rollout_data,
-                    data_key=m.data_key,
-                    replay_list=m.replays,
-                    register_replay_list_func=m.register_replay_list_func,
-                    if_sp_region=m.if_sp_region,
-                    indices_are_token_positions=m.replay_indices_are_token_positions,
+        replay_managers = [m for m in all_replay_managers if self._use_rollout_replay(m)]
+        if replay_managers:
+            with r3_timing(logger, rank=train_rank(), rollout=rollout_id, phase="fill") as line:
+                for m in replay_managers:
+                    fill_replay_data(
+                        args=self.args,
+                        models=self.model,
+                        data_iterator=data_iterator,
+                        num_microbatches=num_microbatches,
+                        rollout_data=rollout_data,
+                        data_key=m.data_key,
+                        replay_list=m.replays,
+                        register_replay_list_func=m.register_replay_list_func,
+                        if_sp_region=m.if_sp_region,
+                        indices_are_token_positions=m.replay_indices_are_token_positions,
+                    )
+                buffers = [buf for m in replay_managers for replay in m.replays for buf in replay.top_indices_list]
+                line.update(
+                    bytes=sum(buf.nbytes for buf in buffers),
+                    layers=sum(len(m.replays) for m in replay_managers),
+                    buffers=len(buffers),
                 )
+            log_replay_digest(logger, rollout=rollout_id, buffers=buffers)
 
         with inverse_timer("train_wait"), timer("train"):
             if self.args.compute_advantages_and_returns:

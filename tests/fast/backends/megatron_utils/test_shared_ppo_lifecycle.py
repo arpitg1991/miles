@@ -386,6 +386,8 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
     replay = Mock()
     replay.record.side_effect = queued_top_indices.append
     replay.pop_backward.side_effect = lambda: queued_top_indices.pop(0)
+    # The fill log line and the replay digest read the recorded buffers.
+    replay.top_indices_list = queued_top_indices
     manager.replays = [replay]
     manager.set_current(replay)
 

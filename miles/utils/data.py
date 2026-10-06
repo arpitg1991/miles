@@ -4,11 +4,14 @@ import logging
 import os
 import random
 import re
+import threading
+import time
 
 import numpy as np
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 from miles.utils import object_store
+from miles.utils.r3_log import log_r3_timing, r3_timing, train_rank
 from .audit_utils.witness.allocator import WitnessInfo
 
 try:
@@ -294,13 +297,12 @@ def process_rollout_data(
     dp_rank,
     dp_size,
     witness_info: WitnessInfo | None,
+    rollout_id: int | None = None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 
-    store = object_store.get_instance()
-
     if args.delay_split_train_data_by_dp:
-        get_result = store.get(rollout_data_ref)
+        get_result = _fetch_rollout_data(args, rollout_data_ref, rollout_id=rollout_id, dp_rank=dp_rank)
         raw = get_result.value
         if (x := witness_info) is not None:
             raw = {**raw, "seq_witness_ids": x.witness_ids}
@@ -309,10 +311,128 @@ def process_rollout_data(
     else:
         assert len(rollout_data_ref) == dp_size
         assert witness_info is None
-        get_result = store.get(rollout_data_ref[dp_rank])
+        get_result = _fetch_rollout_data(args, rollout_data_ref[dp_rank], rollout_id=rollout_id, dp_rank=dp_rank)
         rollout_data = dict(get_result.value)
 
     return process_rollout_data_shard(args, rollout_data), get_result
+
+
+def _fetch_rollout_data(args, ref, *, rollout_id: int | None, dp_rank: int) -> object_store.ObjectStoreGetResult:
+    store = object_store.get_instance()
+    # Before the get: the bytes that the get moves to this node, and whether a copy is here already.
+    info = store.locate(ref)
+    with r3_timing(logger, rank=train_rank(), rollout=rollout_id, phase="fetch", dp=dp_rank) as line:
+        get_result, mode = _PREFETCHER.take(info.key) if args.prefetch_rollout_data else (None, "off")
+        if get_result is None:
+            get_result = store.get(ref)
+        routing = get_result.value.get("rollout_routed_experts", [])
+        line.update(
+            bytes=info.size,
+            routing_bytes=sum(r.nbytes for r in routing),
+            local_before=info.local,
+            prefetch=mode,
+            ref=info.key,
+        )
+    return get_result
+
+
+def prefetch_rollout_data(args, rollout_data_ref, *, rollout_id: int, dp_rank: int) -> None:
+    """--prefetch-rollout-data: pull and hold this rank's shard of ``rollout_data_ref`` for the next train()."""
+    # The same ref that process_rollout_data fetches.
+    ref = rollout_data_ref if args.delay_split_train_data_by_dp else rollout_data_ref[dp_rank]
+    _PREFETCHER.prefetch(ref, rollout_id=rollout_id, dp_rank=dp_rank)
+
+
+class _PrefetchSlot:
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self.done = threading.Event()
+        self.result: object_store.ObjectStoreGetResult | None = None
+        self.error: BaseException | None = None
+
+
+class RolloutDataPrefetcher:
+    """This rank's shard of the next rollout, pulled and held while the current train() runs.
+
+    The train actor runs ``prefetch`` in its own concurrency group, next to
+    train() (actor_factory.py). The fetch of the next train() calls ``take``,
+    which returns the held shard if the prefetch of that object has finished.
+    ``prefetch`` also gets the object after the pull, because a finished
+    ray.wait does not pin the local copy ("Only actively pulled objects should
+    be pinned", Ray pull_manager.h).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._slot: _PrefetchSlot | None = None
+        # The object that train() fetched last. A prefetch of it that comes later has no use.
+        self._taken: str | None = None
+
+    def prefetch(self, ref, *, rollout_id: int, dp_rank: int) -> None:
+        store = object_store.get_instance()
+        info = store.locate(ref)
+        slot = _PrefetchSlot(info.key)
+        with self._lock:
+            if info.key == self._taken:
+                return
+            self._slot = slot
+        rank = train_rank()
+        t0 = time.time()
+        log_r3_timing(
+            logger,
+            rank=rank,
+            rollout=rollout_id,
+            phase="prefetch_start",
+            nbytes=0,
+            t0=t0,
+            t1=t0,
+            dp=dp_rank,
+            ref=info.key,
+        )
+        try:
+            store.pull(ref)
+            t_pull = time.time()
+            slot.result = store.get(ref)
+            t1 = time.time()
+        except Exception as e:  # noqa: BLE001 - a failed prefetch only makes train() fetch the shard itself
+            slot.error = e
+        finally:
+            slot.done.set()
+        if slot.error is not None:
+            logger.warning(f"Prefetch of rollout {rollout_id} failed, train() fetches it itself: {slot.error!r}")
+            return
+        log_r3_timing(
+            logger,
+            rank=rank,
+            rollout=rollout_id,
+            phase="prefetch_done",
+            nbytes=info.size,
+            t0=t0,
+            t1=t1,
+            dp=dp_rank,
+            ref=info.key,
+            local_before=info.local,
+            pull_s=t_pull - t0,
+            deser_s=t1 - t_pull,
+        )
+
+    def take(self, key: str) -> tuple[object_store.ObjectStoreGetResult | None, str]:
+        """The held shard of object ``key`` and ``hit``, or None and ``miss``."""
+        with self._lock:
+            self._taken = key
+            slot = self._slot
+            if slot is None or slot.key != key:
+                # A slot of another object stays: it can be the prefetch of the rollout after this one.
+                return None, "miss"
+            self._slot = None
+        # Do not wait for a prefetch that still runs: its ray.wait pull can wait for plasma room behind this
+        # step's objects, but the get of train() does not wait for room (Ray pull_manager.cc) and shares the pull.
+        if not slot.done.is_set() or slot.error is not None:
+            return None, "miss"
+        return slot.result, "hit"
+
+
+_PREFETCHER = RolloutDataPrefetcher()
 
 
 def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:

@@ -1,0 +1,192 @@
+# kdatp-sgl: the 1-node SGLang engine benchmark of the DSA attention backends (sgl-run.sh, sgl_bench.py).
+# Placeholders: __IMAGE__ (the trainer image: it also runs the engines), __STAMP__ (a fresh lowercase
+# suffix; it names the job, the run dir and the harness dir on the scratch mount), __ARMS__ (the arm list
+# of sgl_bench.py, space-separated; empty = the default list). ../dsaqp/dsaqp-job.yaml with a 10,800 s
+# deadline; same queue, priorities, node exclusions, tolerations, volumes and resources. No NATS, gym,
+# W&B key or checkpoint; the model comes from the fast scratch mount that every arena-tasks pod has.
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: kdatp-sgl-__STAMP__
+  namespace: arena-tasks
+  labels:
+    app: kdatp-sgl-__STAMP__
+    arena.agif.amazon.dev/submitter: acuadron
+    kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+    kueue.x-k8s.io/priority-class: inference
+spec:
+  elasticPolicy:
+    minReplicas: 1
+    maxReplicas: 1
+    maxRestarts: 0
+    nProcPerNode: 8
+    rdzvBackend: c10d
+    rdzvId: kdatp-sgl-__STAMP__
+  runPolicy:
+    # Delete the job by hand when it ends (README.md); the results are on the scratch mount.
+    activeDeadlineSeconds: 10800
+    # The default (None) keeps running pods after a deadline or a failed replica, so they keep the GPUs.
+    cleanPodPolicy: All
+  pytorchReplicaSpecs:
+    Worker:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        metadata:
+          labels:
+            app: kdatp-sgl-__STAMP__
+            arena.agif.amazon.dev/submitter: acuadron
+            kueue.x-k8s.io/queue-name: gpu.p6-b200-48xlarge
+          annotations:
+            karpenter.sh/do-not-disrupt: "true"
+        spec:
+          serviceAccountName: arena-tasks-runner
+          enableServiceLinks: false
+          priorityClassName: high
+          nodeSelector:
+            node-type: p6-gpu
+            node.kubernetes.io/instance-type: p6-b200.48xlarge
+          # The excluded-nodes list of r44, r45 and r46 on 2026-09-27 (83 nodes, the same in all three).
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                    - i-0095c4bdd6e83746c
+                    - i-009d7ccb2747b5877
+                    - i-00ad008f9bd0b1a13
+                    - i-00ae4cb06b320f7c6
+                    - i-00d697955a3668258
+                    - i-0383f4de8d96aa77d
+                    - i-03f00447f52586416
+                    - i-0412fc9a03d9ea0ce
+                    - i-044280557445205fa
+                    - i-046109f4986c0e4df
+                    - i-0483c03e7cd0165ee
+                    - i-04bddcdd94290c7fd
+                    - i-04db56f6754089b8a
+                    - i-05be0dc1d42a8c557
+                    - i-05f46cc40df714477
+                    - i-06216418e53c81bfc
+                    - i-0666f72b6f117479e
+                    - i-066722a1bd3ceda52
+                    - i-06bd3d0a07ce2d619
+                    - i-06e11334ddb1a1463
+                    - i-06f2282ee5810d254
+                    - i-06fdfd0f43f3e0b05
+                    - i-0708ba494f94d931a
+                    - i-07fcf568b8d94de09
+                    - i-081a3a59dd4f5d0eb
+                    - i-08643984bcd239a77
+                    - i-08e46215fa01e72a9
+                    - i-0913345b104158c02
+                    - i-092f7d2cd141c1654
+                    - i-0935540697092c324
+                    - i-094fd20055b8775ad
+                    - i-09521d96e5aa04e58
+                    - i-0968dfaee42b76f93
+                    - i-09a5eefe320dfcf63
+                    - i-09d10404d1fbb3672
+                    - i-09e84d62e3d318379
+                    - i-09eb6d0f4da1dfe0f
+                    - i-09f803966d6d914a3
+                    - i-0a091c2ff727bab10
+                    - i-0a1654bfa2dba02ea
+                    - i-0a218f8c4c457c945
+                    - i-0a8695a389c64a728
+                    - i-0a86a14b86f1b2a33
+                    - i-0ac58dcbd201b26ad
+                    - i-0b2ec1250e33d07ec
+                    - i-0b3d7fef8871e2880
+                    - i-0b6a1af3ad1d65645
+                    - i-0b7b42d3be240f033
+                    - i-0b85b8c2cc812d90b
+                    - i-0baebf4466d8b7b77
+                    - i-0bb245a9b042273a6
+                    - i-0bba590f6bc12b3f8
+                    - i-0bc11332bcbddc027
+                    - i-0bef5162b38b741b3
+                    - i-0c276576cca81e95b
+                    - i-0c358dee676509702
+                    - i-0c8d37cea6050a74e
+                    - i-0ce2f31403a27c902
+                    - i-0d2cc83e723b36db7
+                    - i-0d3e5da2f4c4d8c23
+                    - i-0d755f0b52cbc8678
+                    - i-0d9b286a2bdeef122
+                    - i-0df5648542fd5f40e
+                    - i-0e0629a494b886528
+                    - i-0e1af31ee594fc7ef
+                    - i-0e1b55551ee5f271e
+                    - i-0e3d4234a5bb5043a
+                    - i-0e4be139d8dd2d6fb
+                    - i-0e4c15fdd43d25774
+                    - i-0e56b6d75d52e67bd
+                    - i-0e7c73a042ef88200
+                    - i-0e7df31fc9d1037d0
+                    - i-0e9f52ea916b41c47
+                    - i-0ed720080e0fa629b
+                    - i-0ed97547ebadae0c9
+                    - i-0ef68912e54e6e483
+                    - i-0f15fc8e56eee2ae1
+                    - i-0f490cf69163c0cc3
+                    - i-0f53813e656a0dc58
+                    - i-0f7dea36e790c03eb
+                    - i-0f9f00026c6f947b6
+                    - i-0fb56b6ad85d7e527
+                    - i-0fea4633089c03dfd
+          tolerations:
+          - {effect: NoSchedule, key: nvidia.com/gpu, operator: Exists}
+          - {effect: NoSchedule, key: vpc.amazonaws.com/efa, operator: Exists}
+          containers:
+          - name: pytorch
+            image: __IMAGE__
+            imagePullPolicy: Always
+            command: [bash, -c]
+            # The desktop uploads the harness files to S3; the mount imports them within minutes.
+            # The driver waits for the other files it needs.
+            args:
+            - |
+              S=/mnt/scratch-s3files-rw/acuadron/kdatp/sgl/__STAMP__/harness/sgl-run.sh
+              for i in $(seq 120); do [ -f "$S" ] && break; echo "[sgl] waiting for $S"; sleep 5; done
+              exec bash "$S"
+            env:
+            - {name: SGL_STAMP, value: __STAMP__}
+            - {name: SGL_ARMS, value: "__ARMS__"}
+            - {name: USER, value: acuadron}
+            - {name: AGISLIME_DIR, value: /root/miles}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+            - {name: PYTHONFAULTHANDLER, value: "1"}
+            - {name: PYTORCH_CUDA_ALLOC_CONF, value: "expandable_segments:True"}
+            - {name: LD_LIBRARY_PATH, value: "/opt/amazon/ofi-nccl/lib:/opt/amazon/efa/lib:/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"}
+            - {name: FI_EFA_USE_DEVICE_RDMA, value: "1"}
+            - {name: FI_PROVIDER, value: efa}
+            - {name: FI_EFA_FORK_SAFE, value: "1"}
+            - {name: NCCL_TIMEOUT, value: "7200"}
+            - {name: NCCL_SOCKET_IFNAME, value: eth0}
+            - {name: GLOO_SOCKET_IFNAME, value: eth0}
+            - {name: NCCL_PROTO, value: simple}
+            - {name: NCCL_IB_DISABLE, value: "0"}
+            - {name: NCCL_NET_GDR_LEVEL, value: "2"}
+            - {name: NCCL_P2P_DISABLE, value: "0"}
+            - {name: RAY_memory_monitor_refresh_ms, value: "0"}
+            - {name: TORCHINDUCTOR_COMPILE_THREADS, value: "1"}
+            - name: REPLICA_IDX
+              valueFrom: {fieldRef: {fieldPath: "metadata.labels['training.kubeflow.org/replica-index']"}}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            resources:
+              limits: {memory: 1800Gi, nvidia.com/gpu: "8", vpc.amazonaws.com/efa: "8"}
+              requests: {ephemeral-storage: 32Gi, memory: 1200Gi, nvidia.com/gpu: "8", vpc.amazonaws.com/efa: "8"}
+            securityContext: {privileged: true}
+            volumeMounts:
+            - {name: dshm, mountPath: /dev/shm}
+            - {name: infiniband, mountPath: /dev/infiniband}
+            - {name: nvidia-caps, mountPath: /dev/nvidia-caps}
+          volumes:
+          - {name: dshm, emptyDir: {medium: Memory, sizeLimit: 256Gi}}
+          - {name: infiniband, hostPath: {path: /dev/infiniband}}
+          - {name: nvidia-caps, hostPath: {path: /dev/nvidia-caps}}

@@ -17,7 +17,7 @@ spec:
     - name: trainer-image
       value: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-r21-20261006a
     - name: replicas
-      value: '24'
+      value: '32'
     - name: replica-trainer
       value: '8'
     - name: gym-replicas
@@ -27,7 +27,8 @@ spec:
     - name: miles-config
       value: |
         # acuadron-agentic-debt-engine-ab-v2 (2026-10-06): live check of the staleness cap (image r21, ADR-0019) on the final-v7
-        # recipe (110-chain dataset, lr 1e-5, engine flags), scaled to 24 nodes (8 actor = DP 2, 16 engines, GBS 256, rbs 32)
+        # recipe (110-chain dataset, lr 1e-5, engine flags), scaled to 32 nodes (8 actor = DP 2, 24 engines, GBS 256, rbs 32:
+        # the production 1:3 trainer:engine ratio, so each engine carries 64 trajectories as at 16 + 48 nodes)
         # with the planned production loop: arena_inflight_multiplier 6 (6 steps of data in flight) and max_weight_staleness 8
         # through NatsRolloutFn. Checks the version arithmetic (Weight staleness: ... at weight_version = rollout + 1), the
         # drop path under R3, and the drop rate (rollout/num_old_age_dropped) on this dataset.
@@ -38,7 +39,7 @@ spec:
         experiment_name: acuadron-agentic-debt-engine-ab-v2
         project_name: acuadron-agentic-debt-engine-ab-v2
         agislime_dir: /root/miles
-        replicas: 24
+        replicas: 32
         num_trainers: 8
         model_arch: glm5.3-flash
         hf_checkpoint: /mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16

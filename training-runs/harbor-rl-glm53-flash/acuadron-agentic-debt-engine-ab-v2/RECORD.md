@@ -1,4 +1,4 @@
-# Run record: acuadron-agentic-debt-engine-ab-v2 — live check of the weight-staleness cap (r21, ADR-0019) on the final-v7 recipe, 24 nodes
+# Run record: acuadron-agentic-debt-engine-ab-v2 — live check of the weight-staleness cap (r21, ADR-0019) on the final-v7 recipe, 32 nodes
 
 **Status:** Running
 <!-- gen-workflow:begin -->
@@ -13,8 +13,8 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `acuadron-agentic-debt-final-v7` (`final-v7-x44fz`, submitted by another session at 19:56 UTC)
 <!-- gen-workflow:end -->
-**Argo workflow:** `acuadron-agentic-debt-engine-ab-v2-qqx4r` (submitted 2026-10-06 20:28 UTC)
-**Config deltas vs final-v7:** `rollout_function_path` -> `...nats_rollout.NatsRolloutFn`; `max_weight_staleness: 8` (new); `arena_inflight_multiplier` 4 -> 6; shape 64 -> 24 nodes (8 actor = DP 2, 16 engines), `gym-replicas` 288 -> 216 (1.125 x 192), `rollout_batch_size` 64 -> 32, `global_batch_size` 512 -> 256; trainer image r20 -> r21; run names.
+**Argo workflow:** `acuadron-agentic-debt-engine-ab-v2-ffptr` (submitted 2026-10-06 20:30 UTC; a first 24-node submission, `qqx4r`, was stopped at 20:30 before it got nodes)
+**Config deltas vs final-v7:** `rollout_function_path` -> `...nats_rollout.NatsRolloutFn`; `max_weight_staleness: 8` (new); `arena_inflight_multiplier` 4 -> 6; shape 64 -> 32 nodes (8 actor = DP 2, 24 engines: the production 1:3 ratio, so each engine carries 64 trajectories as at 16 + 48 nodes), `gym-replicas` 288 -> 216 (1.125 x 192), `rollout_batch_size` 64 -> 32, `global_batch_size` 512 -> 256; trainer image r20 -> r21; run names.
 **Checkpoints:** `/mnt/scratch-s3files-rw/acuadron/checkpoints/slime_experiments/acuadron-agentic-debt-engine-ab-v2` (fresh)
 **Outcome:** (pending)
 
@@ -39,3 +39,4 @@
 | time (UTC) | event |
 |---|---|
 | 2026-10-06 20:28 | Submitted (engine-ab-v1 stopped at 20:2x after step 20 to free its 24 nodes). |
+| 2026-10-06 20:30 | Resubmitted at 32 nodes as `ffptr`: at 8 + 16 nodes, 192 groups in flight put 96 trajectories on each engine, 1.5x the production load. |

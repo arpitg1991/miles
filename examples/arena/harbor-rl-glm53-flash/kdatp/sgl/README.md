@@ -94,3 +94,25 @@ Same bench. `tl-tl` reproduces job a (32.8 ms / 1,037 tok/s).
   shared experts per layer; a misaligned capture would share ~0.2).
 - Greedy numerics of every arm stay inside the tilelang-vs-tilelang run-to-run band (mean |delta log-prob|
   0.015-0.058; the two tilelang runs differ by 0.016-0.039; near-tie first tokens flip in both cases).
+
+### 2026-10-06c — combinations, plus a real-code bench at temperature 1 (`kdatp-sgl-20261006c`)
+
+`real c45` = 45 concurrent requests of 27,000 tokens of real, non-repeated Python source (windows of the
+image's own tree), 2,048 output tokens, temperature 1.0; the other columns as before.
+
+| arm | flags | startup s | c45 TPOT ms | c45 out tok/s | c45 TTFT s | c90 TPOT ms | c90 out tok/s | real c45 TPOT ms | real c45 out tok/s | real accept len |
+|---|---|---|---|---|---|---|---|---|---|---|
+| tl-tl | live recipe | 611 | 33.1 | 1,033 | 21.9 | 28.6 | 1,522 | 29.0 | 1,159 | - |
+| combo | trtllm/trtllm + cutlass MoE + allreduce fusion | 501 | 20.6 | 1,638 | 14.2 | 25.1 | 1,950 | 22.9 | 1,518 | - |
+| combo-ncds2 | combo + 2 continuous decode steps | 471 | 20.6 | 1,638 | 14.2 | 24.4 | 2,198 | 22.8 | 1,527 | - |
+| combo-nextn2 | combo + NEXTN 2 steps / 3 draft tokens | 678 | 14.1 | 2,065 | 14.7 | 19.2 | 1,994 | 14.9 | 1,998 | 2.96 of 3 |
+| **combo-nextn3** | combo + NEXTN 3 steps / 4 draft tokens | 611 | **12.8** | **2,206** | 14.6 | **10.4** | **2,742** | **13.5** | **2,106** | 3.93 of 4 |
+
+Chosen for the live A/B (`training-runs/.../acuadron-agentic-debt-final-v6`): `combo-nextn3`. Real-code TPOT
+29.0 -> 13.5 ms (-53%), engine output +82% at 45 concurrent; +80% at 90. The 2 continuous decode steps add
+nothing at 45 and are left out. The accept length on real code at temperature 1 stays near the maximum; the
+live agentic text (model reasoning and commands, not file copies) is the number that matters and the
+engines log it (`accept len` in the `Decode batch` lines).
+
+`log: step ms` is not comparable across jobs a-c: it is a median over every decode line of the server log,
+and job c adds the temperature-1 phase to the mix. Use the bench columns.

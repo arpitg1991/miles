@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v19 (qp) — r56-ns with the query-parallel DSA core (ADR-0019)
 
-**Status:** Prepared
+**Status:** Running
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-06
 **Family:** `harbor-rl-glm53-flash`
@@ -14,12 +14,12 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v18`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
+**Argo workflow:** `guparpit-agentic-debt-v19-j7kwk`
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `glm5_next_dsa_qp: true` (new key, `--glm5-next-dsa-qp`); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run. Everything else is the r56-ns config: prefetch on, inflight multiplier 8, `max_weight_staleness` 8, `arena_output_queue_groups` 64, FlashMLA forward, `NatsRolloutFn`, TP8 SP, PP4 11/11/11/12, EP8.
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v19`, seeded from r54-ns (`guparpit-agentic-debt-v17`) `iter_0000109` (its latest save at copy time, 2026-10-06 04:44Z; 135 objects match by name and size; sidecar `{"rollout_id": 109}` without `wandb_run_id`; data state `arena_data_source_state_109.pt`; tracker 109 written last)
-**Outcome:** Prepared
+**Outcome:** Running
 
 The owner's order of 2026-10-06: port `--glm5-next-dsa-qp` onto the ns stack, gate it with the
 1-node parity harness and T1, and run two arms at once from the same seed: `--glm5-next-dsa-qp`
@@ -82,3 +82,5 @@ Gates before the submit: the 1-node parity harness (`kdatp/dsaqp`, jobs `kdatp-d
 | 04:50 | 1-node parity, flashinfer top-k (`kdatp-dsaqp-20261006qf`, forward `flash_mla`): PASS. All 4 packed cases: I1 top-k indices bitwise equal between the head split and the query split; F1 layer output relative L2 0 (bitwise); B1 input gradient 4.6e-3 to 5.5e-3, worst weight gradient 5.7e-3, norm ratios within 2.3e-4 (bounds 1e-2 and 1%); N1 negative control 0.760. Per-layer fwd+bwd 2.93x at 8K tokens to 5.39x at 128K; peak memory 24.6 GiB -> 7.1 GiB at 128K. `s3://arena-scratch-prod-bom-ap-south-1/guparpit/kdatp/dsaqp/20261006qf/parity/SUMMARY.md`. |
 | 04:54 | 1-node parity, torch top-k (`kdatp-dsaqp-20261006qt`): PASS with the same numbers (F1 bitwise, B1 4.6e-3 to 5.7e-3, N1 0.760, 2.93x to 5.2x). The PR GPU kernel tests (`tests/fast-gpu/kernels/attention/dsa`) passed 60 of 60 on the image first. |
 | 04:55 | Torch against flashinfer top-k in the kpool indexer (`kdatp-dsaqp-20261006qx`, 1 GPU, random packed cases up to 65,536 tokens): the index set of every query is the same in all cases but one 65,536-token query, where the two backends pick different tokens on a tie (Jaccard distance 3.9e-3 for that query, 5.9e-8 mean); the column order differs, so the tensors are not bitwise equal. Selection time 53.1 ms (torch) against 48.6 ms (flashinfer) at 65,536 tokens, about 9% less. |
+| 05:07 | T1 on the image with the flag on (`recon-t1-new-20261006q`, 1 node, forward `flash_mla`, r47 `iter_0000059` through `guparpit-agentic-debt-v2`; harness `recon2/t1-qp/`): load 912 s, `dsa_forward_backend_modules {'flash_mla': 11}`, `dsa_query_parallel_modules {True: 11}`, rc 0. Against the r17 reference run `20261001a-ref`: 37,534 of 37,534 gathered tensors bitwise equal; log-prob mean 0.0527 (limit 0.1013), p99 0.586 (1.140), logits relative L2 0.229 (0.453): PASS (`recon2/t1-qp/out/compare-20261006q.json`). Job and ConfigMap deleted after the run. All three gates passed; the submit follows. |
+| 05:11:45 | Submit `guparpit-agentic-debt-v19-j7kwk` (the two arms 2 s apart). Node exclusions refreshed at submit: 304 B200 nodes, 1 bad (tainted), 346 excluded (the v18 list of 345 plus 1). Queue `gpu.p6-b200-48xlarge` at submit: pending 0, admitted 16. Trainer image by digest, gym image `gym-glm53-wvspans-20261001a` by digest. |

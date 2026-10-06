@@ -5,6 +5,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
+from miles.kernels.attention.dsa.topk import topk_with_scores
 
 SPARSE_MLA_BLOCK = 64
 _SELECT_BLOCK = 256
@@ -167,19 +168,24 @@ def _append_tail_kernel(
     tl.store(out_ptr + t * out_width + cols, val, mask=in_out)
 
 
-def _pool_topk(pool_logits: torch.Tensor, topk: int, kpool: int):
+def _pool_topk(pool_logits: torch.Tensor, topk: int, kpool: int, topk_fn=None):
+    """Top ``topk // kpool`` pools per query. ``topk_fn`` (``--miles-dsa-topk-backend``) replaces ``torch.topk``;
+    the default keeps the torch path byte for byte."""
     _, num_pools = pool_logits.shape
     group_topk = min(topk // kpool, num_pools)
     assert group_topk > 0, (topk, kpool, num_pools)
     assert kpool & (kpool - 1) == 0 and _SELECT_BLOCK % kpool == 0, kpool
-    scores, pools = torch.topk(pool_logits.float(), group_topk, dim=-1)
+    if topk_fn is None:
+        scores, pools = torch.topk(pool_logits.float(), group_topk, dim=-1)
+    else:
+        scores, pools = topk_with_scores(pool_logits.float(), group_topk, topk_fn)
     return scores, pools, group_topk
 
 
-def pool_topk_to_token_fn(seq_token_base, pool_base, local_positions, kpool):
+def pool_topk_to_token_fn(seq_token_base, pool_base, local_positions, kpool, pool_topk_fn=None):
     def topk_fn(pool_logits: torch.Tensor, topk: int) -> torch.Tensor:
         num_tokens = pool_logits.shape[0]
-        scores, pools, group_topk = _pool_topk(pool_logits, topk, kpool)
+        scores, pools, group_topk = _pool_topk(pool_logits, topk, kpool, pool_topk_fn)
         tokens = torch.empty((num_tokens, topk), dtype=torch.int32, device=pool_logits.device)
         grid = (num_tokens, triton.cdiv(topk, _SELECT_BLOCK))
         _expand_topk_kernel[grid](
@@ -227,9 +233,9 @@ def append_tail_and_pad(
     return out
 
 
-def select_expand_tail(pool_logits, seq_token_base, pool_base, local_positions, topk, kpool):
+def select_expand_tail(pool_logits, seq_token_base, pool_base, local_positions, topk, kpool, topk_fn=None):
     num_tokens = pool_logits.shape[0]
-    scores, pools, group_topk = _pool_topk(pool_logits, topk, kpool)
+    scores, pools, group_topk = _pool_topk(pool_logits, topk, kpool, topk_fn)
     out_width = (topk + kpool - 1 + SPARSE_MLA_BLOCK - 1) // SPARSE_MLA_BLOCK * SPARSE_MLA_BLOCK
     out = torch.empty((num_tokens, out_width), dtype=torch.int32, device=pool_logits.device)
     grid = (num_tokens, triton.cdiv(out_width, _SELECT_BLOCK))

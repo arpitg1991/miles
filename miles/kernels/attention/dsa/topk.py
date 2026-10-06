@@ -1,6 +1,5 @@
 import torch
 
-
 _FLASHINFER_TIE_BREAK_VALUES = {
     "small": 1,
     "large": 2,
@@ -34,6 +33,17 @@ def flashinfer_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
     if len(orig_shape) > 2:
         indices = indices.reshape(*orig_shape[:-1], topk)
     return indices
+
+
+def topk_with_scores(logits: torch.Tensor, topk: int, topk_fn) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(scores, indices)`` of ``topk_fn`` in the shape of ``torch.topk``: ``indices`` as int64 with ``0``
+    where the backend returned ``-1``, and ``scores`` gathered from ``logits`` with ``-inf`` in those slots.
+    The kpool expand kernel keeps a slot only when its score is finite, so a ``-1`` slot stays masked."""
+    indices = topk_fn(logits, topk)
+    masked = indices < 0
+    indices = indices.clamp_min(0).to(torch.int64)
+    scores = torch.gather(logits, -1, indices).masked_fill(masked, float("-inf"))
+    return scores, indices
 
 
 def get_dsa_topk_fn(topk_backend: str):

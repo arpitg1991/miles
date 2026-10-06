@@ -1,6 +1,6 @@
 # Run record: acuadron-agentic-debt-engine-ab-v1 — the SGLang engine flags of kdatp/sgl (trtllm DSA, cutlass MoE, allreduce fusion, NEXTN) in the full loop, 24 nodes
 
-**Status:** Running
+**Status:** Stopped 2026-10-06 ~20:25 UTC after step 20 (validation done; nodes reused by engine-ab-v2).
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-06
 **Family:** `harbor-rl-glm53-flash`
@@ -63,3 +63,5 @@ Rollout supply (groups per hour) is not comparable to final-v5: half the engines
 
 The one-node bench (real code, temperature 1) predicted +82% with an accept length of 3.93; agentic text accepts
 2.7 of 4, which lands the live gain at +42% decode throughput and -25% rollout wall time per engine (cold rollout 0).
+| 2026-10-06 14:20-20:25 | Steps 2-20: `actor_train` 694-1,006 s, `train_wait` 27-902 s (rollout-bound at multiplier 4 except steps 2-6 and 18), log-prob gap 0.025-0.029, kl 0.0028-0.0037, grad_norm 0.053-0.063. `rollout/weight_version/min` stayed 1 through rollout 18 (chains that run from the first weight version), then 7-10. |
+| 2026-10-06 ~20:25 | Stopped with `argo stop`. |

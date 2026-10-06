@@ -1,0 +1,30 @@
+# kdatp-prof-<stamp>: train-only T2 timing of --glm5-next-dsa-qp on the ns stack (image miles-glm53-qp-20261006a).
+# Replayed T2 rows (r45 sample summary rollout 43 + r43 token and routing files), DP 2, 4 rollouts per arm:
+# step 0 cold, 3 timed. Dataset of record, NOT used here: lakefs://arena-inspect/main/internal/agentic-debt-r3/agentic-debt-766/.
+# Every arm is the ns layout: TP8 SP, PP4 11/11/11/12, EP8, FlashMLA forward. The same-job control is the flag off.
+# Reference: 20260930f ep8 (FlashMLA + EP8, the earlier kernel port) 470.7 s; acuadron 20261003q qp-ep8 259.5 s, qp-ep8-pp12 242.0 s.
+- name: control        # the ns path: flag off, EP8, FlashMLA forward (the live r54-ns / r56-ns trainer)
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 4200
+  set: {expert_model_parallel_size: 8, miles_dsa_sparse_attention_forward_backend: flash_mla}
+- name: qp             # plus the query-parallel core (the v19 arm)
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 3600
+  set: {expert_model_parallel_size: 8, miles_dsa_sparse_attention_forward_backend: flash_mla, glm5_next_dsa_qp: true}
+- name: qp-fi          # plus the flashinfer top-k in the kpool indexer (the v20 arm)
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 3600
+  set: {expert_model_parallel_size: 8, miles_dsa_sparse_attention_forward_backend: flash_mla, glm5_next_dsa_qp: true, miles_dsa_topk_backend: flashinfer}
+- name: qp-split       # qp plus the 12/11/11/11 stage split (acuadron qp-ep8-pp12)
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 3600
+  set: {expert_model_parallel_size: 8, miles_dsa_sparse_attention_forward_backend: flash_mla, glm5_next_dsa_qp: true, decoder_first_pipeline_num_layers: 12, decoder_last_pipeline_num_layers: 11}
+- name: split          # the 12/11/11/11 split alone on the ns path
+  profile: false
+  data: {groups: "243,284,307,258,239,306,276,309", dp_size: 2, dir: t2, replay_rollout: 40}
+  timeout: 4200
+  set: {expert_model_parallel_size: 8, miles_dsa_sparse_attention_forward_backend: flash_mla, decoder_first_pipeline_num_layers: 12, decoder_last_pipeline_num_layers: 11}

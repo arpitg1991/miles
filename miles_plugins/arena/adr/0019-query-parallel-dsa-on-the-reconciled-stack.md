@@ -69,6 +69,12 @@ and `-v20` (query-parallel plus flashinfer top-k) and the qp-t2 job.
 
 ## Consequences
 
+- The T2 rows of 2026-09-29 (`kdatp/data/t2`) carry the routing payload of the
+  old data path; the reconciled image's R3 fill reads 252 bytes of it and the
+  train step never completes. T2 timing on this stack runs with
+  `use_rollout_routing_replay: false` until the rows are rebuilt with the
+  image's `build_rollout_data.py`.
+
 - The step cost moves from the DSA kernels to the MoE path and the dense work.
   The trainer gets faster, so at multiplier 8 the engines become the limit
   again; the next recipe raises the engine count or the multiplier.

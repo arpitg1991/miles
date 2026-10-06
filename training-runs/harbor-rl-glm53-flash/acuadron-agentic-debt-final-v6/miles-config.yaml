@@ -1,18 +1,13 @@
-# acuadron-agentic-debt-final-v6 (2026-10-06): the final-v5 trainer (r20: dsa-qp + the R3 data path, EP8, 12/11/11/11,
-# prefetch) on the republished agentic-debt-final dataset: 233 chains / 1,687 checkpoints, live-baseline reward graded on
-# the agent's own pre-step tree (root-only vault, ADR-0076), stop-on-regression (r_k = fixed_k, or -(K-1) and the chain
-# stops through min_reward no_regression = 1.0). Manifest pinned at main commit 249fc194d84a (rows pin fec8e468c659).
-# On gym image adr72 the baseline is graded in full every step (baseline-plan mode=full, reason=no_record): two gradings
-# per checkpoint. Gate on the gym image 2026-10-06 09:28-09:40 UTC (harbor run, 4-step chain
-# realdiff_4n4nd_prometheus-api-client-python_s0): nop 0.0 at every step and the chain ran to the end; oracle 1.0 at every
-# step. lr 1e-5 (final-v4 decision). Everything else: final-v5.
-#
+# acuadron-agentic-debt-final-v6 (2026-10-06): final-v5 (r20 trainer: dsa-qp + R3 data path) with the SGLang engine
+# flags that the one-node benchmarks kdatp/sgl/20261006a-c selected. Everything else is final-v5. Measures the
+# rollout supply (step_time while rollout-bound, engine gen throughput at ~45 running requests) and the numerics
+# (train_rollout_logprob_abs_diff 0.026-0.037 over final-v5 steps 0-12) against final-v5.
 # acuadron-agentic-debt-final-v5 (2026-10-06): the final-v3 recipe (same dataset, lr, GBS 512, 16 actor + 32 engine
 # nodes) on trainer image miles-glm53-r20-20261006a: acuadron/dsa-qp with arpit-r3-datapath merged (int16 routing,
 # local-rows replay fill, --prefetch-rollout-data). One config change: prefetch_rollout_data true. Measures the R3
 # data path (perf/data_preprocess_time, [r3-timing]) against final-v3 (177 s at step 2) and the numerics
 # (train_rollout_logprob_abs_diff 0.0217 / 0.0226 at final-v3 steps 0 / 1).
-# acuadron-agentic-debt-final-v5 (2026-10-03): final-v2 relaunched on the query-parallel DSA trainer.
+# acuadron-agentic-debt-final-v3 (2026-10-03): final-v2 relaunched on the query-parallel DSA trainer.
 # Trainer image miles-glm53-r19-20261003a (miles acuadron/dsa-qp a56d9a9c = arpit-glm-53 6ae5099f + the
 # PR #3608 DSA kernel backport arpit-dsa-3608 a60c648e [FlashMLA sparse forward, dynamic-shape TileLang
 # backward] + --glm5-next-dsa-qp). Deltas vs acuadron-agentic-debt-final-v2 (all trainer efficiency, no
@@ -343,7 +338,7 @@ data_source_path: miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWith
 # data_source.py _pull_lakefs_file passes the commit as the ref. A local run
 # of that code read 766 rows with the md5 above (2026-09-27). The r15 trainer
 # pod has LAKECTL_* from the template and pulls a lakefs:// manifest on r44.
-prompt-data-list: '[{"path":"lakefs://arena-inspect/249fc194d84aef7ac8047d87b0b07bd558ec68369bbc77854e40e7fbdfa17f2b/internal/agentic-debt-r3/agentic-debt-final/manifest.jsonl","gym_name":"agentic-debt","weight":1.0}]'
+prompt-data-list: '[{"path":"lakefs://arena-inspect/0c328c7a4bef7311c2713a246e5623ebc19f4891e7ff5949931fb7e8a5c16b96/internal/agentic-debt-r3/agentic-debt-final/manifest.jsonl","gym_name":"agentic-debt","weight":1.0}]'
 # r47: false (r42/r44/r46 value). r45 ran true.
 sglang_disable_overlap_schedule: false
 # sglang router binds on replica-index 0, where the rl-glm53f-sglang Service
@@ -425,12 +420,18 @@ sglang_disable_radix_cache: false
 # tilelang/tilelang is effectively forced: the model config's index_kpool=4
 # restricts DSA backends to fa3/tilelang/trtllm, and on B200 with bf16 KV
 # tilelang is the only validated prefill backend besides trtllm.
-sglang_dsa_prefill_backend: tilelang
-sglang_dsa_decode_backend: tilelang
+sglang_dsa_prefill_backend: trtllm  # final-v6: kdatp/sgl/20261006a-c
+sglang_dsa_decode_backend: trtllm  # final-v6
 # REQUIRED, not cosmetic: on SM100 (B200) the DSA family auto-defaults
 # kv-cache dtype to fp8_e4m3, and sglang's tilelang+fp8 check then raises
 # ValueError. Do not "simplify" by removing this key.
 sglang_kv_cache_dtype: bfloat16
+sglang_moe_runner_backend: flashinfer_cutlass  # final-v6: kdatp/sgl/20261006b-c
+sglang_enable_flashinfer_allreduce_fusion: true  # final-v6: kdatp/sgl/20261006b-c
+sglang_speculative_algorithm: NEXTN  # final-v6: kdatp/sgl/20261006b-c
+sglang_speculative_num_steps: 3  # final-v6: kdatp/sgl/20261006b-c
+sglang_speculative_eagle_topk: 1  # final-v6: kdatp/sgl/20261006b-c
+sglang_speculative_num_draft_tokens: 4  # final-v6: kdatp/sgl/20261006b-c
 sglang_mem_fraction_static: 0.7
 sglang_router_port: 30000
 # router health knobs from the GLM recipe: DSA engine startup is slow, give
@@ -600,7 +601,7 @@ eps_clip_c: 2.0
 # ---- optimizer: upstream GLM recipe (lr 15e-7 -> 1e-6) ----
 optimizer: adam
 # r21: 1.5e-6 (r20 control stays 1e-6).
-lr: 1e-5  # final-v6 2026-10-06: 1.5e-6 -> 1e-5, the final-v4 decision for the live-baseline dataset (v5 kept 1.5e-6 for the v3 comparison)
+lr: 1.5e-6
 lr_decay_style: constant
 weight_decay: 0.1
 adam_beta1: 0.9

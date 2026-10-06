@@ -3,7 +3,7 @@
 # local-rows replay fill, --prefetch-rollout-data). One config change: prefetch_rollout_data true. Measures the R3
 # data path (perf/data_preprocess_time, [r3-timing]) against final-v3 (177 s at step 2) and the numerics
 # (train_rollout_logprob_abs_diff 0.0217 / 0.0226 at final-v3 steps 0 / 1).
-# acuadron-agentic-debt-final-v5 (2026-10-03): final-v2 relaunched on the query-parallel DSA trainer.
+# acuadron-agentic-debt-final-v3 (2026-10-03): final-v2 relaunched on the query-parallel DSA trainer.
 # Trainer image miles-glm53-r19-20261003a (miles acuadron/dsa-qp a56d9a9c = arpit-glm-53 6ae5099f + the
 # PR #3608 DSA kernel backport arpit-dsa-3608 a60c648e [FlashMLA sparse forward, dynamic-shape TileLang
 # backward] + --glm5-next-dsa-qp). Deltas vs acuadron-agentic-debt-final-v2 (all trainer efficiency, no

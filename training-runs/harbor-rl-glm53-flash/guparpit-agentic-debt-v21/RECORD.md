@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v21 (r54-ns, relaunch of guparpit-agentic-debt-v17 at inflight multiplier 12) — r54 stack, staleness cap 8, queue cap 64, prefetch off, 400 gym workers
 
-**Status:** Submitted, queued for capacity
+**Status:** Running
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-06
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `arena_inflight_multiplier` 8 -> 12; `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run. Workflow: `gym-replicas` 288 -> 400. Everything else as guparpit-agentic-debt-v17.
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v21`, seeded from guparpit-agentic-debt-v17 `iter_0000109` (its latest save at copy time, 2026-10-06 07:34Z; 135 objects match; sidecar `{"rollout_id": 109}` without `wandb_run_id`; data state 109; tracker 109 written last)
-**Outcome:** Submitted 2026-10-06 07:43Z; queued until the multiplier-8 arms retired
+**Outcome:** Submitted 2026-10-06 07:43Z; admitted 07:49Z after v17 and v18 retired; first batch collecting
 
 The owner's order of 2026-10-06: "make r54-ns and r56-ns run with 12x multiple". guparpit-agentic-debt-v17 (r54-ns at multiplier 8) is relaunched from its own `iter_0000109` save with `arena_inflight_multiplier` 12 and 400 gym workers; the staleness cap (8) and the queue cap (64) stay. guparpit-agentic-debt-v17 retires once this run's trainer job exists.
 
@@ -60,3 +60,7 @@ Control: guparpit-agentic-debt-v17 at multiplier 8 (rollouts 91 to 115 in its re
 | 07:43:06 | Submit `guparpit-agentic-debt-v21-8krlq` (`make_runs_v21.py`): gym-replicas 400, node exclusions refreshed at submit (304 B200 nodes, 2 bad, both tainted); 295 (the v17 list of 293 plus 2 bad nodes) excluded. Trainer and gym images by digest, as v17/v18. Queue at submit: pending 0, admitted 17. |
 | 07:46 | Trainer PyTorchJob `guparpit-agentic-debt-v21-8krlq-trainer` created; Kueue: "insufficient unused quota for nvidia.com/gpu, 88 more needed" (v17 to v20 held 160 nodes). |
 | 07:48 | v17 and v18 stopped (owner-named retirement). |
+| 07:49 | Kueue admitted the trainer: 39 Running + 1 Pending at 07:50, 40 Running by 07:55. Argument dump: `arena_inflight_multiplier 12`, `max_weight_staleness 8`, `arena_output_queue_groups 64`, `prefetch_rollout_data False`; `Checkpoint sidecar rollout_id=109`; `successfully loaded checkpoint ... at iteration 109`. |
+| 08:05 to 08:20 | Engines loaded (120 shards, about 14 min), weights synced, `inflight_multiplier=12, max_in_flight=384`, `Rollout 110: collecting`. Gym Deployment 400 of 400 ready by 08:30 (193 at 08:22). |
+| 08:32 | Engine side, 12 min in (106 lines): running-req p50 53, token usage p50 0.27, queue-req 0, gen tok/s p50 1,951. |
+| 08:52 | Engine side after 33 min of generation, 350 lines, 13 engines: running-req p50 71 / p90 85 / max 102; full token usage p50 0.81 / p90 0.98 / max 0.99; queue-req above 0 on 37% of lines; gen tok/s per engine p50 1,792 / p90 2,752. Last 200 lines (08:4x): running-req p50 78, token usage p50 0.97 / p90 0.98, queue-req above 0 on 65%, gen tok/s p50 1,395 / p90 2,850. The KV cache is full on most engines and requests queue, which is the saturation point the plan watched for; the first-batch burst (all 384 groups in their first calls) inflates concurrency above the steady state. Watch whether usage eases once episodes stagger into tool phases. First batch: 1/32 groups at 1,983 s (v17 at multiplier 8 took 4,351 s for its first batch). |

@@ -37,19 +37,19 @@ jobs:
           df -h
 
       - name: Checkout miles
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.ref }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           # 3.11 required for BaseException.add_note (PEP 678), used in miles
           # source (e.g. miles/rollout/generate_utils/sample_utils.py).
           python-version: '3.11'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
 
       - name: Resolve dependency refs
         id: resolve-refs
@@ -94,14 +94,14 @@ jobs:
           echo "Resolved: megatron=$MEGATRON_PR -> fetch=$MEGATRON_FETCH, sglang=$SGLANG_PR -> fetch=$SGLANG_FETCH"
 
       - name: Checkout sglang
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: sgl-project/sglang
           ref: ${{ steps.resolve-refs.outputs.ci_sglang_pr }}
           path: sglang
 
       - name: Checkout Megatron-LM
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: radixark/Megatron-LM
           ref: ${{ steps.resolve-refs.outputs.ci_megatron_pr }}
@@ -120,7 +120,7 @@ jobs:
           python tests/ci/verify_source_resolution.py
 
       - name: Install Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
         with:
           version: v4.2.3
 

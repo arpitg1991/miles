@@ -49,6 +49,14 @@ ARMS = {
     "tl-trt": ("tilelang", "trtllm", []),
     "trt-trt": ("trtllm", "trtllm", []),
     "tl-trt-cutedsl": ("tilelang", "trtllm", ["--dsa-paged-mqa-logits-backend", "cutedsl"]),
+    # the other engine knobs, on the live attention backends
+    "moe-cutlass": ("tilelang", "tilelang", ["--moe-runner-backend", "flashinfer_cutlass"]),
+    "arf": ("tilelang", "tilelang", ["--enable-flashinfer-allreduce-fusion"]),
+    "ncds2": ("tilelang", "tilelang", ["--num-continuous-decode-steps", "2"]),
+    "nextn2": ("tilelang", "tilelang", ["--speculative-algorithm", "NEXTN", "--speculative-num-steps", "2",
+                                        "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "3"]),
+    "nextn3": ("tilelang", "tilelang", ["--speculative-algorithm", "NEXTN", "--speculative-num-steps", "3",
+                                        "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "4"]),
 }
 
 # The live engine arguments that matter for the kernels and the memory layout (sglang_engine.py
@@ -129,20 +137,25 @@ def build_prompts(tokenizer) -> list[dict]:
     return prompts
 
 
-def routed_experts_of(resp: dict, n_tokens: int):
-    """The captured routing as [token][layer][topk] ints, or None if the server did not send it."""
+def routed_experts_of(resp: dict, prompt_tokens: int, n_out: int):
+    """The captured routing of the output tokens as [token][layer][topk] ints, or None if absent.
+
+    The capture covers every processed token: prompt + output - 1 rows of 45 layers x top-8.
+    """
     if not resp.get("meta_info", {}).get("routed_experts"):
         return None
     try:
         from sglang.srt.state_capturer.routed_experts import extract_routed_experts_from_meta_info
 
         flat = extract_routed_experts_from_meta_info(resp)
-        if n_tokens <= 0 or flat.size % n_tokens:
-            log(f"routed experts: {flat.size} values for {n_tokens} tokens, not reshaped")
+        rows = prompt_tokens + n_out - 1
+        if rows <= 0 or flat.size % rows:
+            log(f"routed experts: {flat.size} values for {rows} rows, not reshaped")
             return None
-        per_token = flat.size // n_tokens
-        layers = 45 if per_token % 45 == 0 else 1
-        return [[list(map(int, layer)) for layer in tok] for tok in flat.reshape(n_tokens, layers, per_token // layers).tolist()]
+        per_row = flat.size // rows
+        layers = 45 if per_row % 45 == 0 else 1
+        arr = flat.reshape(rows, layers, per_row // layers)[prompt_tokens - 1 :]
+        return [[list(map(int, layer)) for layer in tok] for tok in arr.tolist()]
     except Exception as e:  # noqa: BLE001 - informational only
         log(f"routed experts not decoded: {e!r}")
         return None
@@ -165,14 +178,27 @@ def run_greedy(prompts: list[dict]) -> list[dict]:
         )
         meta = resp["meta_info"]
         out_lp = meta.get("output_token_logprobs") or []
+        routing = routed_experts_of(resp, p["tokens"], len(out_lp))
+        sanity = None
+        if routing:
+            flat = [e for tok in routing for layer in tok for e in layer]
+            distinct = [len(set(layer)) == len(layer) for tok in routing for layer in tok]
+            sanity = {
+                "rows": len(routing),
+                "nonzero_share": sum(1 for e in flat if e != 0) / len(flat),
+                "in_range_share": sum(1 for e in flat if 0 <= e < 288) / len(flat),
+                "distinct_topk_share": sum(distinct) / len(distinct),
+            }
         results.append(
             {
                 "prompt_tokens": p["tokens"],
                 "seconds": round(time.time() - t0, 2),
                 "output_ids": [int(x[1]) for x in out_lp],
                 "logprobs": [float(x[0]) for x in out_lp],
-                "routed_experts": routed_experts_of(resp, len(out_lp)),
+                "routed_experts": routing,
+                "routing_sanity": sanity,
                 "completion_tokens": meta.get("completion_tokens"),
+                "spec_verify_ct": meta.get("spec_verify_ct"),
             }
         )
         log(f"greedy {p['tokens']} tokens: {len(out_lp)} out tokens in {results[-1]['seconds']} s")
@@ -233,6 +259,7 @@ def parse_decode_log(server_log: Path) -> dict:
         m = re.search(r"Decode batch, #running-req: (\d+),.*gen throughput \(token/s\): ([0-9.]+)", line)
         if m:
             rows.append((int(m.group(1)), float(m.group(2))))
+    accept = [float(x) for x in re.findall(r"accept len: ([0-9.]+)", server_log.read_text(errors="replace"))]
     mid = [tps for n, tps in rows if 40 <= n <= 50 and tps > 0]
     hi = [tps for n, tps in rows if 80 <= n <= 92 and tps > 0]
     step = lambda xs, n: (n / statistics.median(xs) * 1000) if xs else None  # noqa: E731
@@ -242,6 +269,7 @@ def parse_decode_log(server_log: Path) -> dict:
         "step_ms_bs45": step(mid, 45),
         "tps_bs80_92_median": statistics.median(hi) if hi else None,
         "step_ms_bs90": step(hi, 90),
+        "accept_len_median": statistics.median(accept) if accept else None,
     }
 
 
@@ -287,6 +315,7 @@ def main() -> int:
                 else:
                     res["greedy_vs_first"] = compare_greedy(base_greedy, greedy)
                 res["greedy_seconds"] = [g["seconds"] for g in greedy]
+                res["routing_sanity"] = [g.get("routing_sanity") for g in greedy]
                 for c in args.concurrency:
                     r = run_bench(d, c, c)
                     if r:
@@ -335,11 +364,13 @@ def write_summary(out: Path, summary: dict, arms: list[str]) -> None:
                 f"| {arm} | {row['prompt_tokens']} | {row['equal_tokens']}/{row['of']} | {fmt(row['max_abs_dlogprob'], 4)} | "
                 f"{fmt(row['mean_abs_dlogprob'], 4)} | {fmt(row['expert_set_match'], 4)} |"
             )
-    lines += ["", "Greedy seconds per prompt (512, 4k, 12k, 24k tokens; 160 new tokens, batch 1):", ""]
+    lines += ["", "Greedy seconds per prompt (512, 4k, 12k, 24k tokens; 160 new tokens, batch 1), routing sanity of the 24k prompt (rows, nonzero, in range, distinct top-k), spec accept length:", ""]
     for arm in arms:
         r = summary.get(arm) or {}
         if r.get("greedy_seconds"):
-            lines.append(f"- {arm}: {r['greedy_seconds']}")
+            san = (r.get("routing_sanity") or [None])[-1]
+            acc = (r.get("decode_log") or {}).get("accept_len_median")
+            lines.append(f"- {arm}: {r['greedy_seconds']}; routing {san}; accept len {fmt(acc, 2)}")
     (out / "SUMMARY.md").write_text("\n".join(lines) + "\n")
 
 

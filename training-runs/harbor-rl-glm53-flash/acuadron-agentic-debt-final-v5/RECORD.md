@@ -77,3 +77,5 @@ next lever, not the trainer.
 
 | 2026-10-06 09:36 | Step 14 done; rollout 14: 64 groups, avg_reward 0.650, 2,051 s (queue 2): rollout-bound at multiplier 4. |
 | 2026-10-06 09:40 | `argo stop` for final-v6 capacity (kueue: 2,136 + 256 of 2,424 B200 GPUs in use; 48 more nodes did not fit). Last checkpoint `iter_0000009`. |
+| 2026-10-06 03:20-09:43 | Steps 3-12: `actor_train` 645-1,170 s (123k-150k tok/s), `train_wait` 590-1,385 s (rollout-bound at multiplier 4), `data_preprocess` 4-26 s (prefetch misses when the rollout lands just in time), `update_weights` 24-28 s. Log-prob gap 0.032 -> 0.037, kl 0.0043 -> 0.0058, grad_norm 0.038-0.054. Checkpoint `iter_0000010`. Engines: median 45 running requests, 1,548 tok/s per engine, 33.8 tok/s per request (`kdatp/sgl/README.md`). |
+| 2026-10-06 09:43 | Stopped (another session took the nodes for the production run on the republished dataset). |

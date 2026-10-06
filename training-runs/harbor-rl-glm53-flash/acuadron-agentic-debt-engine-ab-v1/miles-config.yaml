@@ -1,4 +1,9 @@
-# acuadron-agentic-debt-final-v6 (2026-10-06): final-v5 (r20 trainer: dsa-qp + R3 data path) with the SGLang engine
+# acuadron-agentic-debt-engine-ab-v1 (2026-10-06): the final-v6 engine flags (trtllm DSA, cutlass MoE, allreduce fusion,
+# NEXTN 3/4) on the final-v5 trainer, at a 24-node shape (8 actor nodes = TP8 PP4 DP2, 16 engines, 144 gyms, GBS 256)
+# because the cluster had 30 free nodes. Validates the flags in the full loop: weight sync with a speculative draft,
+# the R3 payloads under speculation (strict trainer check), the log-prob gap, and the engine accept length and
+# decode rate on agentic text. Rollout supply is not comparable to final-v5 (half the engines).
+# acuadron-agentic-debt-engine-ab-v1 (2026-10-06): final-v5 (r20 trainer: dsa-qp + R3 data path) with the SGLang engine
 # flags that the one-node benchmarks kdatp/sgl/20261006a-c selected. Everything else is final-v5. Measures the
 # rollout supply (step_time while rollout-bound, engine gen throughput at ~45 running requests) and the numerics
 # (train_rollout_logprob_abs_diff 0.026-0.037 over final-v5 steps 0-12) against final-v5.
@@ -299,8 +304,8 @@ user: acuadron
 cluster: bom
 # EXPERIMENT_NAME in the PyTorchJob pod env drives CKPT_DIR; these names are
 # the config-side record. NEVER reuse a finished run's name (silent resume).
-experiment_name: acuadron-agentic-debt-final-v6
-project_name: acuadron-agentic-debt-final-v6
+experiment_name: acuadron-agentic-debt-engine-ab-v1
+project_name: acuadron-agentic-debt-engine-ab-v1
 agislime_dir: /root/miles
 # r6: 24 replicas = 8 actor nodes + 16 engine nodes (r1-r5: 12 = 8 + 4) (same convention as the parent:
 # replicas - num_trainers = rollout nodes; the launcher derives
@@ -382,7 +387,7 @@ num_rollout: 300
 # groups per rollout, so each rollout is one optimizer step. Here
 # rollout_batch_size sets only the publisher in-flight cap (with
 # arena_inflight_multiplier) and the check of --skip-actor-forward-only.
-rollout_batch_size: 64  # final-v2: 2x; in-flight cap = 4 x 64 = 256 groups
+rollout_batch_size: 32  # engine-ab-v1: 24-node shape, in-flight cap = 4 x 32 = 128 groups
 n_samples_per_prompt: 8
 # 2026-09-02 user-directed, with the gym's ARENA_MAX_TOKENS=32768 /
 # ARENA_ROLLOUT_CONTEXT_LIMIT=131072 (was 2048/32768, r5 parity): GLM at
@@ -401,7 +406,7 @@ rollout_temperature: 1
 # 64 x 8 rollout. That is wrong. The arena rollout collects
 # global_batch_size / n_samples_per_prompt = 32 groups (256 episodes), so each
 # rollout is one optimizer step (r44 and r45 logs: 256 samples per rollout).
-global_batch_size: 512  # final-v2: 2x -> 64 groups x 8 attempts per optimizer step
+global_batch_size: 256  # engine-ab-v1: 32 groups x 8 per optimizer step at DP 2 (same tokens per rank as final-v5)
 balance_data: true
 # ---- sglang block: upstream GLM-5.3-Flash recipe (PR #2786) ----
 # 4 engines at 8 GPUs each (vs the parent's 8 engines at 4 GPUs): GLM needs a
@@ -710,7 +715,7 @@ dynamic_sampling_filter_path: miles.rollout.filter_hub.dynamic_sampling_filters.
 # behind the CTRF length drift. The first attempt (save_debug_rollout_data on
 # rl-glm53f26-6ddss) killed the trainer in the polars dashboard writer
 # (Int32 sample_index vs the 1<<40 segment stride) and captured nothing.
-arena_sample_summary_dir: /mnt/scratch-s3files-rw/acuadron/debug/acuadron-agentic-debt-final-v6/sample_summary
+arena_sample_summary_dir: /mnt/scratch-s3files-rw/acuadron/debug/acuadron-agentic-debt-engine-ab-v1/sample_summary
 # r27 (REQUIRES image miles-glm53-r8-20260917a; on r7 the strict argparse kills
 # the trainer at startup on this key). Group-relative token-efficiency reward.
 # Before the dynamic-sampling filter, each episode reward gains a term based on

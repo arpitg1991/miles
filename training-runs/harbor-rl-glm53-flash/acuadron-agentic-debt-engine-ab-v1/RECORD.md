@@ -1,0 +1,48 @@
+# Run record: acuadron-agentic-debt-engine-ab-v1 — the SGLang engine flags of kdatp/sgl (trtllm DSA, cutlass MoE, allreduce fusion, NEXTN) in the full loop, 24 nodes
+
+**Status:** Running
+<!-- gen-workflow:begin -->
+**Date:** 2026-10-06
+**Family:** `harbor-rl-glm53-flash`
+**Argo generateName:** `acuadron-agentic-debt-engine-ab-v1-`
+**Experiment name:** `acuadron-agentic-debt-engine-ab-v1`
+**W&B project:** `agentic-debt` (group `acuadron-agentic-debt-engine-ab-v1`)
+**Dataset:** the final-v3 dataset (`agentic-debt-final`, 871 checkpoints; gym `agentic-debt`)
+**Gym image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adr72-20260927a`
+**Trainer image:** `427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-r20-20261006a` (final-v5's)
+**Template:** `guparpit-miles-deployer-v10`
+**Base:** `acuadron-agentic-debt-final-v5`
+<!-- gen-workflow:end -->
+**Argo workflow:** `acuadron-agentic-debt-engine-ab-v1-krksx` (submitted 2026-10-06 12:15 UTC)
+**Config deltas vs final-v5:** engine flags `sglang_dsa_prefill_backend`/`sglang_dsa_decode_backend` tilelang -> trtllm, `sglang_moe_runner_backend: flashinfer_cutlass`, `sglang_enable_flashinfer_allreduce_fusion: true`, `sglang_speculative_algorithm: NEXTN` (3 steps, eagle top-k 1, 4 draft tokens); shape 48 -> 24 nodes (8 actor = TP8 PP4 DP2, 16 engines), `gym-replicas` 288 -> 144, `rollout_batch_size` 64 -> 32, `global_batch_size` 512 -> 256 (same tokens per train rank as final-v5); run names.
+**Checkpoints:** `/mnt/scratch-s3files-rw/acuadron/checkpoints/slime_experiments/acuadron-agentic-debt-engine-ab-v1` (fresh)
+**Outcome:** (pending)
+
+## Why this shape
+
+A 48-node copy of final-v5 with the engine flags (`acuadron-agentic-debt-final-v6-m62n8`, submitted 11:51 UTC) was
+stopped at 12:13 before it got nodes: another session had launched the production run
+`acuadron-agentic-debt-final-v6-t66h9` at 09:44 UTC under the same experiment name (same checkpoint and W&B
+paths), after stopping final-v5 at 09:43 for its nodes. The cluster then had ~30 free p6 nodes, so this run uses 24.
+
+## Goal
+
+Validate the flags that the one-node benchmarks selected (`examples/arena/harbor-rl-glm53-flash/kdatp/sgl`,
+jobs 20261006a-c: real-code TPOT 29.0 -> 13.5 ms, engine output +82% at 45 concurrent) in the full RL loop:
+
+1. engines start and serve with the four flags; weight sync works with the speculative draft (the MTP layer stays
+   at the base weights; `enable_draft_weights_cpu_backup` is always on);
+2. the R3 payloads under speculation pass the trainer's strict check and the replay fill (no
+   "routed_experts payload" errors; `[r3-timing] phase=fill` normal);
+3. numerics: `train_rollout_logprob_abs_diff` in the final-v5 band (0.026-0.029 at steps 0-2), `train_rollout_kl`,
+   `tis_clipfrac`, `grad_norm`;
+4. engine metrics on agentic text: `accept len` and gen throughput at 40-50 running requests in the `Decode batch`
+   lines (final-v5: 1,548 tok/s per engine, 33.8 tok/s per request, no speculation).
+
+Rollout supply (groups per hour) is not comparable to final-v5: half the engines, half the groups per step.
+
+## Timeline
+
+| time (UTC) | event |
+|---|---|
+| 2026-10-06 12:15 | Submitted. |

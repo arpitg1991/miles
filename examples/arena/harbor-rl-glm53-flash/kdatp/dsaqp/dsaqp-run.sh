@@ -37,6 +37,15 @@ SMI_PID=$!
 
 export TILELANG_PRINT_ON_COMPILATION=1 PYTHONDONTWRITEBYTECODE=1
 export TILELANG_CACHE_DIR=$LOCAL/kcache/tilelang TRITON_CACHE_DIR=$LOCAL/kcache/triton TORCHINDUCTOR_CACHE_DIR=$LOCAL/kcache/inductor
+# Fast tests that need libcuda (the megatron bridge import, a GPU Ray fixture) and so cannot run on a
+# CPU-only build host: DSAQP_PYTEST lists them, space-separated, as paths under $REPO.
+if [ -n "${DSAQP_PYTEST:-}" ]; then
+  log "pytest: start ($DSAQP_PYTEST)"
+  # shellcheck disable=SC2086
+  (cd "$REPO" && timeout -k 60 1800 python3 -m pytest -q --no-header -p no:cacheprovider $DSAQP_PYTEST) > "$RUN/pytest.log" 2>&1
+  echo $? > "$RUN/pytest.rc"
+  log "pytest: rc=$(cat "$RUN/pytest.rc") $(grep -E '[0-9]+ (passed|failed)' "$RUN/pytest.log" | tail -1)"
+fi
 log "parity: start"
 (cd "$REPO" && timeout -k 60 "${DSAQP_TIMEOUT:-3600}" python3 -m torch.distributed.run --nnodes 1 --nproc-per-node 8 \
   --rdzv-backend c10d --rdzv-endpoint localhost:29511 "$LOCAL/harness/t1_dsa_qp.py" --out "$RUN/parity" ${DSAQP_ARGS:-}) \

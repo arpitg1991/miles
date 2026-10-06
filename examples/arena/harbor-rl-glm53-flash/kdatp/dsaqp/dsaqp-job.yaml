@@ -154,6 +154,7 @@ spec:
               exec bash "$S"
             env:
             - {name: DSAQP_STAMP, value: __STAMP__}
+            - {name: DSAQP_PYTEST, value: "__PYTEST__"}
             - {name: USER, value: acuadron}
             - {name: AGISLIME_DIR, value: /root/miles}
             - {name: PYTHONUNBUFFERED, value: "1"}

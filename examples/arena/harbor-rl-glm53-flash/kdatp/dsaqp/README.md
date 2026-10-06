@@ -23,9 +23,13 @@ STAMP=<fresh suffix>; IMAGE=<trainer image with the flag and the FlashMLA wheel>
 H=s3://arena-scratch-prod-bom-ap-south-1/acuadron/kdatp/dsaqp/$STAMP/harness/
 aws --profile arena-prod-bom-user s3 cp ../dsa/t1_dsa_qp.py ${H}t1_dsa_qp.py
 aws --profile arena-prod-bom-user s3 cp dsaqp-run.sh ${H}dsaqp-run.sh
-sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" dsaqp-job.yaml | $K create -f -
+sed -e "s#__IMAGE__#$IMAGE#" -e "s#__STAMP__#$STAMP#g" -e "s#__PYTEST__#${PYTEST:-}#" dsaqp-job.yaml | $K create -f -
 # results: s3://arena-scratch-prod-bom-ap-south-1/acuadron/kdatp/dsaqp/$STAMP/parity/SUMMARY.md
 ```
+
+`PYTEST="tests/fast/... tests/fast/..."` runs those fast tests of the image tree on the node first
+(`pytest.log`, `pytest.rc` next to the parity results). Use it for the tests that need libcuda (the
+megatron bridge import, the GPU Ray fixture); the other fast tests run in the image on any host.
 
 The cluster deletes a finished job at once (TTL 0); read the results on S3.
 

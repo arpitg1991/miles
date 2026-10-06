@@ -67,3 +67,30 @@ equal tokens, mean 0.016-0.039; the first-token log-prob of the 512 prompt moves
 runs), so the backend change stays inside the engine's own run-to-run noise. The train-rollout log-prob gap
 of the live run (0.026-0.037) is the metric that decides; measure it in the live A/B.
 
+### 2026-10-06b — the other engine knobs, on the live attention backends (`kdatp-sgl-20261006b`)
+
+Same bench. `tl-tl` reproduces job a (32.8 ms / 1,037 tok/s).
+
+| arm | flags added to the live recipe | startup s | c45 median TPOT ms | c45 out tok/s | c45 mean TTFT s | c90 median TPOT ms | c90 out tok/s | step ms @bs45 | accept len |
+|---|---|---|---|---|---|---|---|---|---|
+| tl-tl | - | 621 | 32.8 | 1,037 | 21.9 | 32.8 | 1,522 | 17.4 | - |
+| **moe-cutlass** | `--moe-runner-backend flashinfer_cutlass` | 501 | **22.5** | **1,461** | **17.0** | **24.2** | **1,977** | **14.5** | - |
+| arf | `--enable-flashinfer-allreduce-fusion` | 466 | 27.2 | 1,207 | 20.7 | 28.2 | 1,714 | 17.3 | - |
+| ncds2 | `--num-continuous-decode-steps 2` | 471 | 27.5 | 1,188 | 21.3 | 31.0 | 1,674 | 17.4 | - |
+| nextn2 | `--speculative-algorithm NEXTN`, 2 steps, 3 draft tokens | 783 | 19.1 | 1,484 | 22.1 | 21.1 | 1,645 | 8.2 | 2.97 of 3 |
+| nextn3 | `--speculative-algorithm NEXTN`, 3 steps, 4 draft tokens | 611 | **17.7** | **1,544** | 22.1 | **12.2** | **2,349** | **7.3** | 3.95 of 4 |
+
+- The MoE runner is the largest kernel lever: the live engines run the Triton fused MoE (SGLang 9a26e749
+  falls back from `flashinfer_trtllm` to it when routed-experts capture is on). `flashinfer_cutlass`
+  materializes the top-k ids like Triton, so the R3 capture stays on: the greedy check returns 160 routing
+  rows for 160 output tokens, all ids in range, the three dense layers as zero rows, as with Triton.
+- Allreduce fusion and 2 continuous decode steps help only when prefill interleaves with decode (the pure
+  decode step does not move); the live prefill is 92% cached, so expect less than the bench shows.
+- NEXTN (the model's own MTP layer as the draft) halves the per-token decode time at batch 45 and 90. The
+  accept length here is inflated: bench_serving decodes greedily (temperature 0) from random-token prompts,
+  and the greedy check uses repeated text; job 20261006c measures it on real code at temperature 1. The
+  routing capture under NEXTN is well-formed and aligned: 160 rows for 160 accepted tokens, and the expert
+  sets of the common-prefix tokens overlap the non-speculative run as much as any two runs do (7.0-7.4 of 8
+  shared experts per layer; a misaligned capture would share ~0.2).
+- Greedy numerics of every arm stay inside the tilelang-vs-tilelang run-to-run band (mean |delta log-prob|
+  0.015-0.058; the two tilelang runs differ by 0.016-0.039; near-tie first tokens flip in both cases).

@@ -482,6 +482,30 @@ class _EpisodeContext:
     max_ctx: int | None
     args: Any
     weight_versions: list[str]
+    # True when the verifier broke a protected test (agentic-debt live-baseline
+    # keys); None when the gym reported no such key. Telemetry only
+    # (rollout/population/regression_frac).
+    regression: bool | None = None
+
+
+def _grader_regression(grader: Any) -> bool | None:
+    """Read the chain-level regression flag from the gym's ``grader_metadata``.
+
+    The agentic-debt verifier averages its step keys over the chain:
+    ``no_regression`` is 1.0 only when no step broke a protected test, and
+    ``broken`` is the mean broken fraction, so either key below its clean value
+    marks a regression. Return None when neither key is present, so a gym
+    without these keys logs no regression metric instead of a false 0.
+    """
+    if not isinstance(grader, dict):
+        return None
+    no_regression = grader.get("no_regression")
+    if isinstance(no_regression, (int, float)):
+        return no_regression < 1.0
+    broken = grader.get("broken")
+    if isinstance(broken, (int, float)):
+        return broken > 0.0
+    return None
 
 
 def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | None) -> Sample:
@@ -503,6 +527,8 @@ def _finish_sample(s: Sample, ctx: _EpisodeContext, *, removal_reason: str | Non
     }
     # agent_stop_reason feeds rollout/stop/<reason>; removal_reason feeds the
     # per-rollout "Removal reasons" summary and is set only with remove_sample.
+    if ctx.regression is not None:
+        s.metadata["regression"] = ctx.regression
     if ctx.agent_stop_reason:
         s.metadata["agent_stop_reason"] = ctx.agent_stop_reason
     if removal_reason:
@@ -806,6 +832,7 @@ def _result_to_episodes_full_trajectory(
             max_ctx=max_ctx,
             args=args,
             weight_versions=[str(v) for v in wvs if v is not None],
+            regression=_grader_regression(traj.get("grader_metadata")),
         )
 
         training = _training_steps(steps, args)
@@ -1237,6 +1264,43 @@ def _failed_reason_metrics(data: list[list[Sample]]) -> dict[str, float]:
             counts[category] = counts.get(category, 0) + 1
     n = max(len(reps), 1)
     return {f"rollout/failed/{category}": c / n for category, c in counts.items()}
+
+
+def _population_metrics(all_data: list[list[Sample]]) -> dict[str, float]:
+    """Learning signal over EVERY collected group, before the zero-variance and staleness drops.
+
+    The kept-batch means (``rollout/raw_reward``) exclude each all-correct group
+    the dynamic-sampling filter removes, so a policy that solves more chains shows
+    a flat kept mean. These keys follow the whole population instead (one value
+    per episode, ADR-0011): mean reward, the fraction of chains at reward 1.0,
+    the fraction of chains with a verifier regression (only when the gym reports
+    it, see ``_grader_regression``), and the group fractions the filter hides.
+    """
+    reps = _episode_representatives(all_data)
+    rewards = [s.reward for s in reps if isinstance(s.reward, (int, float))]
+    if not rewards:
+        return {}
+    metrics: dict[str, float] = {
+        "rollout/population/episodes": len(rewards),
+        "rollout/population/mean_reward": sum(rewards) / len(rewards),
+        "rollout/population/chains_at_one_frac": sum(1 for r in rewards if r >= 1.0) / len(rewards),
+    }
+    flags = [(s.metadata or {}).get("regression") for s in reps]
+    flags = [f for f in flags if isinstance(f, bool)]
+    if flags:
+        metrics["rollout/population/regression_frac"] = sum(flags) / len(flags)
+    group_rewards = [
+        [s.reward for s in _episode_representatives([g]) if isinstance(s.reward, (int, float))] for g in all_data
+    ]
+    group_rewards = [g for g in group_rewards if g]
+    if group_rewards:
+        metrics["rollout/population/all_one_groups_frac"] = sum(
+            1 for g in group_rewards if all(r >= 1.0 for r in g)
+        ) / len(group_rewards)
+        metrics["rollout/population/zero_variance_groups_frac"] = sum(
+            1 for g in group_rewards if max(g) == min(g)
+        ) / len(group_rewards)
+    return metrics
 
 
 def _prompt_mean_rewards(groups: list[list[Sample]]) -> dict[str, float]:
@@ -2801,6 +2865,8 @@ def generate_rollout(
                 ),
                 # staleness cap (--max-weight-staleness, NatsRolloutFn)
                 **staleness_metrics,
+                # learning signal over the pre-filter population
+                **_population_metrics(all_data),
             }
 
             # Aggregate gym-side group_metrics (num_turns, completion_length,

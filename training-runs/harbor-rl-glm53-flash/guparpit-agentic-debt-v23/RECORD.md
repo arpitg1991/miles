@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v23 (qp-fi-final-v2) — the v20 recipe on agentic-final-v2, fresh from the base model
 
-**Status:** Prepared
+**Status:** Queued
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-07
 **Family:** `harbor-rl-glm53-flash`
@@ -14,7 +14,7 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v20`
 <!-- gen-workflow:end -->
-**Argo workflow:** (set at launch)
+**Argo workflow:** `guparpit-agentic-debt-v23-sw9v6`
 **W&B run:** (set at launch)
 **Task pin:** `a7b647a2df19` (every manifest row)
 **Trainer config deltas vs base:** `prompt-data-list` agentic-debt-766@327e057c -> agentic-final-v2@6e4b517c; `experiment_name`, `project_name`, `arena_sample_summary_dir` -> v23. No checkpoint seed: the checkpoint dir is empty, so the trainer loads `ref_load` (the base GLM-5.3-Flash DCP) at rollout 0. Workflow: `experiment-name` and the refreshed node exclusions only.
@@ -79,3 +79,6 @@ Known gym-side risk, from final-v6 on the same template v10: dind is capped at 6
 | 2026-10-07 06:3x | Dataset resolved and checked (above). `v23` free on the cluster, in S3 and on every pushed branch. |
 | 06:4x | In-image parse (`recon2/parse/fullparse11.py`, `CFG=/work/v23.yaml` with `hf_checkpoint` remapped to `/work/hf`, `WORLD_SIZE` 320, `RANK` 0, CUDA stub on `LD_LIBRARY_PATH`; `parse-v23.out`): exit 0, 274 argv tokens. `glm5_next_dsa_qp True`, `miles_dsa_topk_backend flashinfer`, `rollout_function_path …NatsRolloutFn`, `max_weight_staleness 8`, multiplier 8, queue cap 64, `prefetch_rollout_data True`, `flash_mla`, `triton`, EP 8, lr 1.5e-6, `calculate_per_token_loss True`, `grpo_std_normalization False`, length coef 0.0, R3 on. `load` resolves to `ref_load` (the empty v23 dir triggers the fresh-start fallback); `save` is the v23 dir; `prompt_data` is the pinned agentic-final-v2 manifest. |
 | 06:4x | Node exclusions refreshed: 304 B200 nodes, 1 tainted; 347 excluded (v20's 346, the tainted node, and `i-06818d629c2521eb7`, the node of v19's CUDA fault). |
+| 06:37:56 | `kubectl create -f workflow.yaml` -> `guparpit-agentic-debt-v23-sw9v6`. Queue `gpu.p6-b200-48xlarge` at submit: pending 0, admitted 18. |
+| 06:41:04 | Trainer PyTorchJob `guparpit-agentic-debt-v23-sw9v6-trainer` created by the deployer. Kueue: `insufficient unused quota for nvidia.com/gpu in flavor gpu.p6-b200-48xlarge, 88 more needed` (11 nodes short). |
+| 07:00 | Still queued, the only pending workload in the B200 queue. No running job was stopped for it. Live log capture: `qp/v23-follow.log` (self-restarting `kubectl logs -f` loop); `recon2/fleet.txt` and `status.py` carry the run. |

@@ -1,10 +1,9 @@
-"""Write a workflow that relaunches a GLM-5.3 run (live or stopped Argo workflow) with the r23 restart changes.
+"""Write a workflow that relaunches a GLM-5.3 run (live or stopped Argo workflow) on the current image.
 
-Changes against the base workflow: trainer image r23 (r22 kernel-cache seed and staleness-cap code, plus the
-rollout/population/* W&B metrics: mean reward, chains at 1.0, regression rate over every collected group),
-template
-acuadron-miles-deployer-v4 (gyms start with the trainer pod), dummy engine weights plus the NEXTN draft
-export. With --cap also NatsRolloutFn, max_weight_staleness 8, arena_inflight_multiplier 6 and the gym
+Changes against the base workflow: trainer image r24 (r22 kernel-cache seed and staleness-cap code, r23
+rollout/population/* W&B metrics, r24 parallel routing-replay loads), dummy engine weights plus the NEXTN
+draft export. The template stays the base's unless it is guparpit's v10, which becomes
+acuadron-miles-deployer-v4 (gyms start with the trainer pod). With --cap also NatsRolloutFn, max_weight_staleness 8, arena_inflight_multiplier 6 and the gym
 replicas for that in-flight cap. Everything else (dataset, lr, shape, excluded nodes) is the base's.
 
 Usage: python3 relaunch.py <base-workflow> <experiment-name> [--cap] > workflow.yaml
@@ -15,7 +14,7 @@ base, name, cap = sys.argv[1], sys.argv[2], "--cap" in sys.argv
 w = json.loads(subprocess.check_output(["kubectl", "--context", "arena-prod-bom-v2", "-n", "arena-tasks", "get", "workflow", base, "-o", "json"]))
 p = {x["name"]: x for x in w["spec"]["arguments"]["parameters"]}
 p["experiment-name"]["value"] = name
-p["trainer-image"]["value"] = "427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-r23-20261008a"
+p["trainer-image"]["value"] = "427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-r24-20261008a"
 cfg = p["miles-config"]["value"]
 old = re.search(r"^experiment_name: (\S+)", cfg, flags=re.M).group(1)
 cfg = cfg.replace(old, name)                      # experiment_name, project_name, arena_sample_summary_dir
@@ -33,9 +32,12 @@ if cap:  # optional: the staleness cap with multiplier 6 (needs gym-replicas >= 
     rbs = int(re.search(r"^rollout_batch_size: (\d+)", cfg, flags=re.M).group(1))
     p["gym-replicas"]["value"] = str(-(-9 * 6 * rbs // 8))
 p["miles-config"]["value"] = cfg
+template = w["spec"]["workflowTemplateRef"]["name"]
+if template == "guparpit-miles-deployer-v10":
+    template = "acuadron-miles-deployer-v4"
 out = {"apiVersion": w["apiVersion"], "kind": w["kind"],
        "metadata": {"generateName": name + "-", "namespace": "arena-tasks", "labels": {"arena.agif.amazon.dev/submitter": "acuadron"}},
-       "spec": {"workflowTemplateRef": {"name": "acuadron-miles-deployer-v4"},
+       "spec": {"workflowTemplateRef": {"name": template},
                 "arguments": {"parameters": [dict(name=x["name"], value=x.get("value")) for x in w["spec"]["arguments"]["parameters"]]}}}
 class D(yaml.SafeDumper): pass
 D.add_representer(str, lambda d, s: d.represent_scalar("tag:yaml.org,2002:str", s, style="|" if "\n" in s else None))

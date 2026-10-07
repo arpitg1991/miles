@@ -573,6 +573,80 @@ def test_dp_alignment_pads_without_replay_stay_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Parallel loads: the thread pool gives the serial result
+# ---------------------------------------------------------------------------
+
+
+def _mixed_group(root: Path, n_trainable: int) -> list[Sample]:
+    """Trainable ref samples of varied length, one inline, two removed (no payload; corrupt payload)."""
+    root.mkdir(parents=True, exist_ok=True)
+    group: list[Sample] = []
+    for i in range(n_trainable):
+        rows = 5 + (i * 7) % 11
+        raw = (np.arange(1, rows * L * K + 1, dtype=np.int32) * (i + 1)).tobytes()
+        s = _queued_sample(root, f"t{i}", reward=1.0, index=i)
+        s.tokens = list(range(rows + 1))
+        s.metadata[REF_KEY] = _ref(root, raw, name=f"t{i}.routing")
+        group.append(s)
+    inline = _queued_sample(root, "inline", reward=1.0, index=n_trainable)
+    Path(inline.metadata.pop(REF_KEY)["path"]).unlink()
+    inline.metadata[INLINE_KEY] = _b64(_raw(7))
+    group.append(inline)
+    no_payload = _queued_sample(root, "removed-none", reward=0.0, index=n_trainable + 1)
+    Path(no_payload.metadata.pop(REF_KEY)["path"]).unlink()
+    no_payload.remove_sample = True
+    group.append(no_payload)
+    corrupt = _queued_sample(root, "removed-corrupt", reward=0.0, index=n_trainable + 2)
+    corrupt.metadata[REF_KEY]["sha256"] = "0" * 64
+    corrupt.remove_sample = True
+    group.append(corrupt)
+    return group
+
+
+def test_parallel_materialize_matches_serial(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    serial = _mixed_group(tmp_path / "a", 20)
+    parallel = _mixed_group(tmp_path / "b", 20)
+    materialize_group_routing(serial, _args(), workers=1)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        materialize_group_routing(parallel, _args(arena_routing_workers=8))
+    assert len(serial) == len(parallel) == 23
+    for a, b in zip(serial, parallel):
+        assert a.rollout_routed_experts.dtype == b.rollout_routed_experts.dtype == np.int32
+        np.testing.assert_array_equal(a.rollout_routed_experts, b.rollout_routed_experts)
+        assert REF_KEY not in b.metadata and INLINE_KEY not in b.metadata
+    assert parallel[20].rollout_routed_experts.shape == (7, L, K)
+    assert (parallel[21].rollout_routed_experts == -1).all() and (parallel[22].rollout_routed_experts == -1).all()
+    assert not list((tmp_path / "a").iterdir()) and not list((tmp_path / "b").iterdir()), "every consumed blob is deleted"
+    assert sum("removed sample has unusable routed_experts" in r.message for r in caplog.records) == 1
+
+
+def test_parallel_trainable_failure_raises_after_consuming_the_group(tmp_path: Path) -> None:
+    group = _mixed_group(tmp_path, 12)
+    group[5].metadata[REF_KEY]["bytes"] = 4
+    with pytest.raises(RoutingReplayError, match="byte count"):
+        materialize_group_routing(group, _args(arena_routing_workers=8))
+    assert not list(tmp_path.iterdir()), "every blob of the group is read and deleted before the raise"
+
+
+def test_parallel_lost_ref_stays_a_lost_ref_error(tmp_path: Path) -> None:
+    group = _mixed_group(tmp_path, 12)
+    Path(group[3].metadata[REF_KEY]["path"]).unlink()
+    with pytest.raises(RoutingRefLostError):
+        materialize_group_routing(group, _args(arena_routing_workers=8))
+
+
+def test_routing_workers_default_and_knob() -> None:
+    from miles_plugins.arena.nats_arena.routing_replay import ROUTING_WORKERS_DEFAULT, routing_workers
+
+    assert routing_workers(_args()) == ROUTING_WORKERS_DEFAULT == 16
+    assert routing_workers(_args(arena_routing_workers=0)) == 1
+    parser = __import__("argparse").ArgumentParser()
+    nats_rollout._add_arena_arguments(parser)
+    assert parser.parse_args([]).arena_routing_workers == ROUTING_WORKERS_DEFAULT
+    assert parser.parse_args(["--arena-routing-workers", "4"]).arena_routing_workers == 4
+
+# ---------------------------------------------------------------------------
 # Drain loop: materialize kept groups, reap dropped ones, re-raise fatal
 # ---------------------------------------------------------------------------
 

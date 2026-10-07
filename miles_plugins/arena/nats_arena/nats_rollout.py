@@ -50,6 +50,7 @@ from miles_plugins.arena.nats_arena.message_format import (
 from miles_plugins.arena.nats_arena.mixture_controller import MixtureController
 from miles_plugins.arena.nats_arena.routing_replay import (
     pad_routing,
+    ROUTING_WORKERS_DEFAULT,
     RoutingRefLostError,
     RoutingReplayError,
     TOKEN_REF_KEY,
@@ -2615,7 +2616,9 @@ def generate_rollout(
             if replay_on:
                 # Drain-time decode (ADR-0012): the group is about to join the
                 # train batch, so this is the first moment the arrays are
-                # worth their RAM. Overlaps with the wait for later groups.
+                # worth their RAM. The loads of one group run in
+                # --arena-routing-workers threads; with a deep queue this loop,
+                # not generation, is the collect time.
                 t_mat = time.time()
                 try:
                     materialize_group_routing(group, args)
@@ -3004,6 +3007,15 @@ def _add_arena_arguments(parser):
         "(max_in_flight = multiplier x rollout_batch_size). 2 keeps the "
         "r10-lineage oversubscription; raise it when SGLang engines sit "
         "under-fed with an empty queue.",
+    )
+    group.add_argument(
+        "--arena-routing-workers",
+        type=int,
+        default=ROUTING_WORKERS_DEFAULT,
+        help="Threads that load one group's routing-replay payloads from the "
+        "shared mount at drain time (routing_replay.materialize_group_routing). "
+        "One thread took about 19 s per GLM-5.3-Flash group on final-v9 and set "
+        "the step time; 1 = the serial order.",
     )
     group.add_argument(
         "--arena-length-reward-coef",

@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -70,6 +71,10 @@ TOKEN_BYTES_PER_TOKEN = 13
 # Every step key that names a staged file, with the suffix its producer uses.
 _STEP_REF_SUFFIXES = {REF_KEY: BLOB_SUFFIX, TOKEN_REF_KEY: TOKEN_SUFFIX}
 _STEP_REF_KEYS = tuple(_STEP_REF_SUFFIXES)
+
+# Threads that load one group's payloads at drain time (``--arena-routing-workers``).
+# Keep this equal to the argparse default in nats_rollout.add_arena_nats_rollout_arguments.
+ROUTING_WORKERS_DEFAULT = 16
 
 
 class RoutingReplayError(RuntimeError):
@@ -112,6 +117,11 @@ class TokenArraysRefError(RuntimeError):
 def replay_enabled(args: Any) -> bool:
     """Return True when the trainer runs R3 (``--use-rollout-routing-replay``)."""
     return bool(getattr(args, "use_rollout_routing_replay", False))
+
+
+def routing_workers(args: Any) -> int:
+    """Return the thread count for one group's payload loads (at least 1)."""
+    return max(1, int(getattr(args, "arena_routing_workers", ROUTING_WORKERS_DEFAULT) or 1))
 
 
 def _dims(args: Any) -> tuple[int, int]:
@@ -323,8 +333,32 @@ def pad_routing(shape: tuple[int, ...]) -> np.ndarray:
     return np.full(shape, PAD_EXPERT, dtype=np.int32)
 
 
-def materialize_group_routing(group: list[Sample], args: Any) -> None:
+def _decode_pending(s: Sample, num_layers: int, topk: int) -> np.ndarray:
+    """Load and decode one sample's payload; its ref is popped and the file deleted."""
+    meta = s.metadata if isinstance(s.metadata, dict) else {}
+    ref = meta.pop(REF_KEY, None)
+    inline = meta.pop(INLINE_KEY, None)
+    if ref is None and inline is None:
+        raise RoutingReplayError(f"Task {meta.get('task_id', '?')}: trainable sample has no routed_experts payload")
+    raw = _load_payload(ref, inline)
+    return decode_routing(
+        raw,
+        num_tokens=len(s.tokens),
+        num_layers=num_layers,
+        topk=topk,
+        allow_extra_rows=s.remove_sample,
+    )
+
+
+def materialize_group_routing(group: list[Sample], args: Any, *, workers: int | None = None) -> None:
     """Decode every pending payload in ``group`` and fill the rest with -1 rows.
+
+    The payloads load in ``workers`` threads (default ``--arena-routing-workers``):
+    one GLM-5.3-Flash group reads about 2.5 GB in 50-60 files from the shared
+    mount, and the file read, the sha256 and the numpy copy all release the
+    GIL. One thread read a group in about 19 s on final-v9 (2026-10-07), which
+    made the drain loop, not the trainer, the step time. Each sample's decode is
+    independent; the result is identical to the serial order.
 
     Trainable samples decode strictly. A removed sample (failed pad, truncated
     or overflow sibling) without a usable payload gets an all -1 array of its
@@ -335,36 +369,42 @@ def materialize_group_routing(group: list[Sample], args: Any) -> None:
 
     Raises:
         RoutingReplayError: a trainable sample has no payload, or its payload
-            is corrupt or has the wrong shape.
+            is corrupt or has the wrong shape. Every pending payload of the
+            group is loaded (and its file deleted) before the first trainable
+            failure, in group order, is raised.
     """
     num_layers, topk = _dims(args)
+    pending = [s for s in group if s.rollout_routed_experts is None]
+    had_payload = [
+        isinstance(s.metadata, dict) and (REF_KEY in s.metadata or INLINE_KEY in s.metadata) for s in pending
+    ]
+    n_workers = min(routing_workers(args) if workers is None else max(1, workers), len(pending))
+    outcomes: list[np.ndarray | BaseException] = []
+    if n_workers > 1:
+        with ThreadPoolExecutor(max_workers=n_workers, thread_name_prefix="r3-materialize") as pool:
+            futures = [pool.submit(_decode_pending, s, num_layers, topk) for s in pending]
+        outcomes = [f.exception() if f.exception() is not None else f.result() for f in futures]
+    else:
+        for s in pending:
+            try:
+                outcomes.append(_decode_pending(s, num_layers, topk))
+            except RoutingReplayError as exc:
+                outcomes.append(exc)
+
     zeros_by_rows: dict[int, np.ndarray] = {}
-    for s in group:
-        if s.rollout_routed_experts is not None:
+    for s, had, out in zip(pending, had_payload, outcomes):
+        if isinstance(out, np.ndarray):
+            s.rollout_routed_experts = out
             continue
-        meta = s.metadata if isinstance(s.metadata, dict) else {}
-        ref = meta.pop(REF_KEY, None)
-        inline = meta.pop(INLINE_KEY, None)
-        task_id = meta.get("task_id", "?")
-        try:
-            if ref is None and inline is None:
-                raise RoutingReplayError(f"Task {task_id}: trainable sample has no routed_experts payload")
-            raw = _load_payload(ref, inline)
-            s.rollout_routed_experts = decode_routing(
-                raw,
-                num_tokens=len(s.tokens),
-                num_layers=num_layers,
-                topk=topk,
-                allow_extra_rows=s.remove_sample,
+        if not isinstance(out, RoutingReplayError) or not s.remove_sample:
+            raise out
+        if had:
+            meta = s.metadata if isinstance(s.metadata, dict) else {}
+            logger.warning(
+                "Task %s: removed sample has unusable routed_experts; using -1 rows",
+                meta.get("task_id", "?"),
+                exc_info=out,
             )
-            continue
-        except RoutingReplayError:
-            if not s.remove_sample:
-                raise
-            if ref is not None or inline is not None:
-                logger.warning(
-                    "Task %s: removed sample has unusable routed_experts; using -1 rows", task_id, exc_info=True
-                )
         rows = max(0, len(s.tokens) - 1)
         if rows not in zeros_by_rows:
             zeros_by_rows[rows] = pad_routing((rows, num_layers, topk))

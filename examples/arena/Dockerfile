@@ -5,6 +5,7 @@
 #
 #   docker build -f examples/arena/Dockerfile \
 #       --build-arg MILES_BASE_IMAGE=radixark/miles:latest \
+#       [--build-context kernel-cache=<dir that holds kernel_cache.tar>] \
 #       -t <registry>/miles-arena-dev:<tag> .
 #
 # MILES_BASE_IMAGE must be a miles GPU runtime image produced by docker/build.py
@@ -18,6 +19,10 @@
 # PR#89 — or its ECR mirror, e.g. arena-slime-dev:glm53next-upstream-20260902);
 # the mainline base lacks the KDA/DSA engine support.
 ARG MILES_BASE_IMAGE=radixark/miles:latest
+
+# The optional kernel-cache seed. `--build-context kernel-cache=<dir>` replaces this empty stage.
+FROM scratch AS kernel-cache
+
 FROM ${MILES_BASE_IMAGE}
 
 # Arena runtime deps (mirrors setup.py's [arena] extra). The AGISlime
@@ -60,6 +65,24 @@ RUN apt-get update \
 # Replace the base's baked checkout with this fork. The base's editable install
 # points at /root/miles, so overwriting the tree is the whole install; removing
 # it first keeps files deleted in the fork from lingering.
+# Kernel-cache seed (port of arpit-kda-shared-layer 389d2630, plus the inductor tree). A fresh
+# GLM-5.3 trainer pod compiles and autotunes its TileLang, Triton and inductor kernels in train
+# step 0: final-v7 (2026-10-06) spent about 41 of that step's 47 min on it. The seed is the
+# kernel_cache/{tilelang,triton,inductor} trees of warm trainer and engine pods
+# (examples/arena/harbor-rl-glm53-flash/kcache/README.md). It goes to /tmp/kernel_cache, the cache
+# path that the deployer's trainer command exports (TILELANG_CACHE_DIR, TRITON_CACHE_DIR,
+# TORCHINDUCTOR_CACHE_DIR), because the Triton group files keep absolute paths. A kernel whose
+# source, compiler or GPU changed misses the cache and compiles as before. Without the build
+# context this step does nothing. It sits before the source COPY so a code-only rebuild keeps it.
+# ponytail: the seed is only at /tmp/kernel_cache. If a manifest moves the cache, copy the seed there at start.
+RUN --mount=type=bind,from=kernel-cache,target=/kernel-cache \
+    if [ -f /kernel-cache/kernel_cache.tar ]; then \
+        tar -C /tmp -xf /kernel-cache/kernel_cache.tar kernel_cache/tilelang kernel_cache/triton kernel_cache/inductor \
+        && echo "kernel cache seed: $(find /tmp/kernel_cache -type f | wc -l) files, $(du -sh /tmp/kernel_cache | cut -f1)"; \
+    else \
+        echo "kernel cache seed: none (no kernel-cache build context)"; \
+    fi
+
 RUN rm -rf /root/miles
 COPY . /root/miles
 

@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v19 (qp) — r56-ns with the query-parallel DSA core (ADR-0019)
 
-**Status:** Running
+**Status:** Retired
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-06
 **Family:** `harbor-rl-glm53-flash`
@@ -19,7 +19,7 @@
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `glm5_next_dsa_qp: true` (new key, `--glm5-next-dsa-qp`); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run. Everything else is the r56-ns config: prefetch on, inflight multiplier 8, `max_weight_staleness` 8, `arena_output_queue_groups` 64, FlashMLA forward, `NatsRolloutFn`, TP8 SP, PP4 11/11/11/12, EP8.
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v19`, seeded from r54-ns (`guparpit-agentic-debt-v17`) `iter_0000109` (its latest save at copy time, 2026-10-06 04:44Z; 135 objects match by name and size; sidecar `{"rollout_id": 109}` without `wandb_run_id`; data state `arena_data_source_state_109.pt`; tracker 109 written last)
-**Outcome:** Running
+**Outcome:** Retired 2026-10-07 21:1xZ on the owner's word to free 40 nodes for the router A/B arms (v24, v25). Last rollout 163; last save `iter_0000159`. Over rollouts 121 to 163 it matched v20 (QP + flashinfer top-k) within noise: true reward 0.71 to 0.75, trainer about 68K tokens/s. No CUDA fault after the resume.
 
 The owner's order of 2026-10-06: port `--glm5-next-dsa-qp` onto the ns stack, gate it with the
 1-node parity harness and T1, and run two arms at once from the same seed: `--glm5-next-dsa-qp`
@@ -98,3 +98,5 @@ Gates before the submit: the 1-node parity harness (`kdatp/dsaqp`, jobs `kdatp-d
 | 18:4x | Resubmitted as `guparpit-agentic-debt-v19-252n7` from `iter_0000119` (sidecar `{"rollout_id": 119, "wandb_run_id": "rt5cj2f9"}`, data state 119), same files; exclusions refreshed (346 to 348: the 2 tainted B200 nodes and `i-06818d629c2521eb7`). Rollouts 120 to 127 are lost. |
 
 Open: v20 (QP + flashinfer top-k, same image) has trained past the same point without this error. If v19 hits it again, the suspects in order are the R3 int16 replay fill (a view at an odd int16 offset read as a wider type) and the QP all-to-all layout, both in the router input path.
+
+| 2026-10-07 21:14 | Stopped `guparpit-agentic-debt-v19-252n7` with `spec.shutdown: Stop` on the owner's word; workflow Failed at 21:18:08Z after onExit cleanup; no job, Deployment or pod left. |

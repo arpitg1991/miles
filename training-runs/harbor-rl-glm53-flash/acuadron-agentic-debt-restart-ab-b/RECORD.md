@@ -1,6 +1,6 @@
 # Run record: acuadron-agentic-debt-restart-ab-b — restart-time check B: A plus dummy engine weights and the NEXTN draft export
 
-**Status:** Running
+**Status:** Stopped 2026-10-07 ~01:40 UTC after train step 1 (check done).
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-07
 **Family:** `harbor-rl-glm53-flash`
@@ -34,3 +34,4 @@ engine start 19.8 min (220 GB disk read 11.3 min, NEXTN draft re-read of all 120
 | 2026-10-07 00:45:23 | Trainer ready (7.2 min after the Ray head; now the critical path). Initial push 30.2 s fills the engines. |
 | 2026-10-07 00:45:55 | Rollout 0 collecting (12.4 min after submit; final-v7: 26.9 min). First group 00:56:24, 32nd 01:18:06 (32.2 min). |
 | 2026-10-07 01:24:46 | Train step 0 done: `actor_train` 379.6 s for 15.5M tokens (40.8k tok/s), `update_weights` 30.1 s; log-prob gap 0.0212, grad_norm 0.093, accept length 2.67. |
+| 2026-10-07 01:39 | Train step 1: `actor_train` 374.5 s at 69.8k tok/s (1,091 tok/s per GPU, warm; cold r20/r21 step 1 at this shape: 515-571 per GPU). Stopped. |

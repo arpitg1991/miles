@@ -1,6 +1,8 @@
-"""Write a workflow that relaunches a GLM-5.3 run (live or stopped Argo workflow) with the r22 restart changes.
+"""Write a workflow that relaunches a GLM-5.3 run (live or stopped Argo workflow) with the r23 restart changes.
 
-Changes against the base workflow: trainer image r22 (kernel-cache seed, staleness-cap code), template
+Changes against the base workflow: trainer image r23 (r22 kernel-cache seed and staleness-cap code, plus the
+rollout/population/* W&B metrics: mean reward, chains at 1.0, regression rate over every collected group),
+template
 acuadron-miles-deployer-v4 (gyms start with the trainer pod), dummy engine weights plus the NEXTN draft
 export. With --cap also NatsRolloutFn, max_weight_staleness 8, arena_inflight_multiplier 6 and the gym
 replicas for that in-flight cap. Everything else (dataset, lr, shape, excluded nodes) is the base's.
@@ -13,13 +15,15 @@ base, name, cap = sys.argv[1], sys.argv[2], "--cap" in sys.argv
 w = json.loads(subprocess.check_output(["kubectl", "--context", "arena-prod-bom-v2", "-n", "arena-tasks", "get", "workflow", base, "-o", "json"]))
 p = {x["name"]: x for x in w["spec"]["arguments"]["parameters"]}
 p["experiment-name"]["value"] = name
-p["trainer-image"]["value"] = "427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-r22-20261007a"
+p["trainer-image"]["value"] = "427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-github/miles:miles-glm53-r23-20261008a"
 cfg = p["miles-config"]["value"]
 old = re.search(r"^experiment_name: (\S+)", cfg, flags=re.M).group(1)
 cfg = cfg.replace(old, name)                      # experiment_name, project_name, arena_sample_summary_dir
-for k in ("sglang_load_format", "sglang_speculative_draft_model_path", "sglang_speculative_draft_load_format"):
-    assert not re.search(rf"^{k}:", cfg, flags=re.M), k
-cfg = cfg.rstrip("\n") + "\n" + (
+r22_keys = ("sglang_load_format", "sglang_speculative_draft_model_path", "sglang_speculative_draft_load_format")
+present = [k for k in r22_keys if re.search(rf"^{k}:", cfg, flags=re.M)]
+assert len(present) in (0, 3), f"base carries some but not all r22 engine keys: {present}"
+if not present:  # a base from before r22; a v9-style base already has the three keys
+    cfg = cfg.rstrip("\n") + "\n" + (
     "sglang_load_format: dummy  # r22 relaunch: the trainer's initial push fills the engine weights\n"
     "sglang_speculative_draft_model_path: /mnt/scratch-fast-1a-rw/acuadron/models/GLM-5.3-Flash-BF16-nextn  # MTP layer only\n"
     "sglang_speculative_draft_load_format: auto  # the draft loads from disk; without this it takes the dummy load format\n")

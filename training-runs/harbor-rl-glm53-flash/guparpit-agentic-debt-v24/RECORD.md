@@ -1,6 +1,6 @@
 # Run record: guparpit-agentic-debt-v24 (router-abs32) — v20 (qp-fi) with the router imbalance threshold lowered from 64 to 32
 
-**Status:** Prepared
+**Status:** Queued
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-07
 **Family:** `harbor-rl-glm53-flash`
@@ -14,12 +14,12 @@
 **Template:** `guparpit-miles-deployer-v10`
 **Base:** `guparpit-agentic-debt-v20`
 <!-- gen-workflow:end -->
-**Argo workflow:** not submitted
+**Argo workflow:** `guparpit-agentic-debt-v24-pxj8x`
 **W&B run:** not created
 **Task pin:** `3cadc6b0`
 **Trainer config deltas vs base:** `router_balance_abs_threshold` 64 (router default) -> 32 (new key; miles passes every `RouterArgs` flag with the `router_` prefix, `miles/backends/sglang_utils/router_args_utils.py`); `experiment_name`, `project_name`, `arena_sample_summary_dir` name the run. Workflow parameters differ from v20 only in `experiment-name`, `excluded-nodes` and `miles-config`.
 **Checkpoints:** `/mnt/scratch-s3files-rw/guparpit/checkpoints/slime_experiments/guparpit-agentic-debt-v24`, seeded from v20 `iter_0000169` (its latest save at copy time, 2026-10-07 20:00Z; 135 objects match by name and size; sidecar `{"rollout_id": 169}` without `wandb_run_id`; data state `arena_data_source_state_169.pt`; tracker 169 written last; `metrics-1001/ckcopy-v24.sh`).
-**Outcome:** Prepared
+**Outcome:** Queued for B200 capacity
 
 ## Goal
 
@@ -65,3 +65,7 @@ Compare script: `/workplace/guparpit/kdfast/scratch/router-ab/compare.py`.
 | --- | --- |
 | 2026-10-07 20:02 | Seed copied from v20 `iter_0000169`: 135 objects match; sidecar `{"rollout_id": 169}`; data state 169; tracker 169. |
 | 20:04 | Run files written (`router-ab/make_router_runs.py`); exclusions refreshed: 304 B200 nodes, 5 bad, plus `i-06818d629c2521eb7`; 350 excluded. |
+| 20:08:27 | Submit `guparpit-agentic-debt-v24-pxj8x`. |
+| 20:11:38 | Trainer PyTorchJob created. Kueue: "insufficient unused quota for nvidia.com/gpu in flavor gpu.p6-b200-48xlarge, 152 more needed" (queue nominal 2,424 GPUs, 2,256 in use). Both arms wait; no run was stopped to make room. |
+| 20:15 | Log capture started (`router-ab/follow.sh`, self-restarting) into `router-ab/v24-follow.log`; it connects once worker-0 starts. |
+| 20:25 | Control windows: v20 rollouts 170 to 179 recovered from CloudWatch (`router-ab/v20-cw.log`). `compare.py`: per-window busiest-engine median 44 to 85 running requests against an engine median of 33 to 37 (ratio 1.24 to 2.33, mean 1.73); queued share about 0; max KV 0.86 to 0.99; sampled prefix-cache share 0.93 to 0.97; collect 1,294 to 2,600 s (mean 1,994); trainer wait 520 to 1,726 s (mean 1,202); batch reward mean 0.64. |

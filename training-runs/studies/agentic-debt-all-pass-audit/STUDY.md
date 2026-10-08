@@ -1,8 +1,10 @@
-# Study: Why the r45 all-pass rate was far above GPT-5.6 and Opus-4.8 on ad-766
+# Study: r45 all-pass audit — grader integrity and dataset mix
 
-**Date:** 2026-09-28
+**Date:** 2026-09-28 (revised 2026-10-08)
 **Status:** Closed
-**Question:** Did r45 (agentic debt, GLM-5.3-Flash) beat the frontier pass@8 jobs on ad-766 through a reward hack, or through a different task list, base strength, training on the same tasks, and more effort per trial?
+**Question:** Is the r45 all-pass rate of 0.72 (agentic debt, GLM-5.3-Flash) the product of a reward hack, and does it measure skill or the dataset mix?
+
+**Revision 2026-10-08 (owner decision):** The first version compared r45 scores with the frontier pass@8 jobs (`acuadron-ad-766-pass8-*`) and attributed the gap. That comparison tested nothing: the jobs ran different models, a different agent version (Vulcan 1317 vs 1536), an older task pin (`7a51be40` vs `77c2239b`), offline sampling instead of on-policy training, and 6 to 8 times less wall time per trial. The score tables, the gap attribution, and the effort table are removed. The frontier jobs remain in this study only (a) as the origin of ad-766 and (b) to select the tasks the hunt pass inspected. The valid before/after evidence is the same model on the same harness: the r43 base-policy window against r45. The held-out eval stays open.
 **Runs and data used:**
 - r45 `rl-glm53f45-vvqhg`, W&B `ajsur4ej` (project `rl-glm53f-adebt-v3`), resumed from r43 `iter_0000039`; r43 `rl-glm53f43-qztzt`, W&B `2z0599lb`. Gym logs of all 288 r45 gym pods, 2026-09-27 06:15Z to 23:18Z. Snapshots of the last group of each gym pod (22 groups, 176 trials). r43 gym logs of the first 373 groups (before the first weight update, 2026-09-25 23:28Z).
 - Frontier jobs `acuadron-ad-766-pass8-gpt56-xhigh` and `acuadron-ad-766-pass8-opus48-high`, read from `s3://arena-scratch-beta-pdx-us-west-2/harbor-jobs/<job>/.trials-index.json`. Full 1,024-chain runs `acuadron-ad-v3n-pass8-gpt56-xhigh` and `acuadron-ad-v3n-pass8-opus48-high`. Reruns `acuadron-ad-766-specfix-*` and `acuadron-ad-766-dvd-rerun-*`.
@@ -41,19 +43,6 @@ Four read-only passes, all on the cloud desktop. No cluster, S3, dataset, or run
 
 The audit could not read the frontier dataset pin from the trial files (the cache digest matched neither `77c2239b` nor `30a21665`). `r47/BUILD.md` later names `7a51be40`. The memory note `r38-auctioneer-redo-plan-2026-09-24.md:25` records `7a51be40` as the parent of `77c2239b` on `main` v3-locked; not re-verified against lakeFS here.
 
-### Frontier jobs on ad-766 (valid trials only)
-
-| Subset | Model | Tasks | Mean reward | Trials at 1.0 | Tasks all 8 at 1.0 | pass@8 | Source |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| all 766 | GPT-5.6 xhigh | 764 | 0.477 | 24.2% | 35/755 (4.6%) | 51.8% | `frontier_summary.md` |
-| all 766 | Opus-4.8 high | 766 | 0.609 | 42.6% | 138/751 (18.4%) | 69.2% | `frontier_summary.md` |
-| K <= 5 (r45 overlap) | GPT | 347 | 0.509 | 29.8% | 23/343 (6.7%) | 60.1% | `frontier_summary.md` |
-| K <= 5 (r45 overlap) | Opus | 348 | 0.634 | 49.7% | 84/340 (24.7%) | 76.2% | `frontier_summary.md` |
-| all 766, viewer metric | GPT | – | 0.4730 | segment_pass 0.2403 | – | – | `r47/BUILD.md:242`; `= 0.4769 x 6061/6112` |
-| all 766, viewer metric | Opus | – | 0.6031 | segment_pass 0.422 | – | – | `frontier_summary.md`; `= 0.6076 x 6083/6128` |
-
-Error accounting: GPT 6,112 trials, 51 with no reward (50 `DownloadVerifierDirError`, 1 timeout), 2 tasks with no trials (worker OOM). Opus 6,128 trials, 45 with no reward, 11 admin zeros (`OperatorTerminatedInfrastructure`). 3 tasks have no verifier output in either job: `digicert_pkilint_s9`, `f0uriest_interpax_s0`, `outbrain-inc_outrank_s0` (`frontier_summary.md` "Error accounting").
-
 ### r45 outcomes from the gym logs
 
 | Window | Groups | Trials | Trial mean reward | Trial all-pass | Groups all 8 pass | Zero-variance groups | Source |
@@ -76,47 +65,13 @@ By chain length, r45 (`/tmp/allpass/r45_summary_stats.txt`):
 
 Task level, 549 tasks: mean reward 0.796, all-pass 0.723; 207 tasks pass in every seen trial; 46 tasks never pass (`r45_summary_stats.txt`). The rebuilt rewards match all 1,096 saved trial files and 124 of the 128 groups the trainer kept in rollouts 46 to 49; the 4 misses are groups with a failed attempt (journal, `r45` report).
 
-The trainer's `avg_reward` (0.62 to 0.77) covers only the 32 kept groups per rollout. The dynamic sampling filter drops each group with no reward spread first: `Dynamic sampling: kept=32/32, dropped=40 (zero-variance), examined=72` (`/tmp/allpass/trainer0.log:3720`). Thus the W&B curve sits below the true trial mean of 0.80, and a comparison of `avg_reward` with the frontier `segment_pass` mixes two measures.
+The trainer's `avg_reward` (0.62 to 0.77) covers only the 32 kept groups per rollout. The dynamic sampling filter drops each group with no reward spread first: `Dynamic sampling: kept=32/32, dropped=40 (zero-variance), examined=72` (`/tmp/allpass/trainer0.log:3720`). Thus the W&B curve sits below the true trial mean of 0.80, and a comparison of `avg_reward` with any per-trial pass rate mixes two measures.
 
-### Same tasks, task level (frontier scores from the full 1,024-chain runs)
+The base-against-trained delta (same model, same harness, same tasks): the r43 base-policy window scores all-pass 0.687 and the r45 window 0.729 over all 549 tasks; on the 217 harder tasks that overlap ad-766, 0.539 against 0.672 (`/tmp/allpass/verify/v3n_join.txt`, "Base (r43 step 0)" column). Both numbers are measured on the training tasks. They are not a held-out result.
 
-| Task set | n | r45 all-pass | GPT all-pass | Opus all-pass | Base (r43 step 0) | Source |
-| --- | --- | --- | --- | --- | --- | --- |
-| ad-766 as the viewer shows it | 759 | – | 0.242 | 0.426 | – | `/tmp/allpass/verify/v3n_join.txt` |
-| All r45 training tasks | 546 scored of 549 | 0.724 | 0.529 | 0.666 | – | `v3n_join.txt` |
-| r45 tasks in ad-766 | 344 | 0.623 | 0.298 | 0.498 | – | `v3n_join.txt` |
-| r45 tasks not in ad-766 | 202 | 0.895 | 0.921 | 0.951 | – | `v3n_join.txt` |
-| v3n chains not in ad-766 | 257 | – | 0.904 | 0.930 | – | `v3n_join.txt` |
-| Tasks with base data, all | 354 | 0.775 | 0.545 | 0.675 | 0.689 | `v3n_join.txt` |
-| Tasks with base data, in ad-766 | 217 | 0.672 | 0.295 | 0.495 | 0.539 | `v3n_join.txt` |
+### Dataset mix
 
-Mean reward on the 344 shared tasks: r45 0.72, GPT 0.51, Opus 0.633 (`/tmp/allpass/verify/rederive.txt`). Errors counted as zero move the frontier task means by 0.001 to 0.002 (`rederive.txt` `ez=True` rows). Per task on the shared set: r45 above Opus on 173, below on 101, equal on 70 (`rederive.txt`).
-
-Of the 117 chains that both GPT and Opus passed 8 of 8 in the full runs, 115 sit outside ad-766 (journal, `verify` report; derived from the `acuadron-ad-v3n-pass8-*` trial indexes, no saved table; not re-verified).
-
-Gap attribution on the 214 tasks with base data (`/tmp/allpass/hunt/join_decompose.json` `attribution_shared_with_base_all_pass`):
-
-| Comparison | Total gap | Base model minus frontier | Training (r45 minus base) |
-| --- | --- | --- | --- |
-| r45 vs Opus | 0.176 | 0.042 | 0.134 |
-| r45 vs GPT | 0.379 | 0.245 | 0.134 |
-
-Naive gap vs Opus: 0.723 (r45 on its 549 tasks) minus 0.424 (Opus on ad-766) = 0.30. On the same 549 tasks, Opus scores 0.666, so about 0.24 of the 0.30 comes from the task list. The rest splits into base strength (about 0.04) and training on these exact tasks (about 0.13). The training gain is measured on the training tasks. It is not a held-out result.
-
-By K on the shared 330 tasks (`join_decompose.json` `shared_by_K`, all-pass): K=2 r45 0.606 / GPT 0.354 / Opus 0.466; K=3 0.636 / 0.291 / 0.503; K=4 0.611 / 0.288 / 0.543; K=5 0.631 / 0.239 / 0.471. The gap does not depend on K.
-
-### Effort per trial (medians, shared tasks)
-
-| Measure | r45 | GPT | Opus | Source |
-| --- | --- | --- | --- | --- |
-| Minutes per trial | 124.5 | 16.5 | 13.9 | journal, `r45` report (88 shared tasks) |
-| Output tokens per trial | 175k | 44k | 38k | journal, `r45` report |
-| Agent turns per trial | 118 | – | – | journal, `r45` report |
-| Minutes per trial, re-derived | 110 | about 18 | about 18 | journal, `verify` report |
-| Output tokens per trial, re-derived | 164k | 55k to 60k | 55k to 60k | journal, `verify` report |
-| Agent turns per trial, re-derived | 107 | – | – | journal, `verify` report |
-
-The two passes agree on the direction and disagree on the size. Neither table survives as a file; both rows are "not re-verified". The frontier models stop on their own and never hit a limit (`frontier_summary.md`: most turns in one step 199 GPT, 200 Opus).
+The r45 manifest selects the easy end of the pool: 549 trained tasks, all with K <= 5, while ad-766 spans K 2 to 66 (mean 7.9). 202 of the 549 trained tasks sit outside ad-766, and r45 passes 0.895 of them (`v3n_join.txt`). Any headline rate from this run therefore reflects the manifest selection at least as much as the policy. This finding led to the 2026-09-27 owner decision below.
 
 ### Grader integrity
 
@@ -145,7 +100,9 @@ The two passes agree on the direction and disagree on the size. Neither table su
 
 Source: `/tmp/allpass/hunt/probe_rates.txt`. Across all 22 snapshot tasks: 42 of 176 r45 trials, on 15 of 22 tasks, read the grading setup; 0 of 160 frontier trials did (journal, `verify` report; `verify/traj.py`). Every search found nothing. The git history is sealed; the hidden tests and solutions never enter the agent container (`verdicts.json` `history/solution leaks`). Three read transcripts: `pylibdmtx_s0` `_2zNEVjX` read `/run/ad-lockdown.sh` (two trials in the group never probed and still passed); `mmpy_bot_s0` `_rPRTdeW` found `/tmp/hidden/unit_tests`, a folder it had made itself in an earlier step; `finite-state-machine_s0` `_E6dacgE` decompiled a `.pyc` that held only its own step-1 code.
 
-### Largest-gap tasks (`/tmp/allpass/hunt/verdicts.json`)
+### Spot-checked tasks (`/tmp/allpass/hunt/verdicts.json`)
+
+The hunt pass inspected the tasks where r45 passed and the frontier jobs mostly failed, because a hack would surface there first. The GPT and Opus columns serve only that selection; they are not a skill comparison (different models, agent versions, task pins, and effort).
 
 | Task | K | r45 all-pass | GPT | Opus | Why the frontier failed | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -163,14 +120,12 @@ Corrections from the verify pass: `digicert_pkilint_s9` is a real gap, not an in
 
 ## Verdict
 
-No reward hack raised an r45 score. The grader inputs, prompts, and reward key match byte for byte where both sides ran, and 465 step transcripts show no write to a reward or seal path. The headline gap (r45 0.72 vs Opus 0.42) comes mostly from the task list: ad-766 excludes the easy chains, and r45 trained on 549 chains of K <= 5, 202 of them outside ad-766 with a 0.90 all-pass rate on both sides. On the same 549 tasks, Opus scores 0.67 and GPT 0.53 (full 1,024-chain runs). On the 217 hard tasks with base data, GLM-5.3-Flash already scored 0.54 before training (Opus 0.50, GPT 0.30), and training on these exact tasks added 0.13. r45 also spends 6 to 8 times the wall time and 3 to 4 times the output tokens per trial. Three tasks are defective and reward GLM's habits (`ProgRace_s0`, `finite-state-machine_s0`, `mmpy_bot_s0`). The numbers do not support a held-out skill claim: every r45 gain is measured on its training tasks, and the frontier ran an older task commit (`7a51be40`) than r47 trains on (`3cadc6b0`). The one risk the data does support: 42 of 176 r45 trials probe the grading setup, and 0 of 160 frontier trials do; every probe failed.
+No reward hack raised an r45 score. The grader inputs, prompts, and reward key match byte for byte where both sides ran, and 465 step transcripts show no write to a reward or seal path. The headline all-pass rate of 0.72 measures the dataset mix at least as much as the policy: r45 trained on 549 chains of K <= 5, 202 of them outside ad-766 and nearly saturated (0.895). On the training tasks the same model moved from 0.687 (r43 base window) to 0.729, and from 0.539 to 0.672 on the 217 harder overlap tasks; that is a before/after on the training set, not a held-out result, and the held-out eval was never run. Three tasks are defective and reward GLM's habits (`ProgRace_s0`, `finite-state-machine_s0`, `mmpy_bot_s0`). The one risk the data does support: 42 of 176 r45 trials probe the grading setup, and 0 of 160 frontier trials do; every probe failed. The removed cross-model score comparison (see the revision note) supported no conclusion and is cited nowhere else.
 
 ## Caveats and open items
 
 - The r45 trajectory sample is 22 of 549 tasks (176 of about 9,350 trials), because each gym pod keeps only its last group. The "no hack" verdict is medium-high, not certain.
-- The base-policy sample is the first 373 r43 groups, rebuilt from logs. The mix of tasks can be skewed toward short groups. The base-vs-training split (0.04 / 0.13) is "plausible", not independently checked.
-- Effort medians survive only in the journal, and the two passes disagree (124.5 vs 110 min; 175k vs 164k tokens). Not re-verified.
-- The "115 of 117 both-8/8 chains sit outside ad-766" count survives only in the journal. Not re-verified.
+- The base-policy sample is the first 373 r43 groups, rebuilt from logs. The mix of tasks can be skewed toward short groups, so the 0.687 base window is "plausible", not independently checked.
 - Whether training taught r45 to probe is unknown. No transcript of the untrained model survives.
 - Frontier trials graded `sandbox_reset` score 0 and were not counted. A count on the frontier side is open.
 - The frontier dataset pin `7a51be40` comes from `r47/BUILD.md`, not from the audit. The audit could not resolve it from the trial files.

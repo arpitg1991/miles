@@ -61,15 +61,15 @@ spec:
         rollout_num_gpus_per_engine: 8
         sglang_tp_size: 8
         sglang_ep_size: 8
-        sglang_dp_size: 8  # final-v10 engine arm (ARMS-20261008.md, gate skipped on request): DP attention, one attention replica per GPU
+        sglang_dp_size: 1
         rollout_max_context_len: 131072
         sglang_context_length: 131072
         sglang_chunked_prefill_size: 8192
         sglang_disable_radix_cache: false
         sglang_dsa_prefill_backend: trtllm
         sglang_dsa_decode_backend: trtllm
-        sglang_kv_cache_dtype: fp8_e4m3  # final-v10 engine arm (ARMS-20261008.md, gate skipped on request): fp8 KV with the trtllm DSA backends
-        sglang_mem_fraction_static: 0.85  # final-v10 engine arm (ARMS-20261008.md, gate skipped on request): fewer prefix evictions
+        sglang_kv_cache_dtype: bfloat16
+        sglang_mem_fraction_static: 0.7
         sglang_router_port: 30000
         router_health_success_threshold: 1
         router_health_check_interval_secs: 15
@@ -150,9 +150,9 @@ spec:
         sglang_moe_runner_backend: flashinfer_cutlass
         sglang_enable_flashinfer_allreduce_fusion: true
         sglang_speculative_algorithm: NEXTN
-        sglang_speculative_num_steps: 5  # final-v10 engine arm (ARMS-20261008.md, gate skipped on request): deeper NEXTN speculation
+        sglang_speculative_num_steps: 3
         sglang_speculative_eagle_topk: 1
-        sglang_speculative_num_draft_tokens: 6  # final-v10 engine arm (ARMS-20261008.md, gate skipped on request): 5 drafts + 1
+        sglang_speculative_num_draft_tokens: 4
         sglang_load_format: dummy  # r22 relaunch: the trainer's initial push fills the engine weights
         sglang_speculative_draft_model_path: /mnt/scratch-fast-1a-rw/acuadron/models/GLM-5.3-Flash-BF16-nextn  # MTP layer only
         sglang_speculative_draft_load_format: auto  # the draft loads from disk; without this it takes the dummy load format
@@ -160,11 +160,15 @@ spec:
         calculate_per_token_loss: true  # final-v10: token-level loss average (v23); the per-sample mean grew v9's turn count 2x
         disable_grpo_std_normalization: true  # final-v10: v23's setting; no 1/std amplification of near-tied groups
         arena_routing_workers: 16  # r24: parallel drain-time routing loads (the default)
-        # --- engine speed-up arms (kdatp/sgl/ARMS-20261008.md): ALL enabled 2026-10-08 on request, steps 1-2 skipped;
-        # in-run gate: update_weights ~30 s, gap <= 0.045 at steps 0-1, routing replay 0 lost refs, accept len > 2.6 ---
-        sglang_enable_dp_attention: true
-        sglang_moe_a2a_backend: deepep
-        sglang_enable_two_batch_overlap: true
+        # --- engine speed-up arms (kdatp/sgl/ARMS-20261008.md): fill in the A/B winner before launch ---
+        # sglang_enable_dp_attention: true
+        # sglang_dp_size: 8
+        # sglang_moe_a2a_backend: deepep
+        # sglang_enable_two_batch_overlap: true
+        # sglang_speculative_num_steps: 5
+        # sglang_speculative_num_draft_tokens: 6
+        # sglang_kv_cache_dtype: fp8_e4m3
+        # sglang_mem_fraction_static: 0.85
     - name: gym-image
       value: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adr72-20260927a
     - name: gym

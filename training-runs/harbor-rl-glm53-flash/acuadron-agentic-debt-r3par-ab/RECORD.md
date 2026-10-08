@@ -1,6 +1,6 @@
 # Run record: acuadron-agentic-debt-r3par-ab — live check of the parallel routing-replay loads (r23)
 
-**Status:** Running
+**Status:** Stopped 2026-10-08 02:47 UTC after train step 1 (check done).
 <!-- gen-workflow:begin -->
 **Date:** 2026-10-07
 **Family:** `harbor-rl-glm53-flash`
@@ -15,7 +15,7 @@
 <!-- gen-workflow:end -->
 **Argo workflow:** `acuadron-agentic-debt-r3par-ab-2f2pf` (submitted 2026-10-07 23:46 UTC)
 **Config deltas vs final-v9:** image r22 -> r23 (`--arena-routing-workers`, default 16, set explicitly); shape 64 -> 16 nodes (8 actor = DP 2, 8 engines), `gym-replicas` 288 -> 144, `rollout_batch_size` 64 -> 32, `global_batch_size` 512 -> 256; run names.
-**Outcome:** (pending)
+**Outcome:** The parallel loads are correct and fast. Rollout 0: 32 groups materialized in 39.1 s (1.2 s per group of about 670 MB raw, 550 MB/s); rollout 1: 32 groups in 32.4 s (1.0 s per group of about 1.1 GB raw, 1.1 GB/s); final-v9's serial loop: 19 s per 2.6 GB group (137 MB/s). 0 groups dropped for a lost ref, no `RoutingReplayError`, dynamic sampling reaped its 10 zero-variance groups as before. Numerics with the replayed routing in final-v9's band: log-prob gap 0.0330 / 0.0356 at steps 0 / 1 (final-v9: 0.032 / 0.034), train-rollout KL 0.0046 / 0.0050, grad_norm 0.086 / 0.077, TIS clip fraction 0.0008 / 0.0009. Train step 0 385 s at 38.6k tok/s (seeded kernels, as restart-ab-b), step 1 374 s at 67.0k tok/s. The image is re-tagged `miles-glm53-r24-20261008a` (same digest) for production.
 
 ## Goal
 
@@ -32,3 +32,9 @@ mount from a CPU pod (2026-10-07 23:40 UTC, 60 real blobs per set) one thread re
 | time (UTC) | event |
 |---|---|
 | 2026-10-07 23:46 | Submitted. |
+| 2026-10-07 23:50 | Ray head up; engines ready 23:55 (dummy weights, draft export); trainer ready 23:57, initial push 27.7 s. |
+| 2026-10-07 23:58 | Rollout 0 collecting (128 groups in flight on 8 engines: 48 running requests per engine, about 30 tok/s per request). First group 00:37. |
+| 2026-10-08 01:29 | Rollout 0 complete: 32 groups in 5,511 s; `materialized expert blobs for 32 groups in 39.1s`; 0 lost refs; 10 zero-variance groups dropped. |
+| 2026-10-08 01:43 | Train step 0: `actor_train` 385 s at 38.6k tok/s; log-prob gap 0.0330, KL 0.0046, grad_norm 0.086. |
+| 2026-10-08 02:39 | Rollout 1 complete: 32 groups in 4,154 s; `materialized expert blobs for 32 groups in 32.4s` (18.0 GB int16 batch). |
+| 2026-10-08 02:46 | Train step 1: `actor_train` 374 s at 67.0k tok/s; log-prob gap 0.0356, KL 0.0050, grad_norm 0.077. Stopped. |

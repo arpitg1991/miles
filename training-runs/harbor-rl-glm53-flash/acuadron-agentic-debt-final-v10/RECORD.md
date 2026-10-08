@@ -49,3 +49,15 @@ to separate fp8 KV, speculation depth and DP attention as the cause of the colla
 
 ~20 min steps with v9's engines at batch 512 (ARMS-20261008.md); ~13 min if a working engine arm is found and the
 run is relaunched on it at a checkpoint boundary. ~55 min to step 0. W&B carries `rollout/population/*`.
+
+## 2026-10-08 23:35 — 16 + 96 requested
+
+`workflow-512-96.yaml`: replicas 112 (16 actor + 96 engines), `arena_inflight_multiplier` 9 (576 groups in
+flight, 48 trials per engine), `gym-replicas` 648, otherwise `workflow-512-noarms.yaml`. Server dry run
+accepted. The quota holds 303 nodes: guparpit 160, lijiahu 40, this run 64, engine-ab-v3 16, backfill 11,
+free 14. 112 nodes therefore need a run of another owner to end. To avoid idling the 64 nodes, the swap is
+conditional (`/tmp/glm53f/swap_v10_96.py`, log `/tmp/glm53f/swap-v10-96.log`): when a checkpoint exists
+(iter >= 9) and >= 48 nodes are free, it stops the 64-node run and creates the 112-node workflow (same
+experiment name, resumes from the checkpoint); if kueue does not admit it within 20 min, it falls back to the
+64-node workflow. Steps lost to the swap are bounded to 3 after a checkpoint unless capacity has been free for
+30 min.

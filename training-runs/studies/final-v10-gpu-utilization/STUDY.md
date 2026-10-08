@@ -52,17 +52,20 @@ Why the small prefills are expensive and frequent:
 3. `--enable-mixed-chunk` (decode inside prefill batches) is refused together with speculative decoding.
 4. `num_continuous_decode_steps` is 1 (default): the scheduler looks for prefills after every decode step.
 
-## Levers, in order
+## Levers (corrected 2026-10-08 23:10)
 
-1. **`sglang_num_continuous_decode_steps: 4`** — N decode steps per scheduler iteration, so arrivals batch into
-   one prefill (adds at most ~4 x 60 ms to a turn's TTFT; negligible against the 280 ms interval and tool
-   time). The 2026-10-06 bench saw no gain from 2 on a synthetic load because that load had no interleave;
-   the live load is nothing but interleave. Expected: prefill batches/s roughly halve, decode share up.
-2. Only after 1: `sglang_max_running_requests: 64` to absorb the ~10 queued requests (KV at 52%). Before 1 it
-   adds turns per second and therefore prefill interruptions.
-3. More engines raise groups per hour, not per-GPU efficiency. DP attention arms are under test
-   (`kdatp-sgl-20261008c/d`); the deepep arm has no fused MoE for `flashinfer_cutlass`, and the flashinfer-a2a
-   arm collapsed speculation (accept 0.08) on `b98fw`.
-4. Agent side (later): fewer, larger tool outputs per turn would cut the batch count at the source.
+`num_continuous_decode_steps` is parsed by this SGLang's `server_args.py` and read by nothing else in
+`sglang/srt/` (checked in the r23/r24 image): the knob is inert, which is also why the 2026-10-06 bench saw no
+change from 2. Together with mixed chunk (refused with speculative decoding) and prefill CUDA graphs
+(`Glm5NextForConditionalGeneration` is on `piecewise_cuda_graph_disabled_model_archs`), every scheduler-side
+way to batch or overlap the small prefills is closed for this model in this build.
 
-Engine flags need a relaunch; the first checkpoint lands at step 9 (~23:40 UTC), the natural boundary.
+1. `sglang_max_running_requests: 64` absorbs the ~10 queued requests (KV at 52%); more concurrent turns also
+   means more prefill interruptions, so expect a partial gain.
+2. DP attention arms (`kdatp-sgl-20261008c/d`): eight schedulers per node spread the interruptions, but the
+   MoE layers run in lockstep, so the gain is uncertain; the flashinfer-a2a variant collapsed speculation on
+   `b98fw`.
+3. More engines raise groups per hour, not per-GPU efficiency.
+4. Agent side: fewer, larger turns per checkpoint attack the cause (3.2 prefill batches per second per engine).
+
+Engine flags need a relaunch; the first checkpoint lands at step 9, the natural boundary.

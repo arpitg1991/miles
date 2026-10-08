@@ -143,3 +143,18 @@ Paired per task, late (29-38) minus early (1-14), n = 114 tasks: regression -3.0
 
 Conclusion: the learning is real and slow. About 1 point fewer regressions and 1.6 points more successes per 10 updates.
 At 22 minutes per update, a drop from 22% to 10% regressions needs about 110 more updates (~40 hours).
+
+## Correction (2026-10-08): v23 runs Dr.GRPO
+
+v23's argument dump reads `calculate_per_token_loss True`, `grpo_std_normalization False`. The "22% of groups
+carry 24% of the gradient after std normalization" figure above was computed with std-normalized advantages and
+describes final-v9 (per-sample loss, std normalization on), not v23. Recomputed on each run's own kept batches:
+
+| run and loss | R = 1 (+) | partial (+) | partial (-) | regression (-) | groups with range < 0.2 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| v23 actual: Dr.GRPO, per-token | 36.8% | 22.0% | 10.7% | 30.5% | 22% of groups, 3% of mass |
+| v9 actual: std norm, per-sample | 34.8% | 14.4% | 25.4% | 25.4% | 22% of groups, 22% of mass |
+| v9 with Dr.GRPO, per-token (final-v10) | 32.0% | 28.3% | 10.7% | 29.0% | 22% of groups, 4% of mass |
+
+The sign-wrong 27% figure stands (the sign does not depend on the normalizer; the token weighting matches v23's
+per-token loss). The llms.txt line was corrected in lakeFS commit 72de9fee (section 18).

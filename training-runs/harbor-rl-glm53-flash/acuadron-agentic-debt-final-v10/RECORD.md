@@ -1,49 +1,51 @@
 # Run record: acuadron-agentic-debt-final-v10
 
-**Status:** Prepared, not launched (2026-10-08). The user asked for these settings on the next run and no restart of final-v9.
-**Family:** `harbor-rl-glm53-flash`
-**Experiment name:** `acuadron-agentic-debt-final-v10`
-**Base:** final-v9 recipe from the live workflow `acuadron-agentic-debt-final-v9-dx8b7` through `relaunch.py`.
-**Template:** `acuadron-miles-deployer-v13` (passthrough from v9)
-**Trainer image:** `arena-github/miles:miles-glm53-r24-20261008a` (290940d7: `rollout/population/*` W&B keys, parallel routing loads)
-**Dataset:** 110-chain subset, manifest commit `f75dbe74…` (unchanged from v9)
+**Status:** Running — `acuadron-agentic-debt-final-v10-62jdk` from `workflow-512-noarms.yaml` (created 21:24 UTC 2026-10-08).
+**Family:** `harbor-rl-glm53-flash`. **Base:** final-v9 recipe (workflow `dx8b7`); fresh start from the base DCP (no `load`).
+**Template:** `acuadron-miles-deployer-v13`. **Trainer image:** `arena-github/miles:miles-glm53-r24-20261008a` (290940d7).
+**Dataset:** 110-chain subset, manifest commit `f75dbe74…` (as v9).
 
-## Config delta vs final-v9
+## Config deltas vs final-v9 (the live 62jdk run)
 
-- `calculate_per_token_loss: true` (DAPO token-level loss)
-- `disable_grpo_std_normalization: true` (Dr.GRPO: advantage = reward - group mean, no spread division)
-- `trainer-image` r22 -> r24
+| key | v9 | v10 |
+| --- | --- | --- |
+| replicas / replica-trainer | 64 / 16 | 64 / 16 (48 engines) |
+| gym-replicas | 288 | 576 |
+| rollout_batch_size / global_batch_size | 64 / 512 | 64 / 512 |
+| arena_inflight_multiplier | 4 | 8 (512 groups in flight, 1.125 gyms per group) |
+| rollout_function_path | generate_rollout | NatsRolloutFn |
+| max_weight_staleness | — | 16 |
+| calculate_per_token_loss | — | true |
+| disable_grpo_std_normalization | — | true |
+| arena_routing_workers | — | 16 |
+| trainer-image | r22 | r24 |
 
-Everything else is v9: lr 1.5e-6, 64 groups x 8 attempts, GBS 512, `arena_inflight_multiplier` 4, 64 nodes, 288 gyms, base weights.
+Engines unchanged from v9 (trtllm DSA backends, flashinfer_cutlass, allreduce fusion, NEXTN 3/4, bf16 KV, mem 0.7).
+lr 1.5e-6, save_interval 10, arena_length_reward_coef 0 unchanged.
 
-## Why
+## 2026-10-08 launch sequence
 
-On final-v9 (per-sample loss, std normalization) the kept groups whose 8 rewards lie within 0.2 of each other
-are 22% of the groups and carry 22% of the gradient mass at full strength; the hidden-test-detail and
-carried-debt noise gets the same push as a regression. With these two flags on the same batches they carry 4%
-and regressions 29% (`studies/agentic-debt-v23-signal-anatomy/STUDY.md`). guparpit-agentic-debt-v23 already
-ran this way and showed no output-length drift over 60 updates, while v9 went 101k -> 191k output tokens per
-episode in 36 updates.
+1. `gxsnq` 19:34 UTC — batch 256 variant (80 nodes, multiplier 12, 432 gyms). Admitted, all pods ready; stopped at
+   20:22 before step 0 when the user asked for batch 512 (`workflow-512.yaml`, ARMS-20261008.md step 3).
+2. `4hcn6` 20:38 UTC — `workflow-512.yaml` with every engine arm (DP attention, dp 8, deepep, TBO, spec 5/6, fp8 KV,
+   mem 0.85); steps 1-2 of the hand-off skipped on request. Engines died at scheduler init:
+   `NotImplementedError: Runner backend MoeRunnerBackend.FLASHINFER_CUTLASS requires a fused func for a2a backend
+   deepep, but none is registered` — the same failure bench 20261008b had recorded for all three `live-dpa*` arms.
+   Stopped 20:49.
+3. `b98fw` 20:53 UTC — `moe_a2a_backend: flashinfer` (the fused pair this SGLang registers for `flashinfer_cutlass`;
+   it requires dp_size == tp_size with DP attention), TBO dropped, the rest kept. 48/48 engines served, weight push
+   42.5 s, 576 gyms, rollout 0 started. Speculation collapsed: accept len 1.21 -> 1.45, accept rate 0.04 -> 0.09
+   over 10 minutes (v9: 2.62 / 0.54); decode 184 tok/s per DP rank = ~1,470 per engine at 48 running against v9's
+   ~2,450 while decoding. The arm fails the hand-off's speculation gate and is slower than v9's engines. Stopped
+   21:19 before rollout 0 completed; its ~2,000 published trials sit under `wv0000` of this experiment name.
+4. `62jdk` 21:24 UTC — `workflow-512-noarms.yaml`: the v9 engines with every trainer-side change above.
 
-## Checks done
+Bench follow-ups: the other session's job `kdatp-sgl-20261008c` (`live-dpa-nodeep`, `live-dpa-humming`,
+`live-fp8w-triton`); mine `kdatp-sgl-20261008d` (`live`, `live-dpa-fi`, `live-dpa-fi-fp8kv`, `live-dpa-fi-spec5-6`)
+to separate fp8 KV, speculation depth and DP attention as the cause of the collapse. Results:
+`s3://arena-scratch-prod-bom-ap-south-1/acuadron/kdatp/sgl/20261008{c,d}/SUMMARY.md`.
 
-- `kubectl create --dry-run=server`: accepted (`acuadron-agentic-debt-final-v10-n995d`).
-- The r23/r24 image's argparse knows `--calculate-per-token-loss` and `--disable-grpo-std-normalization`;
-  the launcher's `_flatten` emits both as bare flags.
-- Parameter delta vs the live v9 workflow: `trainer-image`, `experiment-name`, `miles-config` (two keys).
+## Expected
 
-## Launch
-
-`kubectl --context arena-prod-bom-v2 -n arena-tasks create -f workflow.yaml`, then the `eval-monitor` skill.
-To resume v9's weights instead of the base, set `experiment-name` and `experiment_name` to
-`acuadron-agentic-debt-final-v9` (latest checkpoint iter 39 at 2026-10-08 08:40 UTC); note that the Adam
-state resets (`no_save_optim`).
-
-## Engine speed-up hand-off (2026-10-08, acuadron session 2)
-
-`examples/arena/harbor-rl-glm53-flash/kdatp/sgl/ARMS-20261008.md`: the one-node bench of the remaining engine levers
-(DP attention + DeepEP + two-batch overlap, speculation depth, fp8 KV, fp8 weights, KV pool 0.85) and the 16-node live
-A/B gate run in session 2; the winner's `sglang_*` keys go into this run's `miles-config` on its next restart.
-`workflow-512.yaml` (batch 512, 16 + 48, the arms commented at the end of `miles-config`) and `workflow-256.yaml`
-(batch 256, 16 + 64) are the two prepared shapes; the launched workflow is `workflow.yaml`.
-Session 2's commit `05065fac` overwrote this file's earlier text by mistake; restored here from `e23fcdde`.
+~20 min steps with v9's engines at batch 512 (ARMS-20261008.md); ~13 min if a working engine arm is found and the
+run is relaunched on it at a checkpoint boundary. ~55 min to step 0. W&B carries `rollout/population/*`.

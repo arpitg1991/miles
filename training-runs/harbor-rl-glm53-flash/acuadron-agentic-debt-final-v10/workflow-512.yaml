@@ -163,8 +163,10 @@ spec:
         # --- engine speed-up arms (kdatp/sgl/ARMS-20261008.md): ALL enabled 2026-10-08 on request, steps 1-2 skipped;
         # in-run gate: update_weights ~30 s, gap <= 0.045 at steps 0-1, routing replay 0 lost refs, accept len > 2.6 ---
         sglang_enable_dp_attention: true
-        sglang_moe_a2a_backend: deepep
-        sglang_enable_two_batch_overlap: true
+        # deepep + flashinfer_cutlass has no fused MoE func in this SGLang (bench 20261008b and the first
+        # v10 launch both died at scheduler init); flashinfer a2a is the registered pair and requires
+        # exactly dp_size == tp_size with DP attention. Two-batch overlap is DeepEP-bound; dropped.
+        sglang_moe_a2a_backend: flashinfer
     - name: gym-image
       value: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adr72-20260927a
     - name: gym

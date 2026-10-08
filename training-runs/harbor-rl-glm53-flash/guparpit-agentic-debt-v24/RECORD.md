@@ -69,3 +69,20 @@ Compare script: `/workplace/guparpit/kdfast/scratch/router-ab/compare.py`.
 | 20:11:38 | Trainer PyTorchJob created. Kueue: "insufficient unused quota for nvidia.com/gpu in flavor gpu.p6-b200-48xlarge, 152 more needed" (queue nominal 2,424 GPUs, 2,256 in use). Both arms wait; no run was stopped to make room. |
 | 20:15 | Log capture started (`router-ab/follow.sh`, self-restarting) into `router-ab/v24-follow.log`; it connects once worker-0 starts. |
 | 20:25 | Control windows: v20 rollouts 170 to 179 recovered from CloudWatch (`router-ab/v20-cw.log`). `compare.py`: per-window busiest-engine median 44 to 85 running requests against an engine median of 33 to 37 (ratio 1.24 to 2.33, mean 1.73); queued share about 0; max KV 0.86 to 0.99; sampled prefix-cache share 0.93 to 0.97; collect 1,294 to 2,600 s (mean 1,994); trainer wait 520 to 1,726 s (mean 1,202); batch reward mean 0.64. |
+
+## Retirement (2026-10-08)
+
+| Time (UTC) | Event |
+| --- | --- |
+| 16:48 | The owner said yes to retire v24 and v25 so that the AGIMiles cut-over runs v27 and v28 can be admitted. Workflow patched with `spec.shutdown: Stop`, so the onExit cleanup ran. The local log follower was stopped by PID. |
+| 16:51:17 | Workflow phase `Failed`, message `Stopped with strategy 'Stop'`. No Deployment or pod remains. Last complete rollout 208; saves `iter_0000179`, `iter_0000189`, `iter_0000199`. |
+
+Router A/B result over rollouts 173 to 196 (`router-ab/compare.py --from 170`). The first two windows after the seed are left out because their trainer wait was only 36 to 51 s.
+
+| Arm | Windows | Load spread (max/median) | Trainer wait | Collect | Prefix cache hit |
+| --- | --- | --- | --- | --- | --- |
+| v20 control (router defaults) | 7 (173 to 179) | 1.77 | 1,124 s | 1,939 s | 0.96 |
+| v24 (`router_balance_abs_threshold` 32) | 24 | 1.38 | 951 s | 1,683 s | 0.96 |
+| v25 (`router_balance_abs_threshold` 16) | 24 | 1.16 | 1,058 s | 1,823 s | 0.95 |
+
+A lower absolute threshold gives a flatter engine load. The effect on trainer wait is not proven: the wait of one window ranges from 140 to 2,072 s, the v25 episodes are about 10% longer than the v24 episodes (124K against 112K tokens), and the v20 control has only 7 windows from an earlier time. Per 1K episode tokens, v24 and v25 collect at about the same speed (15.0 s and 14.6 s). The router defaults stay unchanged.

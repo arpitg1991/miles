@@ -73,3 +73,10 @@ Abort criterion (report to the owner; do not stop the run without the owner's wo
 | 21:36 | In-image parse (`recon2/parse/fullparse12.py`, `CFG=/work/v26.yaml` with `hf_checkpoint` remapped to `/work/hf`, image `miles-glm53-qp-20261006a`; `parse-v26.out`): exit 0, 274 argv tokens. `arena_inflight_multiplier 12`, `glm5_next_dsa_qp True`, `miles_dsa_topk_backend flashinfer`, `max_weight_staleness 8`, `arena_output_queue_groups 64`, `prefetch_rollout_data True`, `NatsRolloutFn`, `flash_mla`, `triton`, EP 8, 11/11/11/12, router cache_aware 0.3 / 64 / 1.5, the pinned agentic-final-v2 manifest. On the desktop `load` shows the base DCP because the checkpoint mount is absent; the pod log confirms the loaded iteration. |
 | 21:34:59 | Submit `guparpit-agentic-debt-v26-5znln`. Node exclusions refreshed at submit: 303 B200 nodes, 4 bad (tainted); 349 excluded (the v23 list plus the 4 bad and `i-06818d629c2521eb7`). |
 | 21:38:07 | Trainer PyTorchJob `guparpit-agentic-debt-v26-5znln-trainer` created. Queued: Kueue "insufficient unused quota for nvidia.com/gpu in flavor gpu.p6-b200-48xlarge, 152 more needed" (19 nodes); queue `gpu.p6-b200-48xlarge` pending 2, admitted 18. No run was stopped to make room. Log capture: `qp/v26-follow.log` (`router-ab/follow.sh`, reconnects until worker-0 exists). |
+
+## Retirement (2026-10-08)
+
+| Time (UTC) | Event |
+| --- | --- |
+| 16:48 | The owner said yes to cancel v26 before admission. It ran on the fork image with `arena_inflight_multiplier` 12, which oversaturates the 32 engines, and it was first in the queue ahead of the AGIMiles cut-over runs v27 and v28. Workflow patched with `spec.shutdown: Stop`. The local log follower was stopped by PID. |
+| 16:51:14 | Workflow phase `Failed`, message `Stopped with strategy 'Stop'`. The trainer was never admitted, so the run has no rollout and no save. No Deployment or pod remains. |

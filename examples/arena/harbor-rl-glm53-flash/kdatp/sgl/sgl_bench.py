@@ -44,6 +44,10 @@ GREEDY_LENS = (512, 4096, 12000, 24000)
 GREEDY_NEW_TOKENS = 160
 
 # name -> (dsa prefill backend, dsa decode backend, extra server args)
+# final-v9's engines (2026-10-07): trtllm DSA, cutlass MoE, allreduce fusion (auto backend), NEXTN 3 steps / 4 draft tokens.
+_LIVE = ["--moe-runner-backend", "flashinfer_cutlass", "--enable-flashinfer-allreduce-fusion",
+         "--speculative-algorithm", "NEXTN", "--speculative-eagle-topk", "1"]
+_DPA = ["--enable-dp-attention", "--dp-size", "8", "--moe-a2a-backend", "deepep", "--enable-two-batch-overlap"]
 ARMS = {
     "tl-tl": ("tilelang", "tilelang", []),  # the live recipe
     "tl-trt": ("tilelang", "trtllm", []),
@@ -67,6 +71,22 @@ ARMS = {
     "combo-nextn3": ("trtllm", "trtllm", ["--moe-runner-backend", "flashinfer_cutlass", "--enable-flashinfer-allreduce-fusion",
                                           "--speculative-algorithm", "NEXTN", "--speculative-num-steps", "3",
                                           "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "4"]),
+    # 2026-10-08 arms (ARMS-20261008.md): the levers left after combo-nextn3. A later flag overrides an earlier one.
+    "live": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4"]),
+    "live-spec4-5": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "4", "--speculative-num-draft-tokens", "5"]),
+    "live-spec5-6": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "5", "--speculative-num-draft-tokens", "6"]),
+    "live-spec4-topk2-8": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "4", "--speculative-eagle-topk", "2",
+                                                "--speculative-num-draft-tokens", "8"]),
+    "live-fp8kv": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4",
+                                        "--kv-cache-dtype", "fp8_e4m3"]),
+    "live-fp8w": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4",
+                                       "--quantization", "fp8"]),
+    "live-mem85": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4",
+                                        "--mem-fraction-static", "0.85"]),
+    "live-dpa": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4", *_DPA]),
+    "live-dpa-spec5-6": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "5", "--speculative-num-draft-tokens", "6", *_DPA]),
+    "live-dpa-spec5-6-fp8kv": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "5", "--speculative-num-draft-tokens", "6",
+                                                    *_DPA, "--kv-cache-dtype", "fp8_e4m3"]),
 }
 
 # The live engine arguments that matter for the kernels and the memory layout (sglang_engine.py

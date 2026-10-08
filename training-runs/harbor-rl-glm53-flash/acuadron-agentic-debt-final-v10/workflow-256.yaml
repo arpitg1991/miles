@@ -33,7 +33,7 @@ spec:
         experiment_name: acuadron-agentic-debt-final-v10
         project_name: acuadron-agentic-debt-final-v10
         agislime_dir: /root/miles
-        replicas: 80  # final-v10 2026-10-08: 64 engines (+16 nodes): 32 usable groups every ~8 min needs ~290 finished groups/h
+        replicas: 80  # final-v10: 16 actor (DP 4) + 64 engines
         num_trainers: 16
         model_arch: glm5.3-flash
         hf_checkpoint: /mnt/scratch-fast-1a-rw/durable/model-artifacts/external/zai-org/GLM-5.3-Flash-BF16
@@ -41,7 +41,7 @@ spec:
         save_interval: 10
         no_load_optim: true
         no_save_optim: true
-        rollout_function_path: miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn  # final-v10 2026-10-08: the seam the staleness cap needs
+        rollout_function_path: miles_plugins.arena.nats_arena.nats_rollout.NatsRolloutFn  # the class seam max_weight_staleness needs (ADR-0019)
         data_source_path: miles_plugins.arena.nats_arena.data_source.ArenaDataSourceWithBuffer
         prompt-data-list: '[{"path": "lakefs://arena-inspect/f75dbe74c8e33cf6ce5ad9a46b15f66b3a7339f8c3f01e5997cc972859161684/internal/agentic-debt-r3/acuadron-agentic-debt-final-110-sd015-20261006/manifest.jsonl", "gym_name": "agentic-debt", "weight": 1.0}]'
         sglang_disable_overlap_schedule: false
@@ -52,11 +52,11 @@ spec:
         rollout_shuffle: true
         rollout_skip_special_tokens: true
         num_rollout: 300
-        rollout_batch_size: 32  # final-v10 2026-10-08: halves generation per batch and the trainer step
+        rollout_batch_size: 32  # final-v10: 64 -> 32 (batch 256, v23's)
         n_samples_per_prompt: 8
         rollout_max_response_len: 16384
         rollout_temperature: 1
-        global_batch_size: 256  # final-v10 2026-10-08: 32 groups x 8 attempts
+        global_batch_size: 256
         balance_data: true
         rollout_num_gpus_per_engine: 8
         sglang_tp_size: 8
@@ -135,7 +135,7 @@ spec:
         use_wandb: true
         use_distributed_post: true
         arena_sample_mode: full_trajectory
-        arena_inflight_multiplier: 12  # final-v10 2026-10-08: 384 groups in flight = throughput x latency (350 groups/h x 70 min); gym-replicas 432 = 1.125 x
+        arena_inflight_multiplier: 12  # final-v10: 384 groups in flight = 64 engines x ~5.5 groups/h x 70 min latency
         arena_train_segments: all
         log_passrate: false
         wandb_host: https://mega.wandb.agi.amazon.dev
@@ -156,14 +156,10 @@ spec:
         sglang_load_format: dummy  # r22 relaunch: the trainer's initial push fills the engine weights
         sglang_speculative_draft_model_path: /mnt/scratch-fast-1a-rw/acuadron/models/GLM-5.3-Flash-BF16-nextn  # MTP layer only
         sglang_speculative_draft_load_format: auto  # the draft loads from disk; without this it takes the dummy load format
-        # ---- final-v10 (2026-10-08) additions ----
-        max_weight_staleness: 16  # ~2x the mean staleness at a 10-min step (70 / 10 ~ 7); drops only the slowest ~10% of groups
-        # DAPO token-level loss and Dr.GRPO (no spread division), as guparpit-agentic-debt-v23. The
-        # per-sample mean let final-v9 turn count double. YAML false is dropped by the launcher, so
-        # the negative flag is set as true.
-        calculate_per_token_loss: true
-        disable_grpo_std_normalization: true
-        arena_routing_workers: 16  # the r24 default, set explicitly: parallel routing-replay payload loads at drain time
+        max_weight_staleness: 16  # final-v10: about 2x the mean staleness at a 10-min step (70 min group latency / 10 min)
+        calculate_per_token_loss: true  # final-v10: token-level loss average (v23); the per-sample mean grew v9's turn count 2x
+        disable_grpo_std_normalization: true  # final-v10: v23's setting; no 1/std amplification of near-tied groups
+        arena_routing_workers: 16  # r24: parallel drain-time routing loads (the default)
     - name: gym-image
       value: 427267593057.dkr.ecr.ap-south-1.amazonaws.com/arena-slime-dev:gym-glm53-adr72-20260927a
     - name: gym

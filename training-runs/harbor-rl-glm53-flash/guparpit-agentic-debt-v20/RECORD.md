@@ -88,3 +88,12 @@ Gates before the submit: the 1-node parity harness (`kdatp/dsaqp`, jobs `kdatp-d
 | 05:4x | Kueue reserved the quota (QuotaReserved=True) after 12 more B200 nodes came free; the 40 worker pods start. |
 | 05:58 to 06:08 | T2 job `kdatp-prof-20261006q`: the `control` arm (flag off, EP8, FlashMLA, R3 on) hung in its first train step for 70 min and hit the arm timeout (rc 124) with no error and no step; the R3 fill of the replayed rows read 252 bytes per rank (the live runs read about 20 GB), so the 2026-09-29 T2 rows carry the routing payload of the old data path and the ns image's R3 fill cannot use it. Job stopped; resubmitted as `kdatp-prof-20261006r` with `use_rollout_routing_replay: false` in every arm (control, qp, qp-fi, qp-split, split). The T2 numbers of 30 Sep and 03 Oct ran with R3 on; the in-job control carries the comparison. |
 | 05:43 to 06:14 | 40 worker pods Running at 05:43 (no operator deletion). Argument dump: `glm5_next_dsa_qp True`, `miles_dsa_topk_backend flashinfer`, `miles_dsa_sparse_attention_forward_backend flash_mla`, `max_weight_staleness 8`, `arena_inflight_multiplier 8`, `prefetch_rollout_data True`. `Checkpoint sidecar rollout_id=109`. `Rollout 110` collecting since 06:04 (0 of 32 at 630 s). Live log capture: `/workplace/guparpit/kdfast/scratch/qp/v20-follow.log`. |
+
+## Retirement (2026-10-08)
+
+| Time (UTC) | Event |
+| --- | --- |
+| 04:5x | The owner said yes to retire v20 so that the AGIMiles cut-over runs v27 and v28 can be admitted. No local watcher referenced the run. Workflow patched with `spec.shutdown: Stop`, so the onExit cleanup ran. |
+| 05:01:48 | Workflow phase `Failed`, message `Stopped with strategy 'Stop'`. No v20 Deployment or pod remains. Last rollout 196; saves `iter_0000169`, `iter_0000179`, `iter_0000189`. |
+
+Result: the true reward stayed flat at about 0.73 from rollout 110 to 196 (bins of 10 rollouts: 0.74, 0.75, 0.73, 0.72, 0.74, 0.73, 0.73, 0.72, 0.74). The router A/B runs v24 and v25 continue from the v20 `iter_0000169` seed and carry the v20 rollouts 170 to 179 as their control.

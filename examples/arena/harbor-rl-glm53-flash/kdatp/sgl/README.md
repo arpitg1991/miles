@@ -117,6 +117,35 @@ engines log it (`accept len` in the `Decode batch` lines).
 `log: step ms` is not comparable across jobs a-c: it is a median over every decode line of the server log,
 and job c adds the temperature-1 phase to the mix. Use the bench columns.
 
+### 2026-10-08 — the levers left after combo-nextn3 (`kdatp-sgl-20261008a`, `-c`; `-d` from the other session)
+
+`live` = final-v9's engines (trtllm DSA, cutlass MoE, allreduce fusion auto, NEXTN 3 steps / 4 draft tokens). Same bench;
+`real c45` as in job c of 2026-10-06. The `live` arm reproduces across the three jobs within 1.5% on real c45 (2,047-2,077 tok/s).
+
+| arm | adds to `live` | startup s | real c45 TPOT ms | real c45 out tok/s | c45 TPOT ms | c45 out tok/s | greedy mean |dlogprob| vs live | result |
+|---|---|---|---|---|---|---|---|---|
+| live | - | 784-823 | 13.3-13.8 | 2,047-2,077 | 18.3 | 1,718-1,743 | 0 | reference |
+| live-spec4-5 | 4 steps / 5 draft tokens | 641 | 12.3 | 2,159 (+4%) | 13.0 | 2,231 | 0.012-0.031 | in band |
+| **live-spec5-6** | 5 steps / 6 draft tokens | 646 | **12.1** | 2,128 (+3%) | 12.7 | 2,199 | 0.023-0.063 | in band; accept 4.86 of 6 (bench text) |
+| **live-fp8kv** | `--kv-cache-dtype fp8_e4m3` | 626 | 12.7 | **2,168 (+5%)** | 12.3 | 2,272 | 0.016-0.052 | in band |
+| live-dpa-nodeep | `--enable-dp-attention --dp-size 8` | 711 | 15.2 | 1,458 (-30%) | 25.4 | 997 | **0.16-0.26** | slower and off |
+| live-dpa-fi (job d) | DP attention + `--moe-a2a-backend flashinfer` | 716 | 21.7 | 1,152 (-44%) | 29.9 | 1,053 | - | slower |
+| live-dpa (+deepep, cutlass) | | - | - | - | - | - | - | refused: no fused MoE for deepep on flashinfer_cutlass |
+| live-dpa-humming | deepep + `--moe-runner-backend humming` | - | - | - | - | - | - | scheduler dies at init |
+| live-fp8w | `--quantization fp8` | - | - | - | - | - | - | refused: cutlass takes modelopt_fp8 checkpoints only |
+| live-fp8w-triton | `--moe-runner-backend triton --quantization fp8` | 631 | - | - | - | - | - | serves; the harness's greedy parse failed (not benchmarked) |
+| live-spec4-topk2-8 | top-k 2, 8 draft tokens | - | - | - | - | - | - | refused: top-k > 1 needs page size 1 on the DSA backend |
+| live-mem85 | `--mem-fraction-static 0.85` | - | - | - | - | - | - | job a ended at its launch (not benchmarked) |
+
+Read: the serving layout is a dead end on this stack (DP attention loses 30-45% with every MoE a2a backend that starts, and
+its numerics are off; deepep has no bf16 MoE runner here, so the DeepSeek-style path needs an fp8 checkpoint for DeepGEMM).
+The two live-safe gains are small: speculation 5/6 and the fp8 KV cache, about +3-5% each on the bench, -8 to -12% TPOT.
+Prefill is not the engine's problem: the live uncached prefill is 2.5x the decoded tokens but prefill runs ~40x faster per
+token than decode (27k tokens in 14 s at c45), so it costs about 6% of engine time. On final-v10 (64 engines, 48 trials per
+engine) the engines sit at the cap (`num_running_reqs` 47, queue 11, 2,135 tok/s, accept 2.68, 90% prefix cache); they are
+saturated, so per-engine output is at its plateau (~2,100-2,450 tok/s) and the fleet scales with engine nodes only.
+The live A/B of spec 5/6 + fp8 KV is `training-runs/.../acuadron-agentic-debt-engine-ab-v3`.
+
 ### Live validation — `acuadron-agentic-debt-engine-ab-v1` (24 nodes, 2026-10-06)
 
 The `combo-nextn3` flags in the full loop (`training-runs/.../acuadron-agentic-debt-engine-ab-v1/RECORD.md`):

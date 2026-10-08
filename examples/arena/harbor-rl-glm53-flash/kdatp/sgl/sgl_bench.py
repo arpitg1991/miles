@@ -93,6 +93,13 @@ ARMS = {
                                              "--enable-dp-attention", "--dp-size", "8"]),
     "live-dpa-humming": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4",
                                               *_DPA, "--moe-runner-backend", "humming"]),
+    # final-v10 launch b98fw (2026-10-08 20:53): DP attention + flashinfer a2a (the fused pair registered for
+    # flashinfer_cutlass) + spec 5/6 + fp8 KV started on 48 engines but speculation collapsed: accept len 1.4,
+    # accept rate 0.08 (live: 2.6 / 0.54); decode 1,470 tok/s per engine at 48 running. These isolate the cause.
+    "live-dpa-fi": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4", "--enable-dp-attention", "--dp-size", "8", "--moe-a2a-backend", "flashinfer"]),
+    "live-dpa-fi-spec5-6": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "5", "--speculative-num-draft-tokens", "6", "--enable-dp-attention", "--dp-size", "8", "--moe-a2a-backend", "flashinfer"]),
+    "live-dpa-fi-fp8kv": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4", "--enable-dp-attention", "--dp-size", "8", "--moe-a2a-backend", "flashinfer",
+                                           "--kv-cache-dtype", "fp8_e4m3"]),
     "live-fp8w-triton": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4",
                                               "--moe-runner-backend", "triton", "--quantization", "fp8"]),
 }

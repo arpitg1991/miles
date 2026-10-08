@@ -87,6 +87,14 @@ ARMS = {
     "live-dpa-spec5-6": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "5", "--speculative-num-draft-tokens", "6", *_DPA]),
     "live-dpa-spec5-6-fp8kv": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "5", "--speculative-num-draft-tokens", "6",
                                                     *_DPA, "--kv-cache-dtype", "fp8_e4m3"]),
+    # job 20261008b: deepep has no fused MoE for flashinfer_cutlass (bf16 deepep runners here: humming, deep_gemm=fp8 only),
+    # and --quantization fp8 is refused by the cutlass runner (modelopt_fp8 checkpoints only). The follow-ups:
+    "live-dpa-nodeep": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4",
+                                             "--enable-dp-attention", "--dp-size", "8"]),
+    "live-dpa-humming": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4",
+                                              *_DPA, "--moe-runner-backend", "humming"]),
+    "live-fp8w-triton": ("trtllm", "trtllm", [*_LIVE, "--speculative-num-steps", "3", "--speculative-num-draft-tokens", "4",
+                                              "--moe-runner-backend", "triton", "--quantization", "fp8"]),
 }
 
 # The live engine arguments that matter for the kernels and the memory layout (sglang_engine.py

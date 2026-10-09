@@ -439,6 +439,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "advantage_scale",
             "seq_witness_ids",
             "weight_versions",
+            # per-sample train_metadata (e.g. the drain-time weight age read by
+            # miles_plugins.arena.off_policy); nothing else consumed it before.
+            "metadata",
             "adapter_slots",
         ]:
             if key not in data:

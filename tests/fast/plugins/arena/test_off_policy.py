@@ -131,3 +131,27 @@ def test_mismatch_metrics_without_ages_reports_only_m2():
 
 def _tags():
     return [f"age_b{lo}" if lo == hi else f"age_b{lo}_{hi if hi < 10**9 else 'up'}" for lo, hi in AGE_BUCKETS]
+
+
+def test_train_metadata_reaches_every_dp_shard():
+    """The drain-time weight age travels as ``train_metadata`` -> ``metadata``; each DP shard keeps its rows."""
+    from tests.fast.ray.rollout.conftest import make_args, make_sample
+
+    from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data, split_train_data_by_dp_raw
+
+    samples = [make_sample(reward=float(i % 2)) for i in range(4)]
+    for i, s in enumerate(samples):
+        s.train_metadata = {"weight_age": i}
+    data = convert_samples_to_train_data(
+        make_args(rewards_normalization=False),
+        samples,
+        metadata={},
+        custom_convert_samples_to_train_data_func=None,
+        custom_reward_post_process_func=None,
+    )
+    assert data["metadata"] == [{"weight_age": i} for i in range(4)]
+    shards = split_train_data_by_dp_raw(make_args(rewards_normalization=False), data, dp_size=2)
+    ages = sorted(m["weight_age"] for shard in shards for m in shard["metadata"])
+    assert ages == [0, 1, 2, 3]
+    for shard in shards:
+        assert len(shard["metadata"]) == len(shard["tokens"])

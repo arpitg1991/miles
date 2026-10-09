@@ -2613,6 +2613,13 @@ def generate_rollout(
                     reap_sample_refs(group)
                 continue
 
+            if staleness is not None:
+                # The loss cannot see the train weight version, so the age rides
+                # with the sample (``train_metadata`` -> ``batch["metadata"]``)
+                # for the per-age mismatch metrics in ``off_policy.py``.
+                for s in group:
+                    s.train_metadata = {**(s.train_metadata or {}), "weight_age": staleness}
+
             if replay_on:
                 # Drain-time decode (ADR-0012): the group is about to join the
                 # train batch, so this is the first moment the arrays are
@@ -3090,6 +3097,9 @@ def _add_arena_arguments(parser):
     group.add_argument("--gym-autoscale-growth-preemption", type=float, default=1.25)
     group.add_argument("--gym-autoscale-profile-duration", type=float, default=1800.0)
     group.add_argument("--gym-autoscale-min-samples", type=int, default=50)
+    from miles_plugins.arena.off_policy import add_off_policy_arguments
+
+    add_off_policy_arguments(group)
     return parser
 
 

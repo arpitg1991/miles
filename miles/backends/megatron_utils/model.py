@@ -508,6 +508,9 @@ def train_one_step(
                 "witness_ids",
                 "opd_reverse_kl",
                 "rollout_mask_sums",
+                # Per-sample passthrough for custom TIS functions (off-policy age metrics).
+                "weight_versions",
+                "metadata",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,

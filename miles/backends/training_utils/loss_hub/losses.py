@@ -256,6 +256,10 @@ def policy_loss_function(
             "response_lengths": response_lengths,
             "parallel_state": parallel_state,
             "max_seq_lens": max_seq_lens,
+            # Custom functions (M2PO trust-region tokens, per-age mismatch metrics) need the
+            # advantage sign and the per-sample batch fields; the built-ins ignore them.
+            "advantages": advantages_list,
+            "batch": batch,
         }
 
         pg_loss, modified_response_masks, tis_metrics = tis_func(**tis_kwargs)
